@@ -17,7 +17,7 @@ import {
 import { RoomManager } from './rooms/RoomManager';
 
 const app = express();
-app.use(cors({ origin: CONFIG.CLIENT_ORIGIN }));
+app.use(cors({ origin: CONFIG.CLIENT_ORIGINS }));
 
 // Baseline security headers (API-only server: no framing, no sniffing).
 app.use((_req, res, next) => {
@@ -37,7 +37,7 @@ const httpServer = http.createServer(app);
 
 const io = new Server<ClientToServerEvents, ServerToClientEvents>(httpServer, {
   serveClient: false,
-  cors: { origin: CONFIG.CLIENT_ORIGIN, methods: ['GET', 'POST'] },
+  cors: { origin: CONFIG.CLIENT_ORIGINS, methods: ['GET', 'POST'] },
   // Game packets are tiny; a small cap blocks memory-abuse payloads.
   maxHttpBufferSize: 1e4,
 });
@@ -132,7 +132,7 @@ io.on('connection', (socket) => {
 
 httpServer.listen(CONFIG.PORT, () => {
   console.log(`[server] WindArms.io server listening on :${CONFIG.PORT}`);
-  console.log(`[server] accepting connections from ${CONFIG.CLIENT_ORIGIN}`);
+  console.log(`[server] accepting connections from ${CONFIG.CLIENT_ORIGINS.join(', ')}`);
   console.log(
     accountsEnabled()
       ? '[server] accounts enabled (database configured)'

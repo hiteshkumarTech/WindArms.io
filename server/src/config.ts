@@ -6,7 +6,11 @@ import { SERVER_TICK_RATE } from '../../shared/protocol';
  */
 export const CONFIG = {
   PORT: Number(process.env.PORT ?? 4000),
-  CLIENT_ORIGIN: process.env.CLIENT_ORIGIN ?? 'http://localhost:3000',
+  /** Comma-separated allow-list, e.g. "https://app.vercel.app,https://windarms.io". */
+  CLIENT_ORIGINS: (process.env.CLIENT_ORIGIN ?? 'http://localhost:3000')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter((origin) => origin.length > 0),
 
   /** Snapshot broadcast rate (Hz). */
   TICK_RATE: SERVER_TICK_RATE,

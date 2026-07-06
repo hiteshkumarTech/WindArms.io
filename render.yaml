@@ -1,0 +1,20 @@
+# Render blueprint — deploys the WindArms.io game server.
+# Render dashboard → New + → Blueprint → select this repo.
+services:
+  - type: web
+    name: windarms-server
+    runtime: node
+    plan: free
+    rootDir: server
+    buildCommand: npm install && npx prisma generate && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: CLIENT_ORIGIN
+        sync: false # set to your Vercel URL after the frontend deploy
+      - key: DATABASE_URL
+        sync: false # Neon connection string (optional — guest mode without it)
+      - key: JWT_SECRET
+        generateValue: true
