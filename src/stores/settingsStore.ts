@@ -7,6 +7,7 @@ import { clamp } from '@/lib/utils';
 export const SETTINGS_LIMITS = {
   sensitivity: { min: 0.4, max: 2.5, step: 0.05 },
   fov: { min: 60, max: 110, step: 1 },
+  masterVolume: { min: 0, max: 1, step: 0.05 },
 } as const;
 
 export const SETTINGS_DEFAULTS = {
@@ -14,6 +15,7 @@ export const SETTINGS_DEFAULTS = {
   fov: 75,
   viewBob: true,
   showPerfHud: true,
+  masterVolume: 0.8,
 } as const;
 
 interface SettingsStore {
@@ -23,11 +25,14 @@ interface SettingsStore {
   fov: number;
   viewBob: boolean;
   showPerfHud: boolean;
+  /** Global SFX volume, 0–1. 0 mutes the audio engine entirely. */
+  masterVolume: number;
 
   setSensitivity: (value: number) => void;
   setFov: (value: number) => void;
   setViewBob: (value: boolean) => void;
   setShowPerfHud: (value: boolean) => void;
+  setMasterVolume: (value: number) => void;
   resetDefaults: () => void;
 }
 
@@ -48,6 +53,10 @@ export const useSettingsStore = create<SettingsStore>()(
       setFov: (value) => set({ fov: clamp(value, SETTINGS_LIMITS.fov.min, SETTINGS_LIMITS.fov.max) }),
       setViewBob: (value) => set({ viewBob: value }),
       setShowPerfHud: (value) => set({ showPerfHud: value }),
+      setMasterVolume: (value) =>
+        set({
+          masterVolume: clamp(value, SETTINGS_LIMITS.masterVolume.min, SETTINGS_LIMITS.masterVolume.max),
+        }),
       resetDefaults: () => set({ ...SETTINGS_DEFAULTS }),
     }),
     { name: 'windarms-settings', version: 1 },

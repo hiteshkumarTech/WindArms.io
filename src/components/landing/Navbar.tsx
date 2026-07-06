@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import { motion, type Variants } from 'framer-motion';
 import { Download, Menu, User } from 'lucide-react';
 import DiscordIcon from '@/components/ui/DiscordIcon';
@@ -34,20 +35,31 @@ export default function Navbar() {
         <Logo />
 
         <motion.ul variants={listVariants} initial="hidden" animate="visible" className="hidden items-center gap-1 xl:flex">
-          {NAV_LINKS.map((link) => (
-            <motion.li key={link.label} variants={itemVariants}>
-              <a
-                href={link.href}
-                className="group relative rounded-md px-3 py-2 text-[13px] font-medium text-white/65 transition-colors duration-300 hover:text-white hover:[text-shadow:0_0_14px_rgba(0,245,255,0.6)] focus-visible:outline-none focus-visible:text-white"
-              >
-                {link.label}
-                <span
-                  className="absolute inset-x-3 -bottom-0.5 h-px origin-left scale-x-0 bg-gradient-to-r from-neon-cyan to-neon-purple transition-transform duration-300 group-hover:scale-x-100"
-                  aria-hidden
-                />
-              </a>
-            </motion.li>
-          ))}
+          {NAV_LINKS.map((link) => {
+            const linkClasses =
+              'group relative rounded-md px-3 py-2 text-[13px] font-medium text-white/65 transition-colors duration-300 hover:text-white hover:[text-shadow:0_0_14px_rgba(0,245,255,0.6)] focus-visible:outline-none focus-visible:text-white';
+            const underline = (
+              <span
+                className="absolute inset-x-3 -bottom-0.5 h-px origin-left scale-x-0 bg-gradient-to-r from-neon-cyan to-neon-purple transition-transform duration-300 group-hover:scale-x-100"
+                aria-hidden
+              />
+            );
+            return (
+              <motion.li key={link.label} variants={itemVariants}>
+                {link.href.startsWith('/') ? (
+                  <Link href={link.href} className={linkClasses}>
+                    {link.label}
+                    {underline}
+                  </Link>
+                ) : (
+                  <a href={link.href} className={linkClasses}>
+                    {link.label}
+                    {underline}
+                  </a>
+                )}
+              </motion.li>
+            );
+          })}
         </motion.ul>
 
         <div className="flex items-center gap-2">

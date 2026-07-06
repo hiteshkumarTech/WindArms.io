@@ -1,4 +1,4 @@
-import { SERVER_TICK_RATE, type Vec3 } from '../../shared/protocol';
+import { SERVER_TICK_RATE } from '../../shared/protocol';
 
 /**
  * Server configuration. Values come from the environment in production
@@ -23,19 +23,11 @@ export const CONFIG = {
   /** Drop input packets arriving faster than this (flood protection). */
   MIN_INPUT_INTERVAL_MS: 15,
 
-  /** Arena bounds — matches the client's TestArena geometry. */
+  /**
+   * Arena bounds. All maps share a 60×60 footprint (see shared/maps.ts),
+   * so movement validation stays uniform across rooms.
+   */
   ARENA_HALF_EXTENT: 32,
   ARENA_MIN_Y: -30,
   ARENA_MAX_Y: 40,
-
-  SPAWN_POINTS: [
-    [0, 3, 10],
-    [8, 3, 8],
-    [-8, 3, 8],
-    [12, 3, -6],
-    [-12, 3, -6],
-    [0, 5, -16],
-    [6, 3, 0],
-    [-6, 3, 0],
-  ] as Vec3[],
 };

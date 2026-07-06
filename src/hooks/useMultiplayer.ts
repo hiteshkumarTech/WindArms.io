@@ -14,10 +14,12 @@ import {
   type Vec3,
 } from '@shared/protocol';
 import { WEAPONS } from '@shared/weapons';
-import { effectsBus } from '@/lib/game/effectsBus';
-import { pendingCorrection } from '@/lib/game/localPose';
-import { remoteSnapshots } from '@/lib/network/interpolation';
+import { audio } from '@/lib/audio/audioEngine';
+import { cameraShake, effectsBus } from '@/lib/game/effectsBus';
+import { localPose, pendingCorrection } from '@/lib/game/localPose';
+import { remoteSnapshots, type RemotePose } from '@/lib/network/interpolation';
 import { getSocket, type GameSocket } from '@/lib/network/socket';
+import { useAuthStore } from '@/stores/authStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useCombatStore } from '@/stores/combatStore';
 import { useMultiplayerStore, type PlayerScore } from '@/stores/multiplayerStore';
@@ -30,6 +32,32 @@ function resetSessionState(): void {
   useCombatStore.getState().reset();
   useWeaponStore.getState().resetAll();
   useChatStore.getState().reset();
+}
+
+/** Scratch pose for locating remote players at death time (no allocs). */
+const deathPoseScratch: RemotePose = {
+  position: [0, 0, 0],
+  yaw: 0,
+  pitch: 0,
+  state: 'idle',
+  alive: true,
+  weapon: 'ar',
+  health: 100,
+};
+
+/** Ring of hit sparks + a vertical flash at an elimination site. */
+function spawnDeathBurst(position: [number, number, number], accent: string): void {
+  for (let i = 0; i < 10; i++) {
+    const angle = (i / 10) * Math.PI * 2;
+    effectsBus.spawnImpact({
+      at: [
+        position[0] + Math.cos(angle) * 0.55,
+        position[1] - 0.3 + (i % 3) * 0.45,
+        position[2] + Math.sin(angle) * 0.55,
+      ],
+      color: i % 2 === 0 ? accent : '#ffd27f',
+    });
+  }
 }
 
 /**
@@ -87,23 +115,62 @@ export function useMultiplayer() {
         });
         effectsBus.spawnImpact({ at: [end[0], end[1], end[2]], color });
       }
+      audio.remoteShot(event.weapon, event.origin);
     };
     const onHit = (event: HitEvent) => {
       const selfId = useMultiplayerStore.getState().selfId;
-      if (event.shooterId === selfId) useCombatStore.getState().confirmedHit();
-      if (event.victimId === selfId) useCombatStore.getState().selfDamaged(event.victimHealth);
+      if (event.shooterId === selfId) {
+        useCombatStore.getState().confirmedHit();
+        audio.hitConfirm();
+      }
+      if (event.victimId === selfId) {
+        useCombatStore.getState().selfDamaged(event.victimHealth);
+        audio.damaged();
+        cameraShake.trauma = Math.min(cameraShake.trauma + 0.2 + event.damage / 160, 0.6);
+      }
     };
     const onDeath = (event: DeathEvent) => {
-      useCombatStore.getState().recordDeath(event, useMultiplayerStore.getState().selfId);
+      const selfId = useMultiplayerStore.getState().selfId;
+      useCombatStore.getState().recordDeath(event, selfId);
+
+      // Elimination VFX + spatial audio at the victim's last known position.
+      const accent = WEAPONS[event.weapon].tracerColor;
+      if (event.victimId === selfId) {
+        const at: [number, number, number] = [
+          localPose.position[0],
+          localPose.position[1],
+          localPose.position[2],
+        ];
+        spawnDeathBurst(at, accent);
+        audio.death(null);
+        cameraShake.trauma = Math.min(cameraShake.trauma + 0.5, 0.8);
+      } else if (remoteSnapshots.samplePlayer(event.victimId, deathPoseScratch)) {
+        spawnDeathBurst(
+          [deathPoseScratch.position[0], deathPoseScratch.position[1], deathPoseScratch.position[2]],
+          accent,
+        );
+        audio.death(deathPoseScratch.position);
+      }
     };
     const onRespawned = (event: RespawnEvent) => {
       if (event.playerId !== useMultiplayerStore.getState().selfId) return;
       pendingCorrection.position = [event.position[0], event.position[1], event.position[2]];
       useCombatStore.getState().respawned();
       useWeaponStore.getState().resetAll();
+      audio.respawn();
     };
     const onChat = (message: ChatMessage) => {
       useChatStore.getState().add(message, useMultiplayerStore.getState().selfId);
+    };
+    const onAccountXp = (payload: { xp: number; level: number }) => {
+      useAuthStore.getState().updateXp(payload.xp, payload.level);
+    };
+    const onKicked = (reason: string) => {
+      resetSessionState();
+      const store = useMultiplayerStore.getState();
+      store.resetToMenu();
+      store.setError(reason);
+      getSocket().disconnect();
     };
     const onDisconnect = () => {
       const state = useMultiplayerStore.getState();
@@ -122,6 +189,8 @@ export function useMultiplayer() {
     socket.on('combat:death', onDeath);
     socket.on('combat:respawned', onRespawned);
     socket.on('chat:message', onChat);
+    socket.on('account:xp', onAccountXp);
+    socket.on('system:kicked', onKicked);
     socket.on('disconnect', onDisconnect);
     return () => {
       socket.off('room:state', onState);
@@ -133,6 +202,8 @@ export function useMultiplayer() {
       socket.off('combat:death', onDeath);
       socket.off('combat:respawned', onRespawned);
       socket.off('chat:message', onChat);
+      socket.off('account:xp', onAccountXp);
+      socket.off('system:kicked', onKicked);
       socket.off('disconnect', onDisconnect);
     };
   }, []);
@@ -161,6 +232,10 @@ export function useMultiplayer() {
     () =>
       new Promise<GameSocket>((resolve, reject) => {
         const socket = getSocket();
+        // Attach the account token (if any) to the handshake so in-match
+        // kills persist. Must be set before connect().
+        const token = useAuthStore.getState().token;
+        socket.auth = token ? { token } : {};
         if (socket.connected) {
           resolve(socket);
           return;

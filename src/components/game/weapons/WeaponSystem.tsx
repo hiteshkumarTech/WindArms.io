@@ -5,6 +5,7 @@ import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import type { Vec3, WeaponId } from '@shared/protocol';
 import { WEAPONS, WEAPON_ORDER, fireIntervalMs } from '@shared/weapons';
+import { audio } from '@/lib/audio/audioEngine';
 import { effectsBus, fireSignal, viewKick } from '@/lib/game/effectsBus';
 import { getSocket } from '@/lib/network/socket';
 import { useChatStore } from '@/stores/chatStore';
@@ -71,6 +72,7 @@ export default function WeaponSystem() {
         const def = WEAPONS[current];
         if (reloadingUntil === 0 && mags[current] < def.magSize) {
           store.getState().startReload(performance.now() + def.reloadTimeS * 1000);
+          audio.reload();
         }
       }
     };
@@ -122,6 +124,8 @@ export default function WeaponSystem() {
       // Dry trigger: auto-reload instead of firing.
       triggerQueued.current = false;
       weaponState.startReload(now + def.reloadTimeS * 1000);
+      audio.dryFire();
+      audio.reload();
       return;
     }
 
@@ -173,10 +177,11 @@ export default function WeaponSystem() {
       });
     }
 
-    // Recoil + viewmodel feedback.
+    // Recoil + viewmodel + audio feedback.
     viewKick.pitch += def.recoil.vertical * (0.9 + Math.random() * 0.2);
     viewKick.yaw += def.recoil.horizontal * (Math.random() - 0.5) * 2;
     fireSignal.nonce += 1;
+    audio.shot(weaponId);
 
     // Report to the authoritative server when in an online match.
     const session = useMultiplayerStore.getState();

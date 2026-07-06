@@ -1,7 +1,8 @@
 'use client';
 
 import { create } from 'zustand';
-import type { PublicPlayer, RoomInfo } from '@shared/protocol';
+import type { MapId, PublicPlayer, RoomInfo } from '@shared/protocol';
+import { DEFAULT_MAP_ID } from '@shared/maps';
 
 export type ConnectionStatus = 'offline' | 'connecting' | 'connected' | 'error';
 export type SessionMode = 'menu' | 'offline' | 'online';
@@ -22,6 +23,8 @@ interface MultiplayerStore {
   scores: Record<string, PlayerScore>;
   /** Room lifetime in seconds, derived from server ticks. */
   matchSeconds: number;
+  /** Active arena: server-assigned online, player-chosen for offline practice. */
+  mapId: MapId;
   rttMs: number | null;
   lastError: string | null;
 
@@ -36,6 +39,7 @@ interface MultiplayerStore {
   syncRoster: (players: PublicPlayer[]) => void;
   setScores: (scores: Record<string, PlayerScore>) => void;
   setMatchSeconds: (seconds: number) => void;
+  setOfflineMap: (mapId: MapId) => void;
   setRtt: (ms: number) => void;
 }
 
@@ -53,6 +57,7 @@ const IDLE_SESSION = {
 export const useMultiplayerStore = create<MultiplayerStore>()((set) => ({
   status: 'offline',
   mode: 'menu',
+  mapId: DEFAULT_MAP_ID,
   ...IDLE_SESSION,
   lastError: null,
 
@@ -67,6 +72,7 @@ export const useMultiplayerStore = create<MultiplayerStore>()((set) => ({
       roomCode: room.code ?? null,
       selfId: room.selfId,
       players: room.players,
+      mapId: room.mapId,
       lastError: null,
     }),
 
@@ -97,6 +103,8 @@ export const useMultiplayerStore = create<MultiplayerStore>()((set) => ({
   setScores: (scores) => set({ scores }),
 
   setMatchSeconds: (seconds) => set({ matchSeconds: seconds }),
+
+  setOfflineMap: (mapId) => set({ mapId }),
 
   setRtt: (ms) => set({ rttMs: ms }),
 }));

@@ -48,6 +48,7 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
   const fov = useSettingsStore((state) => state.fov);
   const viewBob = useSettingsStore((state) => state.viewBob);
   const showPerfHud = useSettingsStore((state) => state.showPerfHud);
+  const masterVolume = useSettingsStore((state) => state.masterVolume);
   const store = useSettingsStore;
 
   return (
@@ -90,6 +91,27 @@ export default function SettingsPanel({ onClose }: SettingsPanelProps) {
             step={SETTINGS_LIMITS.fov.step}
             value={fov}
             onChange={(event) => store.getState().setFov(Number(event.target.value))}
+            className="mt-2 w-full accent-[#00F5FF]"
+          />
+        </div>
+
+        <div>
+          <div className="flex items-baseline justify-between">
+            <label htmlFor="setting-volume" className="text-sm font-medium text-white/85">
+              Master volume
+            </label>
+            <span className="text-sm tabular-nums text-neon-cyan">
+              {Math.round(masterVolume * 100)}%
+            </span>
+          </div>
+          <input
+            id="setting-volume"
+            type="range"
+            min={SETTINGS_LIMITS.masterVolume.min}
+            max={SETTINGS_LIMITS.masterVolume.max}
+            step={SETTINGS_LIMITS.masterVolume.step}
+            value={masterVolume}
+            onChange={(event) => store.getState().setMasterVolume(Number(event.target.value))}
             className="mt-2 w-full accent-[#00F5FF]"
           />
         </div>

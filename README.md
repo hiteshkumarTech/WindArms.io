@@ -1,6 +1,10 @@
 # WindArms.io
 
-Fast-paced browser multiplayer FPS. Currently implemented: **Phase 1** (AAA landing page with a real-time WebGL backdrop), **Phase 2** (first-person character controller on Rapier physics), **Phase 3** (real-time multiplayer: authoritative Socket.IO server, matchmaking, private rooms), **Phase 4** (full combat: seven weapons, server-side hit detection, health/damage, respawns, kill feed) and **Phase 5** (match UI: Tab scoreboard, in-match chat, persistent settings, match clock) — playable at `/play`.
+A complete browser multiplayer FPS built from scratch: cinematic landing page, movement-shooter character controller, authoritative multiplayer server, seven weapons with server-side hit detection, three themed maps, fully procedural audio, accounts with persistent XP and a global leaderboard, anti-cheat, and a unit-tested core. No downloads, no game engine — Next.js, Three.js, Rapier, Socket.IO, PostgreSQL.
+
+**Play:** `/play` · **Leaderboard:** `/leaderboard`
+
+All eight build phases are complete: (1) landing page, (2) FPS controller, (3) multiplayer, (4) combat, (5) match UI, (6) maps/audio/VFX, (7) accounts/progression, (8) anti-cheat/security/testing/deployment.
 
 ![Stack](https://img.shields.io/badge/Next.js%2014-black) ![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue) ![Three.js](https://img.shields.io/badge/Three.js-r169-green)
 
@@ -121,10 +125,44 @@ Chat opens with Enter (or T) without releasing pointer lock — the input keeps 
 
 Settings (gear icon in the lobby, or the pause menu) persist to localStorage via a Zustand `persist` store: mouse sensitivity multiplier, base FOV (sprint/dash kicks stack on top), weapon bob toggle and the performance HUD toggle. Hot paths read settings with `getState()` inside the frame loop, so changes apply live without re-rendering the simulation. The match clock is derived from server snapshot ticks — no extra network traffic.
 
+## Phase 6 — Maps, Audio & VFX
+
+Maps are pure data (`shared/maps.ts`): layout boxes, spawn points, crates and a full visual theme (fog, lighting rig, grid colors, accent palette, ambient particle type) per entry. Three ship — **Cyber City** (neon rooftops, rising embers, city skyline), **Snow Base** (arctic bunkers, falling snow, cold flat light) and **Forest Temple** (overgrown central plinth, drifting motes, warm gold core). The server assigns maps to rooms round-robin and resolves occlusion geometry per room from the same data the client renders, so every map keeps the wall-shot guarantee automatically. Offline practice gets a map picker in the lobby; adding a fourth map is one new data entry, zero engine changes.
+
+Audio is 100% synthesized on raw Web Audio — noise bursts through biquad filters plus enveloped oscillators, zero audio assets shipped. Each weapon class has its own shot recipe (the shotgun booms, the SMG cracks, the energy rifle adds a descending square-wave whine); remote shots are spatialized with stereo panning and distance attenuation computed against the listener's pose. Hits, damage, deaths, respawns, reloads, dry-fire, jumps, landings (scaled by impact speed) and speed-cadenced footsteps are all covered, with a master volume slider in settings. The context unlocks on the pointer-lock gesture to satisfy autoplay policy and fails silently where unavailable.
+
+Combat feel additions: eliminations detonate a ring of sparks at the victim's last known position (with positional boom), and taking damage applies squared-trauma screen shake that decays fast — juice without disorientation.
+
+## Phase 7 — Accounts & Progression
+
+Accounts are email + password (bcrypt) with 7-day JWTs, served by REST endpoints on the game server (`/auth/register`, `/auth/login`, `/auth/me`, `/leaderboard`). The Socket.IO handshake carries the token: authenticated players are identified by their account call sign in matches, and every kill awards 100 XP live (`account:xp` events update the lobby level bar in real time) plus 20 XP per minute played on session end. Stats (kills, deaths, matches, playtime, XP) flush to PostgreSQL via Prisma when a player leaves a room — fire-and-forget with logging, so a database hiccup can never take a room down. The level curve lives in `shared/progression.ts`, used identically by server awards, the lobby profile card and the leaderboard.
+
+**The database is optional.** Without `DATABASE_URL` the server boots in guest-only mode: auth endpoints return 503 with a clear message, the lobby explains stats aren't saved, and gameplay is untouched. To enable accounts:
+
+```bash
+cd server
+# create server/.env with:
+#   DATABASE_URL=postgresql://...   (free at neon.tech, or local Postgres)
+#   JWT_SECRET=some-long-random-string
+npm install                  # installs prisma + generates the client
+npx prisma db push           # creates the User table
+npm run dev
+```
+
+`/leaderboard` (linked from the landing nav) ranks the top 20 by XP with level, kills and K/D. Deliberately deferred to the backlog rather than shipped half-done: friends, parties and achievements — they need presence infrastructure that deserves its own phase.
+
+## Phase 8 — Anti-Cheat, Security & Testing
+
+Anti-cheat is a rolling-window strike system on top of the per-packet validation that has existed since Phase 3: every rejected packet (teleport, speed hack, fire-rate abuse, implausible shot origin, out-of-cone shotgun pellets, malformed data) counts as a violation, and clients exceeding 20 violations per minute are kicked with a `system:kicked` event — legitimate jitter never comes close, sustained invalid traffic means the client isn't running our code. Stats still flush through the normal disconnect path.
+
+Security: strict CORS, baseline security headers, 10 KB JSON body limit, per-IP fixed-window rate limiting on credential endpoints (10/min), a 10 KB Socket.IO message cap, bcrypt(10) password hashing, and JWT secrets from the environment with a loud warning if the dev secret leaks into production.
+
+Testing: the deterministic core — ray/AABB and ray/capsule intersection, occlusion, damage falloff, movement validation, sanitizers, and the XP curve — is covered by `node:test` suites with zero test-framework dependencies. Run with `npm test` in `server/`. Performance: snapshots quantize positions to centimeters (~30% smaller payloads), and the game canvas drops render resolution under sustained load and recovers automatically (`PerformanceMonitor`-driven DPR).
+
 ## Deployment
 
-Client: zero-config on Vercel — import the repo, preset "Next.js", set `NEXT_PUBLIC_WS_URL` to the deployed server URL. Server: deploy `server/` to Railway or Render (build `npm run build`, start `npm start`, root directory `server`), and set `CLIENT_ORIGIN` to the Vercel domain. `GET /health` is available for uptime checks.
+Client: zero-config on Vercel — import the repo, preset "Next.js", set `NEXT_PUBLIC_WS_URL` to the deployed server URL. Server: deploy `server/` to Railway or Render (build `npm run build`, start `npm start`, root directory `server`), set `CLIENT_ORIGIN` to the Vercel domain, plus `DATABASE_URL`/`JWT_SECRET` for accounts. A `Dockerfile.server` is included for container platforms (`docker build -f Dockerfile.server .` from the repo root). `GET /health` reports uptime and whether accounts are enabled.
 
-## Roadmap
+## Backlog
 
-Phase 6: maps, lighting, audio and VFX. Phase 7: accounts, XP, ranks and parties. Phase 8: anti-cheat, security, testing and final polish.
+Friends, parties and achievements (need presence infrastructure); Google OAuth; lag compensation with hit rewind; Floating Islands / Industrial Factory / Desert Base map entries; wall-run movement; hero characters, skins and cosmetics; match lifecycle (rounds, win conditions); spectator mode.

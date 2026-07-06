@@ -1,4 +1,4 @@
-import { OCCLUSION_BOXES, type ArenaBox } from '../../../shared/arena';
+import type { ArenaBox } from '../../../shared/arena';
 import type { Vec3 } from '../../../shared/protocol';
 
 /** Player hitbox capsule (matches the client's physics capsule + skin). */
@@ -40,9 +40,14 @@ export function rayAabb(origin: Vec3, dir: Vec3, box: ArenaBox, maxT: number): n
 }
 
 /** Nearest static-geometry hit along the ray, or null when unobstructed. */
-export function occlusionDistance(origin: Vec3, dir: Vec3, maxT: number): number | null {
+export function occlusionDistance(
+  origin: Vec3,
+  dir: Vec3,
+  maxT: number,
+  boxes: ArenaBox[],
+): number | null {
   let nearest: number | null = null;
-  for (const box of OCCLUSION_BOXES) {
+  for (const box of boxes) {
     const t = rayAabb(origin, dir, box, maxT);
     if (t !== null && (nearest === null || t < nearest)) nearest = t;
   }

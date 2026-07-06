@@ -2,6 +2,7 @@
 
 import dynamic from 'next/dynamic';
 import { useEffect, useState } from 'react';
+import { audio } from '@/lib/audio/audioEngine';
 import { useMultiplayer } from '@/hooks/useMultiplayer';
 import { usePointerLock } from '@/hooks/usePointerLock';
 import { useCombatStore } from '@/stores/combatStore';
@@ -46,7 +47,11 @@ export default function GameView() {
   const [hasPlayed, setHasPlayed] = useState(false);
 
   useEffect(() => {
-    if (locked) setHasPlayed(true);
+    if (locked) {
+      setHasPlayed(true);
+      // The lock-granting click is our user gesture: unlock the audio context.
+      audio.unlock();
+    }
   }, [locked]);
 
   useEffect(() => {

@@ -23,7 +23,7 @@ export const NAV_LINKS: NavLink[] = [
   { label: 'Weapons', href: '#weapons' },
   { label: 'Maps', href: '#maps' },
   { label: 'Ranked', href: '#ranked' },
-  { label: 'Leaderboard', href: '#leaderboard' },
+  { label: 'Leaderboard', href: '/leaderboard' },
   { label: 'Community', href: '#community' },
   { label: 'News', href: '#news' },
 ];

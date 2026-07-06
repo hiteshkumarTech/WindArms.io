@@ -1,62 +1,56 @@
 'use client';
 
 import { CuboidCollider, RigidBody } from '@react-three/rapier';
-import { FLOOR, PILLARS, PLATFORMS, RAMPS, WALLS, stairBoxes } from '@shared/arena';
-
-const PILLAR_ACCENTS = ['#00F5FF', '#FF7A00', '#7C5CFF'];
-
-const CRATES: Array<[number, number, number]> = [
-  [3, 2.5, 2],
-  [3.8, 3.6, 2.2],
-  [-5, 2.5, 1],
-  [10, 3.5, -3],
-];
-
-const STAIRS = stairBoxes();
+import { MAPS } from '@shared/maps';
+import { useMultiplayerStore } from '@/stores/multiplayerStore';
 
 /**
- * Physical movement/combat arena, built from the shared layout data in
- * `shared/arena.ts` — the exact same boxes the server raycasts against
- * for shot occlusion, so cover behaves identically on both sides.
- * Dynamic crates are client-side flavor (excluded from server occlusion).
+ * Physical arena geometry, built from the active map's shared layout data
+ * — the exact same boxes the server raycasts for shot occlusion, so cover
+ * behaves identically on both sides. Keyed by map id: switching maps
+ * remounts every rigid body, letting Rapier rebuild colliders cleanly.
  */
 export default function TestArena() {
+  const mapId = useMultiplayerStore((state) => state.mapId);
+  const map = MAPS[mapId];
+  const { theme } = map;
+
   return (
-    <group>
+    <group key={mapId}>
       {/* Floor */}
       <RigidBody type="fixed" colliders={false}>
         <CuboidCollider
-          args={[FLOOR.size[0] / 2, FLOOR.size[1] / 2, FLOOR.size[2] / 2]}
-          position={FLOOR.position}
+          args={[map.floor.size[0] / 2, map.floor.size[1] / 2, map.floor.size[2] / 2]}
+          position={map.floor.position}
         />
-        <mesh position={FLOOR.position} receiveShadow>
-          <boxGeometry args={FLOOR.size} />
-          <meshStandardMaterial color="#0b0f15" roughness={0.9} metalness={0.2} />
+        <mesh position={map.floor.position} receiveShadow>
+          <boxGeometry args={map.floor.size} />
+          <meshStandardMaterial color={theme.floorColor} roughness={0.9} metalness={0.2} />
         </mesh>
       </RigidBody>
 
       {/* Perimeter walls */}
-      {WALLS.map((wall, index) => (
+      {map.walls.map((wall, index) => (
         <RigidBody key={`wall-${index}`} type="fixed" colliders="cuboid">
           <mesh position={wall.position}>
             <boxGeometry args={wall.size} />
-            <meshStandardMaterial color="#0d1118" roughness={0.85} metalness={0.3} />
+            <meshStandardMaterial color={theme.structureColor} roughness={0.85} metalness={0.3} />
           </mesh>
         </RigidBody>
       ))}
 
       {/* Platforms */}
-      {PLATFORMS.map((platform, index) => (
+      {map.platforms.map((platform, index) => (
         <RigidBody key={`platform-${index}`} type="fixed" colliders="cuboid">
           <mesh position={platform.position}>
             <boxGeometry args={platform.size} />
-            <meshStandardMaterial color="#131a24" roughness={0.7} metalness={0.4} />
+            <meshStandardMaterial color={theme.platformColor} roughness={0.7} metalness={0.4} />
           </mesh>
         </RigidBody>
       ))}
 
       {/* Ramps */}
-      {RAMPS.map((ramp, index) => (
+      {map.ramps.map((ramp, index) => (
         <RigidBody
           key={`ramp-${index}`}
           type="fixed"
@@ -66,35 +60,37 @@ export default function TestArena() {
         >
           <mesh>
             <boxGeometry args={ramp.size} />
-            <meshStandardMaterial color="#131a24" roughness={0.7} metalness={0.4} />
+            <meshStandardMaterial color={theme.platformColor} roughness={0.7} metalness={0.4} />
           </mesh>
         </RigidBody>
       ))}
 
-      {/* Staircase (exercises the controller's autostep) */}
+      {/* Stairs */}
       <RigidBody type="fixed" colliders="cuboid">
-        {STAIRS.map((step, index) => (
+        {map.stairs.map((step, index) => (
           <mesh key={`step-${index}`} position={step.position}>
             <boxGeometry args={step.size} />
-            <meshStandardMaterial color="#10161f" roughness={0.75} metalness={0.35} />
+            <meshStandardMaterial color={theme.structureColor} roughness={0.75} metalness={0.35} />
           </mesh>
         ))}
       </RigidBody>
 
-      {/* Pillars with neon accent strips */}
-      {PILLARS.map((pillar, index) => (
-        <group key={`pillar-${index}`}>
+      {/* Obstacles with themed accent strips */}
+      {map.obstacles.map((obstacle, index) => (
+        <group key={`obstacle-${index}`}>
           <RigidBody type="fixed" colliders="cuboid">
-            <mesh position={pillar.position}>
-              <boxGeometry args={pillar.size} />
-              <meshStandardMaterial color="#0d1118" roughness={0.8} metalness={0.3} />
+            <mesh position={obstacle.position}>
+              <boxGeometry args={obstacle.size} />
+              <meshStandardMaterial color={theme.structureColor} roughness={0.8} metalness={0.3} />
             </mesh>
           </RigidBody>
-          <mesh position={pillar.position}>
-            <boxGeometry args={[pillar.size[0] + 0.04, 0.12, pillar.size[2] + 0.04]} />
+          <mesh position={obstacle.position}>
+            <boxGeometry
+              args={[obstacle.size[0] + 0.04, Math.min(0.12, obstacle.size[1] * 0.2), obstacle.size[2] + 0.04]}
+            />
             <meshStandardMaterial
               color="#020c0d"
-              emissive={PILLAR_ACCENTS[index % PILLAR_ACCENTS.length]}
+              emissive={theme.accents[index % theme.accents.length]}
               emissiveIntensity={2}
               toneMapped={false}
             />
@@ -102,12 +98,12 @@ export default function TestArena() {
         </group>
       ))}
 
-      {/* Pushable dynamic crates (character controller applies impulses) */}
-      {CRATES.map((position, index) => (
+      {/* Pushable dynamic crates */}
+      {map.crates.map((position, index) => (
         <RigidBody key={`crate-${index}`} type="dynamic" colliders="cuboid" position={position}>
           <mesh>
             <boxGeometry args={[1, 1, 1]} />
-            <meshStandardMaterial color="#1a2230" roughness={0.6} metalness={0.5} />
+            <meshStandardMaterial color={theme.platformColor} roughness={0.6} metalness={0.5} />
           </mesh>
         </RigidBody>
       ))}

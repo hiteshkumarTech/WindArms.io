@@ -11,8 +11,9 @@ import {
 } from '@react-three/rapier';
 import type { KinematicCharacterController } from '@dimforge/rapier3d-compat';
 import * as THREE from 'three';
+import { audio } from '@/lib/audio/audioEngine';
 import { PLAYER } from '@/lib/game/constants';
-import { viewKick } from '@/lib/game/effectsBus';
+import { cameraShake, viewKick } from '@/lib/game/effectsBus';
 import { localPose, pendingCorrection } from '@/lib/game/localPose';
 import { useCombatStore } from '@/stores/combatStore';
 import { accelerate, applyFriction, wishDirection } from '@/lib/game/movement';
@@ -63,6 +64,7 @@ export default function PlayerController() {
   const eyeHeight = useRef(PLAYER.EYE_STAND);
   const smoothedFps = useRef(60);
   const hudAccumulator = useRef(0);
+  const stepAccumulator = useRef(0);
 
   // Rapier character controller lifecycle.
   useEffect(() => {
@@ -223,6 +225,7 @@ export default function PlayerController() {
       slideUntil.current = -Infinity;
       grounded.current = false;
       lastGroundedAt.current = -Infinity;
+      audio.jump();
     }
 
     // --- Collide-and-slide through the character controller ---------------
@@ -233,9 +236,12 @@ export default function PlayerController() {
     const corrected = controller.computedMovement();
     const wasRising = vel.y > 0;
 
+    const wasGrounded = grounded.current;
     grounded.current = controller.computedGrounded();
     if (grounded.current) {
       lastGroundedAt.current = now;
+      // Landing thump scaled by impact speed (only meaningful falls).
+      if (!wasGrounded && vel.y < -8) audio.land(Math.min(-vel.y - 8, 12));
       if (vel.y < 0) vel.y = -0.6; // small downward bias keeps ground snap engaged
     } else if (wasRising && corrected.y < desiredY - 1e-6) {
       vel.y = 0; // bumped a ceiling
@@ -265,6 +271,27 @@ export default function PlayerController() {
     camera.rotation.x = pitch.current;
 
     const horizontalSpeed = Math.hypot(vel.x, vel.z);
+
+    // Footsteps: cadence follows actual ground speed.
+    if (grounded.current && !sliding && horizontalSpeed > 2) {
+      stepAccumulator.current += horizontalSpeed * dt;
+      if (stepAccumulator.current >= 2.7) {
+        stepAccumulator.current = 0;
+        audio.footstep();
+      }
+    } else {
+      stepAccumulator.current = 0;
+    }
+
+    // Damage screen shake: squared-trauma rotational noise, decaying fast.
+    camera.rotation.z = 0;
+    if (cameraShake.trauma > 0) {
+      const magnitude = cameraShake.trauma * cameraShake.trauma;
+      camera.rotation.z = Math.sin(now * 0.055) * 0.045 * magnitude;
+      camera.rotation.x += Math.sin(now * 0.047 + 2.1) * 0.03 * magnitude;
+      cameraShake.trauma = Math.max(0, cameraShake.trauma - dt * 1.7);
+    }
+
     const sprinting = hasControl && input.held.sprint && horizontalSpeed > PLAYER.WALK_SPEED + 0.5;
     const baseFov = useSettingsStore.getState().fov;
     const targetFov = dashing ? baseFov + 15 : sprinting || sliding ? baseFov + 7 : baseFov;

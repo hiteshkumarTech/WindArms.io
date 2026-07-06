@@ -1,30 +1,52 @@
 'use client';
 
 import { Grid } from '@react-three/drei';
+import { MAPS } from '@shared/maps';
 import CitySkyline from '@/components/three/scene/CitySkyline';
+import { useMultiplayerStore } from '@/stores/multiplayerStore';
+import AmbientParticles from './AmbientParticles';
 
 /**
- * Non-physical scene dressing: fog, lighting rig, neon floor grid and the
- * instanced city skyline (reused from the landing scene) behind the walls.
- * Rendered outside <Physics> — nothing here has colliders.
+ * Non-physical scene dressing driven entirely by the active map's theme:
+ * fog, lighting rig, floor grid, ambient particles and (for city maps)
+ * the instanced skyline. Keyed by map id so switching maps rebuilds the
+ * whole rig cleanly.
  */
 export default function ArenaEnvironment() {
+  const mapId = useMultiplayerStore((state) => state.mapId);
+  const { theme } = MAPS[mapId];
+
   return (
-    <>
-      <fog attach="fog" args={['#050505', 30, 110]} />
+    <group key={mapId}>
+      <fog attach="fog" args={[theme.fogColor, theme.fogNear, theme.fogFar]} />
 
-      <ambientLight intensity={0.45} />
-      <directionalLight position={[12, 18, 8]} intensity={1.3} color="#cfeeff" />
-      <pointLight position={[0, 8, 0]} intensity={60} distance={40} decay={2} color="#00F5FF" />
-      <pointLight position={[-16, 6, -16]} intensity={40} distance={30} decay={2} color="#FF7A00" />
-      <pointLight position={[16, 6, 16]} intensity={40} distance={30} decay={2} color="#7C5CFF" />
+      <ambientLight intensity={theme.ambientIntensity} />
+      <directionalLight
+        position={theme.directional.position}
+        intensity={theme.directional.intensity}
+        color={theme.directional.color}
+      />
+      {theme.pointLights.map((light, index) => (
+        <pointLight
+          key={index}
+          position={light.position}
+          intensity={light.intensity}
+          distance={light.distance}
+          decay={2}
+          color={light.color}
+        />
+      ))}
 
-      <group position={[0, 0, -42]}>
-        <CitySkyline />
-      </group>
-      <group position={[0, 0, 46]} rotation={[0, Math.PI, 0]}>
-        <CitySkyline />
-      </group>
+      {theme.showSkyline ? (
+        <>
+          <group position={[0, 0, -42]}>
+            <CitySkyline />
+          </group>
+          <group position={[0, 0, 46]} rotation={[0, Math.PI, 0]}>
+            <CitySkyline />
+          </group>
+        </>
+      ) : null}
 
       <Grid
         position={[0, 0.02, 0]}
@@ -33,11 +55,13 @@ export default function ArenaEnvironment() {
         sectionSize={5}
         cellThickness={0.5}
         sectionThickness={1}
-        cellColor="#0e2f33"
-        sectionColor="#00F5FF"
+        cellColor={theme.gridCellColor}
+        sectionColor={theme.gridSectionColor}
         fadeDistance={70}
         fadeStrength={1.5}
       />
-    </>
+
+      <AmbientParticles preset={theme.particles} />
+    </group>
   );
 }

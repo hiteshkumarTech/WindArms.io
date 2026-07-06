@@ -46,3 +46,11 @@ export const viewKick = { pitch: 0, yaw: 0 };
  * viewmodel can flash the muzzle and punch without prop drilling.
  */
 export const fireSignal = { nonce: 0 };
+
+/**
+ * Screen-shake trauma accumulator (0..1). Damage events add trauma;
+ * PlayerController applies squared-trauma rotational noise to the camera
+ * and decays it every frame.
+ */
+export const cameraShake = { trauma: 0 };
+

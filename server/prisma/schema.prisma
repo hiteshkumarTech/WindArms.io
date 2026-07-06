@@ -1,0 +1,24 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String   @id @default(cuid())
+  email         String   @unique
+  username      String   @unique
+  passwordHash  String
+  xp            Int      @default(0)
+  kills         Int      @default(0)
+  deaths        Int      @default(0)
+  matchesPlayed Int      @default(0)
+  timePlayedS   Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([xp(sort: Desc)])
+}

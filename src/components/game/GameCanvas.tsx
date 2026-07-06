@@ -1,7 +1,8 @@
 'use client';
 
-import { Suspense } from 'react';
+import { Suspense, useState } from 'react';
 import { Canvas } from '@react-three/fiber';
+import { PerformanceMonitor } from '@react-three/drei';
 import { Physics } from '@react-three/rapier';
 import NetworkSync from './multiplayer/NetworkSync';
 import RemotePlayers from './multiplayer/RemotePlayers';
@@ -24,9 +25,13 @@ interface GameCanvasProps {
  * Remote players are render-only (no colliders until the combat phase).
  */
 export default function GameCanvas({ onCanvasReady }: GameCanvasProps) {
+  // Adaptive resolution: drop to 1.0 DPR under sustained load, recover when
+  // headroom returns — frame rate beats pixel density in a shooter.
+  const [dpr, setDpr] = useState(1.5);
+
   return (
     <Canvas
-      dpr={[1, 1.5]}
+      dpr={dpr}
       gl={{ antialias: true, powerPreference: 'high-performance' }}
       camera={{ fov: 75, near: 0.05, far: 150, position: [0, 2, 10] }}
       onCreated={({ gl }) => {
@@ -34,6 +39,7 @@ export default function GameCanvas({ onCanvasReady }: GameCanvasProps) {
         onCanvasReady(gl.domElement);
       }}
     >
+      <PerformanceMonitor onDecline={() => setDpr(1)} onIncline={() => setDpr(1.5)} />
       <Suspense fallback={null}>
         <ArenaEnvironment />
         <Physics gravity={[0, -24, 0]} timeStep="vary">

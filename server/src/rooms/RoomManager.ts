@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { FirePacket, JoinResult, PlayerInputPacket } from '../../../shared/protocol';
+import { MAP_ORDER } from '../../../shared/maps';
 import { CONFIG } from '../config';
 import type { TypedServer, TypedSocket } from '../types';
 import { GameRoom } from './GameRoom';
@@ -17,6 +18,8 @@ export class RoomManager {
   private readonly rooms = new Map<string, GameRoom>();
   private readonly codes = new Map<string, string>();
   private readonly membership = new Map<string, string>();
+  /** Rotates the map assigned to each newly created room. */
+  private mapCursor = 0;
 
   constructor(private readonly io: TypedServer) {}
 
@@ -113,10 +116,14 @@ export class RoomManager {
   private createRoom(isPrivate: boolean): GameRoom {
     const id = `room_${randomUUID().slice(0, 8)}`;
     const code = isPrivate ? this.generateCode() : null;
-    const room = new GameRoom(this.io, id, code);
+    const mapId = MAP_ORDER[this.mapCursor % MAP_ORDER.length];
+    this.mapCursor += 1;
+    const room = new GameRoom(this.io, id, code, mapId);
     this.rooms.set(id, room);
     if (code) this.codes.set(code, id);
-    console.log(`[rooms] created ${isPrivate ? `private room ${id} (code ${code})` : `public room ${id}`}`);
+    console.log(
+      `[rooms] created ${isPrivate ? `private room ${id} (code ${code})` : `public room ${id}`} on ${mapId}`,
+    );
     return room;
   }
 

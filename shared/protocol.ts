@@ -142,4 +142,8 @@ export interface ServerToClientEvents {
   'combat:death': (event: DeathEvent) => void;
   'combat:respawned': (event: RespawnEvent) => void;
   'chat:message': (message: ChatMessage) => void;
+  /** Live XP total for the authenticated player (sent after each kill). */
+  'account:xp': (payload: { xp: number; level: number }) => void;
+  /** Anti-cheat: the server removed this client (reason is display-safe). */
+  'system:kicked': (reason: string) => void;
 }

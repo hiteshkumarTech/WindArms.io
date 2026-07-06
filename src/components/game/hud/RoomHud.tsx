@@ -1,6 +1,7 @@
 'use client';
 
 import { Signal, Timer, Users } from 'lucide-react';
+import { MAPS } from '@shared/maps';
 import { cn } from '@/lib/utils';
 import { useMultiplayerStore } from '@/stores/multiplayerStore';
 
@@ -18,6 +19,7 @@ export default function RoomHud() {
   const rttMs = useMultiplayerStore((state) => state.rttMs);
   const status = useMultiplayerStore((state) => state.status);
   const matchSeconds = useMultiplayerStore((state) => state.matchSeconds);
+  const mapId = useMultiplayerStore((state) => state.mapId);
 
   if (mode !== 'online') return null;
 
@@ -36,6 +38,7 @@ export default function RoomHud() {
         ) : (
           <span className="text-white/60">Quickplay</span>
         )}
+        <span className="text-white/50">{MAPS[mapId].name}</span>
         <span className="flex items-center gap-1 text-white/70">
           <Users className="h-3 w-3" aria-hidden />
           {players.length}
