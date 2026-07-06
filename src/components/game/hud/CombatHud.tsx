@@ -25,6 +25,7 @@ export default function CombatHud() {
   const deaths = useCombatStore((state) => state.deaths);
   const hitmarkerNonce = useCombatStore((state) => state.hitmarkerNonce);
   const damageNonce = useCombatStore((state) => state.damageNonce);
+  const lastHitHeadshot = useCombatStore((state) => state.lastHitHeadshot);
 
   const current = useWeaponStore((state) => state.current);
   const mags = useWeaponStore((state) => state.mags);
@@ -57,11 +58,31 @@ export default function CombatHud() {
           hitmarker ? 'opacity-100' : 'opacity-0',
         )}
       >
-        <div className="relative h-6 w-6 rotate-45">
-          <span className="absolute left-1/2 top-0 h-1.5 w-0.5 -translate-x-1/2 bg-white" />
-          <span className="absolute bottom-0 left-1/2 h-1.5 w-0.5 -translate-x-1/2 bg-white" />
-          <span className="absolute left-0 top-1/2 h-0.5 w-1.5 -translate-y-1/2 bg-white" />
-          <span className="absolute right-0 top-1/2 h-0.5 w-1.5 -translate-y-1/2 bg-white" />
+        <div className={cn('relative rotate-45', lastHitHeadshot ? 'h-8 w-8' : 'h-6 w-6')}>
+          <span
+            className={cn(
+              'absolute left-1/2 top-0 h-1.5 w-0.5 -translate-x-1/2',
+              lastHitHeadshot ? 'bg-red-400' : 'bg-white',
+            )}
+          />
+          <span
+            className={cn(
+              'absolute bottom-0 left-1/2 h-1.5 w-0.5 -translate-x-1/2',
+              lastHitHeadshot ? 'bg-red-400' : 'bg-white',
+            )}
+          />
+          <span
+            className={cn(
+              'absolute left-0 top-1/2 h-0.5 w-1.5 -translate-y-1/2',
+              lastHitHeadshot ? 'bg-red-400' : 'bg-white',
+            )}
+          />
+          <span
+            className={cn(
+              'absolute right-0 top-1/2 h-0.5 w-1.5 -translate-y-1/2',
+              lastHitHeadshot ? 'bg-red-400' : 'bg-white',
+            )}
+          />
         </div>
       </div>
 

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useReducer } from 'react';
-import { Crosshair } from 'lucide-react';
+import { Crosshair, Skull } from 'lucide-react';
 import { WEAPONS } from '@shared/weapons';
 import { cn } from '@/lib/utils';
 import { useCombatStore } from '@/stores/combatStore';
@@ -38,7 +38,11 @@ export default function KillFeed() {
             {entry.killerName}
           </span>
           <span className="flex items-center gap-1 text-white/40">
-            <Crosshair className="h-3 w-3" aria-hidden />
+            {entry.headshot ? (
+              <Skull className="h-3 w-3 text-red-400" aria-hidden />
+            ) : (
+              <Crosshair className="h-3 w-3" aria-hidden />
+            )}
             <span className="text-[10px] uppercase tracking-wider">
               {WEAPONS[entry.weapon].name}
             </span>

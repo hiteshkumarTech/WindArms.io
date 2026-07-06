@@ -12,11 +12,13 @@ import CombatHud from './hud/CombatHud';
 import Crosshair from './hud/Crosshair';
 import DeathOverlay from './hud/DeathOverlay';
 import DebugHud from './hud/DebugHud';
+import EndPodium from './hud/EndPodium';
 import KillFeed from './hud/KillFeed';
 import PauseOverlay from './hud/PauseOverlay';
 import RoomHud from './hud/RoomHud';
 import Scoreboard from './hud/Scoreboard';
 import StartOverlay from './hud/StartOverlay';
+import StreakBanner from './hud/StreakBanner';
 
 const GameCanvas = dynamic(() => import('./GameCanvas'), {
   ssr: false,
@@ -43,6 +45,7 @@ export default function GameView() {
   const { locked, request, setTarget } = usePointerLock();
   const { quickplay, createRoom, joinByCode, playOffline, leave } = useMultiplayer();
   const mode = useMultiplayerStore((state) => state.mode);
+  const matchPhase = useMultiplayerStore((state) => state.matchPhase);
   const alive = useCombatStore((state) => state.alive);
   const [hasPlayed, setHasPlayed] = useState(false);
 
@@ -76,6 +79,11 @@ export default function GameView() {
           onJoinCode={joinByCode}
           onPlayOffline={playOffline}
         />
+      ) : mode === 'online' && matchPhase === 'intermission' ? (
+        <>
+          <EndPodium />
+          <KillFeed />
+        </>
       ) : !alive ? (
         <>
           <DeathOverlay />
@@ -88,6 +96,7 @@ export default function GameView() {
           <RoomHud />
           <CombatHud />
           <KillFeed />
+          <StreakBanner />
         </>
       ) : (
         <PauseOverlay hasPlayed={hasPlayed} onResume={request} onLeave={leave} />

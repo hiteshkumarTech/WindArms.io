@@ -7,6 +7,7 @@ import { Physics } from '@react-three/rapier';
 import NetworkSync from './multiplayer/NetworkSync';
 import RemotePlayers from './multiplayer/RemotePlayers';
 import PlayerController from './player/PlayerController';
+import DamageNumbers from './weapons/DamageNumbers';
 import TracerPool from './weapons/TracerPool';
 import WeaponSystem from './weapons/WeaponSystem';
 import WeaponViewmodel from './weapons/WeaponViewmodel';
@@ -51,6 +52,7 @@ export default function GameCanvas({ onCanvasReady }: GameCanvasProps) {
         <WeaponSystem />
         <WeaponViewmodel />
         <TracerPool />
+        <DamageNumbers />
       </Suspense>
     </Canvas>
   );

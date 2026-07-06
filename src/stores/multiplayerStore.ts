@@ -85,6 +85,11 @@ export const useMultiplayerStore = create<MultiplayerStore>()((set) => ({
       selfId: room.selfId,
       players: room.players,
       mapId: room.mapId,
+      // Real phase arrives via match:phase immediately after the join ack.
+      matchPhase: 'playing',
+      phaseEndsAt: 0,
+      podium: null,
+      winnerId: null,
       lastError: null,
     }),
 
