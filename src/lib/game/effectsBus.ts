@@ -16,8 +16,15 @@ export interface ImpactRequest {
   color: string;
 }
 
+export interface DamageNumberRequest {
+  at: [number, number, number];
+  amount: number;
+  headshot: boolean;
+}
+
 const tracerQueue: TracerRequest[] = [];
 const impactQueue: ImpactRequest[] = [];
+const damageNumberQueue: DamageNumberRequest[] = [];
 
 export const effectsBus = {
   spawnTracer(request: TracerRequest): void {
@@ -32,6 +39,12 @@ export const effectsBus = {
   },
   takeImpacts(): ImpactRequest[] {
     return impactQueue.splice(0, impactQueue.length);
+  },
+  spawnDamageNumber(request: DamageNumberRequest): void {
+    damageNumberQueue.push(request);
+  },
+  takeDamageNumbers(): DamageNumberRequest[] {
+    return damageNumberQueue.splice(0, damageNumberQueue.length);
   },
 };
 

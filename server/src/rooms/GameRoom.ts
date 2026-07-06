@@ -11,18 +11,33 @@ import {
   type WeaponId,
 } from '../../../shared/protocol';
 import type { ArenaBox } from '../../../shared/arena';
-import { MAPS, occlusionBoxesFor } from '../../../shared/maps';
+import { MAPS, MAP_ORDER, occlusionBoxesFor } from '../../../shared/maps';
+import {
+  INTERMISSION_MS,
+  ROUND_DURATION_MS,
+  TOP3_XP,
+  WIN_XP,
+  type MatchPhase,
+  type PodiumEntry,
+} from '../../../shared/match';
 import { XP_PER_KILL, XP_PER_MATCH_MINUTE, levelFromXp } from '../../../shared/progression';
-import { DEFAULT_WEAPON, WEAPONS, damageAtDistance, fireIntervalMs } from '../../../shared/weapons';
+import {
+  DEFAULT_WEAPON,
+  WEAPONS,
+  damageAtDistance,
+  fireIntervalMs,
+  headshotMultiplier,
+} from '../../../shared/weapons';
 import { CONFIG } from '../config';
-import { flushSessionStats } from '../game/persistence';
+import { awardWin, flushSessionStats } from '../game/persistence';
 import {
   distance,
   normalize,
   occlusionDistance,
   pointAlongRay,
-  rayCapsule,
+  resolvePlayerHit,
 } from '../game/combat';
+import { createStreakState, recordKill, resetOnDeath, type StreakState } from '../game/streaks';
 import {
   coerceMovementState,
   validateMovement,
@@ -70,6 +85,11 @@ interface SessionPlayer {
   joinedAtMs: number;
   /** Anti-cheat: rejected packets inside the rolling window. */
   violations: { count: number; windowStart: number };
+  /** Lifetime-session counters for persistence (round K/D resets each map). */
+  totalKills: number;
+  totalDeaths: number;
+  sessionHeadshotKills: number;
+  streakState: StreakState;
 }
 
 /**
@@ -81,9 +101,12 @@ interface SessionPlayer {
 export class GameRoom {
   private readonly players = new Map<string, SessionPlayer>();
   private readonly interval: NodeJS.Timeout;
-  /** Static geometry for shot occlusion, resolved once per room. */
-  private readonly occlusion: ArenaBox[];
-  private readonly spawnPoints: Vec3[];
+  /** Static geometry for shot occlusion, re-resolved on map rotation. */
+  private occlusion: ArenaBox[];
+  private spawnPoints: Vec3[];
+  private currentMapId: MapId;
+  private phase: MatchPhase = 'playing';
+  private phaseEndsAt = Date.now() + ROUND_DURATION_MS;
   private tick = 0;
   private spawnCursor = 0;
   private chatCounter = 0;
@@ -93,12 +116,17 @@ export class GameRoom {
     readonly id: string,
     /** Join code for private rooms; null for public matchmaking rooms. */
     readonly code: string | null,
-    /** Arena this room plays on. */
-    readonly mapId: MapId,
+    /** Arena the room starts on (rotates every round). */
+    initialMapId: MapId,
   ) {
-    this.occlusion = occlusionBoxesFor(mapId);
-    this.spawnPoints = MAPS[mapId].spawnPoints;
+    this.currentMapId = initialMapId;
+    this.occlusion = occlusionBoxesFor(initialMapId);
+    this.spawnPoints = MAPS[initialMapId].spawnPoints;
     this.interval = setInterval(() => this.broadcast(), 1000 / CONFIG.TICK_RATE);
+  }
+
+  get mapId(): MapId {
+    return this.currentMapId;
   }
 
   get size(): number {
@@ -143,11 +171,21 @@ export class GameRoom {
       sessionXp: 0,
       joinedAtMs: Date.now(),
       violations: { count: 0, windowStart: Date.now() },
+      totalKills: 0,
+      totalDeaths: 0,
+      sessionHeadshotKills: 0,
+      streakState: createStreakState(),
     };
 
     this.players.set(socket.id, player);
     socket.join(this.id);
     socket.to(this.id).emit('room:playerJoined', { id: player.id, name: player.name });
+    // Late joiners need the current round state immediately.
+    socket.emit('match:phase', {
+      phase: this.phase,
+      endsAt: this.phaseEndsAt,
+      mapId: this.currentMapId,
+    });
 
     return {
       roomId: this.id,
@@ -167,10 +205,12 @@ export class GameRoom {
       const seconds = (Date.now() - player.joinedAtMs) / 1000;
       const timeXp = Math.floor(seconds / 60) * XP_PER_MATCH_MINUTE;
       flushSessionStats(player.userId, {
-        kills: player.kills,
-        deaths: player.deaths,
+        kills: player.totalKills,
+        deaths: player.totalDeaths,
         xp: player.sessionXp + timeXp,
         seconds,
+        headshots: player.sessionHeadshotKills,
+        bestStreak: player.streakState.bestStreak,
       });
     }
 
@@ -207,6 +247,7 @@ export class GameRoom {
   }
 
   handleFire(socket: TypedSocket, packet: FirePacket): void {
+    if (this.phase !== 'playing') return;
     const shooter = this.players.get(socket.id);
     if (!shooter || !shooter.alive) return;
 
@@ -257,22 +298,24 @@ export class GameRoom {
 
       const wallT = occlusionDistance(packet.origin, dir, def.range, this.occlusion);
 
-      // Nearest alive victim along the ray.
+      // Nearest alive victim along the ray (head zone resolved first).
       let victim: SessionPlayer | null = null;
       let victimT = Infinity;
+      let victimHeadshot = false;
       for (const candidate of this.players.values()) {
         if (candidate.id === shooter.id || !candidate.alive) continue;
-        const t = rayCapsule(packet.origin, dir, def.range, candidate.position);
-        if (t !== null && t < victimT) {
+        const hit = resolvePlayerHit(packet.origin, dir, def.range, candidate.position);
+        if (hit !== null && hit.t < victimT) {
           victim = candidate;
-          victimT = t;
+          victimT = hit.t;
+          victimHeadshot = hit.headshot;
         }
       }
 
       if (victim && (wallT === null || victimT < wallT)) {
         const hitPos = pointAlongRay(packet.origin, dir, victimT);
         ends.push(hitPos);
-        this.applyDamage(shooter, victim, packet.weapon, victimT, hitPos, now);
+        this.applyDamage(shooter, victim, packet.weapon, victimT, hitPos, now, victimHeadshot);
       } else {
         ends.push(pointAlongRay(packet.origin, dir, wallT ?? def.range));
       }
@@ -306,6 +349,7 @@ export class GameRoom {
   }
 
   handleRespawn(socket: TypedSocket): void {
+    if (this.phase !== 'playing') return;
     const player = this.players.get(socket.id);
     if (!player || player.alive) return;
 
@@ -342,8 +386,13 @@ export class GameRoom {
     hitDistance: number,
     hitPos: Vec3,
     now: number,
+    headshot: boolean,
   ): void {
-    const damage = Math.max(1, Math.round(damageAtDistance(WEAPONS[weapon], hitDistance)));
+    const base = damageAtDistance(WEAPONS[weapon], hitDistance);
+    const damage = Math.max(
+      1,
+      Math.round(headshot ? base * headshotMultiplier(weapon) : base),
+    );
     victim.health = Math.max(0, victim.health - damage);
 
     const hitEvent = {
@@ -353,6 +402,7 @@ export class GameRoom {
       damage,
       victimHealth: victim.health,
       hitPos,
+      headshot,
     };
     this.io.to(shooter.id).emit('combat:hit', hitEvent);
     this.io.to(victim.id).emit('combat:hit', hitEvent);
@@ -361,8 +411,29 @@ export class GameRoom {
       victim.alive = false;
       victim.diedAt = now;
       victim.deaths += 1;
+      victim.totalDeaths += 1;
       shooter.kills += 1;
+      shooter.totalKills += 1;
       shooter.sessionXp += XP_PER_KILL;
+      if (headshot) shooter.sessionHeadshotKills += 1;
+
+      const victimStreakEnded = resetOnDeath(victim.streakState);
+      const announcements = recordKill(shooter.streakState, now);
+      if (announcements.streakTier !== null) {
+        this.io.to(this.id).emit('combat:streak', {
+          playerId: shooter.id,
+          name: shooter.name,
+          tier: announcements.streakTier,
+        });
+      }
+      if (announcements.multikill !== null) {
+        this.io.to(this.id).emit('combat:multikill', {
+          playerId: shooter.id,
+          name: shooter.name,
+          count: announcements.multikill,
+        });
+      }
+
       if (shooter.userId) {
         const totalXp = shooter.baseXp + shooter.sessionXp;
         this.io.to(shooter.id).emit('account:xp', { xp: totalXp, level: levelFromXp(totalXp) });
@@ -373,6 +444,8 @@ export class GameRoom {
         victimId: victim.id,
         victimName: victim.name,
         weapon,
+        headshot,
+        victimStreakEnded,
       });
       console.log(`[combat] ${shooter.name} eliminated ${victim.name} (${weapon}) in ${this.id}`);
     }
@@ -406,8 +479,95 @@ export class GameRoom {
     return [...spawn] as Vec3;
   }
 
+  /** Round timekeeping: playing → intermission (podium) → next map. */
+  private updatePhase(now: number): void {
+    if (now < this.phaseEndsAt) return;
+    if (this.phase === 'playing') {
+      this.endRound(now);
+    } else {
+      this.startRound(now);
+    }
+  }
+
+  private endRound(now: number): void {
+    this.phase = 'intermission';
+    this.phaseEndsAt = now + INTERMISSION_MS;
+
+    const standings = [...this.players.values()].sort(
+      (a, b) => b.kills - a.kills || a.deaths - b.deaths || a.name.localeCompare(b.name),
+    );
+    const podium: PodiumEntry[] = standings.slice(0, 3).map((player) => ({
+      id: player.id,
+      name: player.name,
+      kills: player.kills,
+      deaths: player.deaths,
+    }));
+
+    // Round rewards: winner takes WIN_XP, the rest of the podium TOP3_XP.
+    standings.forEach((player, index) => {
+      if (index === 0 && player.kills > 0) {
+        player.sessionXp += WIN_XP;
+        if (player.userId) awardWin(player.userId);
+      } else if (index < 3) {
+        player.sessionXp += TOP3_XP;
+      }
+    });
+
+    this.io.to(this.id).emit('match:ended', {
+      podium,
+      winnerId: podium.length > 0 && podium[0].kills > 0 ? podium[0].id : null,
+    });
+    this.io.to(this.id).emit('match:phase', {
+      phase: this.phase,
+      endsAt: this.phaseEndsAt,
+      mapId: this.currentMapId,
+    });
+    console.log(`[match] round ended in ${this.id} — winner: ${podium[0]?.name ?? 'none'}`);
+  }
+
+  private startRound(now: number): void {
+    // Rotate to the next map and re-resolve its geometry.
+    const nextIndex = (MAP_ORDER.indexOf(this.currentMapId) + 1) % MAP_ORDER.length;
+    this.currentMapId = MAP_ORDER[nextIndex];
+    this.occlusion = occlusionBoxesFor(this.currentMapId);
+    this.spawnPoints = MAPS[this.currentMapId].spawnPoints;
+    this.spawnCursor = 0;
+
+    this.phase = 'playing';
+    this.phaseEndsAt = now + ROUND_DURATION_MS;
+    this.tick = 0;
+
+    // Announce the new round first so clients remount the arena…
+    this.io.to(this.id).emit('match:phase', {
+      phase: this.phase,
+      endsAt: this.phaseEndsAt,
+      mapId: this.currentMapId,
+    });
+
+    // …then reset and teleport every player onto fresh spawns.
+    for (const player of this.players.values()) {
+      const spawn = this.nextSpawn();
+      player.position = [...spawn] as Vec3;
+      player.health = MAX_HEALTH;
+      player.alive = true;
+      player.kills = 0;
+      player.deaths = 0;
+      player.streakState.streak = 0;
+      player.streakState.multiCount = 0;
+      player.validation.lastPosition = [...spawn] as Vec3;
+      player.validation.lastInputAt = now;
+      this.io.to(this.id).emit('combat:respawned', {
+        playerId: player.id,
+        position: spawn,
+        health: MAX_HEALTH,
+      });
+    }
+    console.log(`[match] new round in ${this.id} on ${this.currentMapId}`);
+  }
+
   private broadcast(): void {
     if (this.players.size === 0) return;
+    this.updatePhase(Date.now());
     this.tick += 1;
     const snapshot: RoomSnapshot = {
       tick: this.tick,

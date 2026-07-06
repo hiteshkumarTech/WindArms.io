@@ -104,10 +104,13 @@ export default function WeaponSystem() {
       weaponState.finishReload();
     }
 
+    const session = useMultiplayerStore.getState();
+    const inIntermission = session.mode === 'online' && session.matchPhase !== 'playing';
     if (
       !document.pointerLockElement ||
       !useCombatStore.getState().alive ||
-      useChatStore.getState().open
+      useChatStore.getState().open ||
+      inIntermission
     ) {
       triggerHeld.current = false;
       triggerQueued.current = false;

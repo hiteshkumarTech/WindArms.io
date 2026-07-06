@@ -9,7 +9,7 @@
     "build": "tsc",
     "start": "node dist/server/src/index.js",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test src/tests/combat.test.ts src/tests/validation.test.ts src/tests/progression.test.ts",
+    "test": "tsx --test src/tests/combat.test.ts src/tests/validation.test.ts src/tests/progression.test.ts src/tests/streaks.test.ts",
     "prisma:generate": "prisma generate",
     "prisma:push": "prisma db push",
     "prisma:studio": "prisma studio"

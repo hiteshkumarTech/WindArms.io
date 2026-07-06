@@ -17,6 +17,11 @@ model User {
   deaths        Int      @default(0)
   matchesPlayed Int      @default(0)
   timePlayedS   Int      @default(0)
+  headshots     Int      @default(0)
+  bestStreak    Int      @default(0)
+  wins          Int      @default(0)
+  equippedHeroSkin String @default("gale_cyan")
+  equippedTint     String @default("default")
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 

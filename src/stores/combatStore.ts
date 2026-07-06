@@ -9,8 +9,15 @@ export interface KillFeedEntry {
   victimName: string;
   weapon: WeaponId;
   at: number;
+  headshot: boolean;
   /** How the local player relates to this entry (highlights the feed row). */
   self: 'killer' | 'victim' | null;
+}
+
+export interface Banner {
+  id: number;
+  title: string;
+  subtitle: string | null;
 }
 
 const FEED_LIMIT = 6;
@@ -28,11 +35,18 @@ interface CombatStore {
   /** Monotonic counters — HUD effects trigger on change. */
   hitmarkerNonce: number;
   damageNonce: number;
+  /** True when the most recent confirmed hit was a headshot. */
+  lastHitHeadshot: boolean;
+  /** Center-screen announcement (streaks, multikills, shutdowns). */
+  banner: Banner | null;
 
   selfDamaged: (health: number) => void;
-  confirmedHit: () => void;
+  confirmedHit: (headshot: boolean) => void;
+  showBanner: (title: string, subtitle?: string) => void;
   recordDeath: (event: DeathEvent, selfId: string | null) => void;
   respawned: () => void;
+  /** New round: round-scoped scores reset, health/alive untouched. */
+  resetScores: () => void;
   reset: () => void;
 }
 
@@ -47,11 +61,17 @@ export const useCombatStore = create<CombatStore>()((set) => ({
   feed: [],
   hitmarkerNonce: 0,
   damageNonce: 0,
+  lastHitHeadshot: false,
+  banner: null,
 
   selfDamaged: (health) =>
     set((state) => ({ health, damageNonce: state.damageNonce + 1 })),
 
-  confirmedHit: () => set((state) => ({ hitmarkerNonce: state.hitmarkerNonce + 1 })),
+  confirmedHit: (headshot) =>
+    set((state) => ({ hitmarkerNonce: state.hitmarkerNonce + 1, lastHitHeadshot: headshot })),
+
+  showBanner: (title, subtitle) =>
+    set(() => ({ banner: { id: feedId++, title, subtitle: subtitle ?? null } })),
 
   recordDeath: (event, selfId) =>
     set((state) => {
@@ -63,6 +83,7 @@ export const useCombatStore = create<CombatStore>()((set) => ({
         victimName: event.victimName,
         weapon: event.weapon,
         at: Date.now(),
+        headshot: event.headshot,
         self,
       };
       return {
@@ -78,6 +99,8 @@ export const useCombatStore = create<CombatStore>()((set) => ({
 
   respawned: () => set({ health: 100, alive: true, killedBy: null, respawnAt: 0 }),
 
+  resetScores: () => set({ kills: 0, deaths: 0 }),
+
   reset: () =>
     set({
       health: 100,
@@ -89,5 +112,7 @@ export const useCombatStore = create<CombatStore>()((set) => ({
       feed: [],
       hitmarkerNonce: 0,
       damageNonce: 0,
+      lastHitHeadshot: false,
+      banner: null,
     }),
 }));

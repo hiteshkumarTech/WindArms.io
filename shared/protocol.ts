@@ -4,7 +4,9 @@
  * (via the `@shared/*` alias) and the game server (relative path).
  */
 
-export const PROTOCOL_VERSION = 2;
+import type { MatchPhase, PodiumEntry, StreakTier } from './match';
+
+export const PROTOCOL_VERSION = 3;
 
 /** Delay between death and earliest redeploy (enforced server-side). */
 export const RESPAWN_DELAY_MS = 3000;
@@ -78,6 +80,7 @@ export interface HitEvent {
   damage: number;
   victimHealth: number;
   hitPos: Vec3;
+  headshot: boolean;
 }
 
 export interface DeathEvent {
@@ -86,6 +89,9 @@ export interface DeathEvent {
   victimId: string;
   victimName: string;
   weapon: WeaponId;
+  headshot: boolean;
+  /** Length of the streak the victim was on (0 if none) — 5+ is a shutdown. */
+  victimStreakEnded: number;
 }
 
 export interface RespawnEvent {
@@ -146,4 +152,10 @@ export interface ServerToClientEvents {
   'account:xp': (payload: { xp: number; level: number }) => void;
   /** Anti-cheat: the server removed this client (reason is display-safe). */
   'system:kicked': (reason: string) => void;
+  /** Round state: sent on join and on every phase transition. */
+  'match:phase': (payload: { phase: MatchPhase; endsAt: number; mapId: MapId }) => void;
+  /** Round results, broadcast when a round ends. */
+  'match:ended': (payload: { podium: PodiumEntry[]; winnerId: string | null }) => void;
+  'combat:streak': (payload: { playerId: string; name: string; tier: StreakTier }) => void;
+  'combat:multikill': (payload: { playerId: string; name: string; count: number }) => void;
 }

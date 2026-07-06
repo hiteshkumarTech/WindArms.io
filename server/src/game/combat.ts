@@ -4,6 +4,9 @@ import type { Vec3 } from '../../../shared/protocol';
 /** Player hitbox capsule (matches the client's physics capsule + skin). */
 export const HITBOX = { HALF_HEIGHT: 0.6, RADIUS: 0.45 };
 
+/** Head zone: a sphere near the capsule top, resolved before the body. */
+export const HEAD = { OFFSET_Y: 0.55, RADIUS: 0.25 };
+
 function clamp01(value: number): number {
   return Math.min(1, Math.max(0, value));
 }
@@ -94,6 +97,52 @@ export function rayCapsule(origin: Vec3, dir: Vec3, maxT: number, center: Vec3):
 
   if (distSq > HITBOX.RADIUS * HITBOX.RADIUS) return null;
   return s * maxT;
+}
+
+/** Ray vs sphere: nearest positive intersection distance in [0, maxT], or null. */
+export function raySphere(
+  origin: Vec3,
+  dir: Vec3,
+  maxT: number,
+  center: Vec3,
+  radius: number,
+): number | null {
+  const lx = center[0] - origin[0];
+  const ly = center[1] - origin[1];
+  const lz = center[2] - origin[2];
+  const tca = lx * dir[0] + ly * dir[1] + lz * dir[2];
+  if (tca < 0) return null;
+  const d2 = lx * lx + ly * ly + lz * lz - tca * tca;
+  const r2 = radius * radius;
+  if (d2 > r2) return null;
+  const thc = Math.sqrt(r2 - d2);
+  const t = tca - thc;
+  if (t < 0 || t > maxT) return null;
+  return t;
+}
+
+export interface PlayerHit {
+  t: number;
+  headshot: boolean;
+}
+
+/**
+ * Two-zone hit resolution: the head sphere is tested first and wins
+ * exclusively (it sits inside the capsule volume, so a head ray would
+ * otherwise double-report). Falls back to the body capsule.
+ */
+export function resolvePlayerHit(
+  origin: Vec3,
+  dir: Vec3,
+  maxT: number,
+  center: Vec3,
+): PlayerHit | null {
+  const headCenter: Vec3 = [center[0], center[1] + HEAD.OFFSET_Y, center[2]];
+  const headT = raySphere(origin, dir, maxT, headCenter, HEAD.RADIUS);
+  if (headT !== null) return { t: headT, headshot: true };
+  const bodyT = rayCapsule(origin, dir, maxT, center);
+  if (bodyT !== null) return { t: bodyT, headshot: false };
+  return null;
 }
 
 export function pointAlongRay(origin: Vec3, dir: Vec3, t: number): Vec3 {

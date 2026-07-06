@@ -148,8 +148,33 @@ class AudioEngine {
     );
   }
 
-  hitConfirm(): void {
-    this.tone(1320, 0.06, 0.22, 'triangle');
+  hitConfirm(headshot = false): void {
+    if (headshot) {
+      this.tone(1760, 0.05, 0.26, 'triangle');
+      this.tone(2350, 0.09, 0.18, 'sine');
+    } else {
+      this.tone(1320, 0.06, 0.22, 'triangle');
+    }
+  }
+
+  /** Ascending arpeggio, longer/higher per streak tier (3/5/8). */
+  streakStinger(tier: number): void {
+    const notes = tier >= 8 ? [440, 554, 659, 880] : tier >= 5 ? [392, 494, 587] : [330, 415];
+    notes.forEach((freq, index) => {
+      window.setTimeout(() => this.tone(freq, 0.16, 0.24, 'square'), index * 90);
+    });
+  }
+
+  multikillStinger(count: number): void {
+    const base = 523 + count * 60;
+    this.tone(base, 0.08, 0.22, 'triangle');
+    window.setTimeout(() => this.tone(base * 1.5, 0.12, 0.22, 'triangle'), 90);
+  }
+
+  roundEnd(): void {
+    [523, 659, 784].forEach((freq, index) => {
+      window.setTimeout(() => this.tone(freq, 0.24, 0.2, 'sine'), index * 140);
+    });
   }
 
   damaged(): void {

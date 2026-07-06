@@ -7,12 +7,21 @@ import {
   type DeathEvent,
   type HitEvent,
   type JoinResult,
+  type MapId,
   type PublicPlayer,
   type RemoteFireEvent,
   type RespawnEvent,
   type RoomSnapshot,
   type Vec3,
 } from '@shared/protocol';
+import {
+  MULTIKILL_NAMES,
+  SHUTDOWN_THRESHOLD,
+  STREAK_NAMES,
+  type MatchPhase,
+  type PodiumEntry,
+  type StreakTier,
+} from '@shared/match';
 import { WEAPONS } from '@shared/weapons';
 import { audio } from '@/lib/audio/audioEngine';
 import { cameraShake, effectsBus } from '@/lib/game/effectsBus';
@@ -120,8 +129,13 @@ export function useMultiplayer() {
     const onHit = (event: HitEvent) => {
       const selfId = useMultiplayerStore.getState().selfId;
       if (event.shooterId === selfId) {
-        useCombatStore.getState().confirmedHit();
-        audio.hitConfirm();
+        useCombatStore.getState().confirmedHit(event.headshot);
+        audio.hitConfirm(event.headshot);
+        effectsBus.spawnDamageNumber({
+          at: [event.hitPos[0], event.hitPos[1], event.hitPos[2]],
+          amount: event.damage,
+          headshot: event.headshot,
+        });
       }
       if (event.victimId === selfId) {
         useCombatStore.getState().selfDamaged(event.victimHealth);
@@ -132,6 +146,11 @@ export function useMultiplayer() {
     const onDeath = (event: DeathEvent) => {
       const selfId = useMultiplayerStore.getState().selfId;
       useCombatStore.getState().recordDeath(event, selfId);
+
+      // Ending a big streak gets its own callout for the killer.
+      if (event.victimStreakEnded >= SHUTDOWN_THRESHOLD && event.killerId === selfId) {
+        useCombatStore.getState().showBanner('SHUTDOWN', `ended ${event.victimName}'s streak`);
+      }
 
       // Elimination VFX + spatial audio at the victim's last known position.
       const accent = WEAPONS[event.weapon].tracerColor;
@@ -165,6 +184,30 @@ export function useMultiplayer() {
     const onAccountXp = (payload: { xp: number; level: number }) => {
       useAuthStore.getState().updateXp(payload.xp, payload.level);
     };
+    const onPhase = (payload: { phase: MatchPhase; endsAt: number; mapId: MapId }) => {
+      const store = useMultiplayerStore.getState();
+      const mapChanged = payload.mapId !== store.mapId;
+      store.setPhase(payload.phase, payload.endsAt, payload.mapId);
+      if (mapChanged) remoteSnapshots.clear();
+      if (payload.phase === 'playing') useCombatStore.getState().resetScores();
+    };
+    const onMatchEnded = (payload: { podium: PodiumEntry[]; winnerId: string | null }) => {
+      useMultiplayerStore.getState().setPodium(payload.podium, payload.winnerId);
+      audio.roundEnd();
+    };
+    const onStreak = (payload: { playerId: string; name: string; tier: StreakTier }) => {
+      const self = payload.playerId === useMultiplayerStore.getState().selfId;
+      useCombatStore
+        .getState()
+        .showBanner(STREAK_NAMES[payload.tier], self ? undefined : payload.name);
+      audio.streakStinger(payload.tier);
+    };
+    const onMultikill = (payload: { playerId: string; name: string; count: number }) => {
+      const self = payload.playerId === useMultiplayerStore.getState().selfId;
+      const title = MULTIKILL_NAMES[payload.count] ?? 'MULTI KILL';
+      useCombatStore.getState().showBanner(title, self ? undefined : payload.name);
+      audio.multikillStinger(payload.count);
+    };
     const onKicked = (reason: string) => {
       resetSessionState();
       const store = useMultiplayerStore.getState();
@@ -190,6 +233,10 @@ export function useMultiplayer() {
     socket.on('combat:respawned', onRespawned);
     socket.on('chat:message', onChat);
     socket.on('account:xp', onAccountXp);
+    socket.on('match:phase', onPhase);
+    socket.on('match:ended', onMatchEnded);
+    socket.on('combat:streak', onStreak);
+    socket.on('combat:multikill', onMultikill);
     socket.on('system:kicked', onKicked);
     socket.on('disconnect', onDisconnect);
     return () => {
@@ -203,6 +250,10 @@ export function useMultiplayer() {
       socket.off('combat:respawned', onRespawned);
       socket.off('chat:message', onChat);
       socket.off('account:xp', onAccountXp);
+      socket.off('match:phase', onPhase);
+      socket.off('match:ended', onMatchEnded);
+      socket.off('combat:streak', onStreak);
+      socket.off('combat:multikill', onMultikill);
       socket.off('system:kicked', onKicked);
       socket.off('disconnect', onDisconnect);
     };

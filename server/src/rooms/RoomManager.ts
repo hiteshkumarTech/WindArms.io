@@ -65,11 +65,7 @@ export class RoomManager {
     this.rooms.get(roomId)?.handleRespawn(socket);
   }
 
-  handleChat(socket: TypedSocket, text: string): void {
-    const roomId = this.membership.get(socket.id);
-    if (!roomId) return;
-    this.rooms.get(roomId)?.handleChat(socket, text);
-  }
+ 
 
   handleChat(socket: TypedSocket, text: string): void {
     const roomId = this.membership.get(socket.id);

@@ -1,11 +1,13 @@
 'use client';
 
+import { useEffect, useReducer } from 'react';
 import { Signal, Timer, Users } from 'lucide-react';
 import { MAPS } from '@shared/maps';
 import { cn } from '@/lib/utils';
 import { useMultiplayerStore } from '@/stores/multiplayerStore';
 
-function formatMatchTime(totalSeconds: number): string {
+function formatMs(ms: number): string {
+  const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${minutes}:${seconds.toString().padStart(2, '0')}`;
@@ -18,10 +20,21 @@ export default function RoomHud() {
   const players = useMultiplayerStore((state) => state.players);
   const rttMs = useMultiplayerStore((state) => state.rttMs);
   const status = useMultiplayerStore((state) => state.status);
-  const matchSeconds = useMultiplayerStore((state) => state.matchSeconds);
   const mapId = useMultiplayerStore((state) => state.mapId);
+  const matchPhase = useMultiplayerStore((state) => state.matchPhase);
+  const phaseEndsAt = useMultiplayerStore((state) => state.phaseEndsAt);
+  const [, forceRender] = useReducer((tick: number) => tick + 1, 0);
+
+  // Round clock ticks independently of store updates.
+  useEffect(() => {
+    const interval = window.setInterval(forceRender, 500);
+    return () => window.clearInterval(interval);
+  }, []);
 
   if (mode !== 'online') return null;
+
+  const remaining = phaseEndsAt - Date.now();
+  const lowTime = matchPhase === 'playing' && remaining < 30000;
 
   return (
     <div className="pointer-events-none absolute right-5 top-5 z-20">
@@ -47,9 +60,14 @@ export default function RoomHud() {
           <Signal className="h-3 w-3" aria-hidden />
           {rttMs === null ? '—' : `${rttMs} ms`}
         </span>
-        <span className="flex items-center gap-1 tabular-nums text-white/70">
+        <span
+          className={cn(
+            'flex items-center gap-1 tabular-nums',
+            lowTime ? 'animate-pulse text-neon-orange' : 'text-white/70',
+          )}
+        >
           <Timer className="h-3 w-3" aria-hidden />
-          {formatMatchTime(matchSeconds)}
+          {matchPhase === 'playing' ? formatMs(remaining) : `Next ${formatMs(remaining)}`}
         </span>
       </div>
     </div>

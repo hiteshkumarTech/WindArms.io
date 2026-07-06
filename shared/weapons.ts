@@ -196,6 +196,11 @@ export function fireIntervalMs(def: WeaponDef): number {
   return 60000 / def.fireRateRpm;
 }
 
+/** Head-zone damage multiplier (sniper one-shots heads). */
+export function headshotMultiplier(id: WeaponId): number {
+  return id === 'sniper' ? 2 : 1.75;
+}
+
 /** Linear damage falloff between falloffStart and falloffEnd. */
 export function damageAtDistance(def: WeaponDef, distance: number): number {
   if (distance <= def.falloffStart) return def.damage;

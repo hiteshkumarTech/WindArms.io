@@ -3,6 +3,7 @@
 import { create } from 'zustand';
 import type { MapId, PublicPlayer, RoomInfo } from '@shared/protocol';
 import { DEFAULT_MAP_ID } from '@shared/maps';
+import type { MatchPhase, PodiumEntry } from '@shared/match';
 
 export type ConnectionStatus = 'offline' | 'connecting' | 'connected' | 'error';
 export type SessionMode = 'menu' | 'offline' | 'online';
@@ -25,6 +26,11 @@ interface MultiplayerStore {
   matchSeconds: number;
   /** Active arena: server-assigned online, player-chosen for offline practice. */
   mapId: MapId;
+  /** Round state (offline practice is always 'playing'). */
+  matchPhase: MatchPhase;
+  phaseEndsAt: number;
+  podium: PodiumEntry[] | null;
+  winnerId: string | null;
   rttMs: number | null;
   lastError: string | null;
 
@@ -40,6 +46,8 @@ interface MultiplayerStore {
   setScores: (scores: Record<string, PlayerScore>) => void;
   setMatchSeconds: (seconds: number) => void;
   setOfflineMap: (mapId: MapId) => void;
+  setPhase: (phase: MatchPhase, endsAt: number, mapId: MapId) => void;
+  setPodium: (podium: PodiumEntry[], winnerId: string | null) => void;
   setRtt: (ms: number) => void;
 }
 
@@ -50,6 +58,10 @@ const IDLE_SESSION = {
   players: [] as PublicPlayer[],
   scores: {} as Record<string, PlayerScore>,
   matchSeconds: 0,
+  matchPhase: 'playing' as MatchPhase,
+  phaseEndsAt: 0,
+  podium: null as PodiumEntry[] | null,
+  winnerId: null as string | null,
   rttMs: null,
 };
 
@@ -105,6 +117,18 @@ export const useMultiplayerStore = create<MultiplayerStore>()((set) => ({
   setMatchSeconds: (seconds) => set({ matchSeconds: seconds }),
 
   setOfflineMap: (mapId) => set({ mapId }),
+
+  setPhase: (phase, endsAt, mapId) =>
+    set((state) => ({
+      matchPhase: phase,
+      phaseEndsAt: endsAt,
+      mapId,
+      // Entering a new round clears the previous podium.
+      podium: phase === 'playing' ? null : state.podium,
+      winnerId: phase === 'playing' ? null : state.winnerId,
+    })),
+
+  setPodium: (podium, winnerId) => set({ podium, winnerId }),
 
   setRtt: (ms) => set({ rttMs: ms }),
 }));
