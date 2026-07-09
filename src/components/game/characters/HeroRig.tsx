@@ -134,7 +134,7 @@ const HeroRig = forwardRef<RigHandle, HeroRigProps>(function HeroRig({ appearanc
   const hipY = -0.12 * h;
 
   return (
-    <group ref={body}>
+    <group ref={body} userData={{ isPlayer: true }}>
       {/* Pelvis */}
       <mesh position={[0, hipY, 0]} material={materials.panelMat} castShadow>
         <boxGeometry args={[0.3 * b, 0.2 * h, 0.18 * b]} />

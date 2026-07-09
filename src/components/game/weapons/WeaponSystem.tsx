@@ -7,6 +7,7 @@ import type { Vec3, WeaponId } from '@shared/protocol';
 import { WEAPONS, WEAPON_ORDER, fireIntervalMs } from '@shared/weapons';
 import { audio } from '@/lib/audio/audioEngine';
 import { effectsBus, fireSignal, viewKick } from '@/lib/game/effectsBus';
+import { surfaceOf } from '@/lib/game/surfaces';
 import { getSocket } from '@/lib/network/socket';
 import { useChatStore } from '@/stores/chatStore';
 import { useCombatStore } from '@/stores/combatStore';
@@ -36,6 +37,8 @@ export default function WeaponSystem() {
       dir: new THREE.Vector3(),
       muzzle: new THREE.Vector3(),
       end: new THREE.Vector3(),
+      ejectPoint: new THREE.Vector3(),
+      ejectDir: new THREE.Vector3(),
     }),
     [],
   );
@@ -140,7 +143,7 @@ export default function WeaponSystem() {
 
   function fire(weaponId: WeaponId): void {
     const def = WEAPONS[weaponId];
-    const { forward, right, up, dir, muzzle, end } = scratch;
+    const { forward, right, up, dir, muzzle, end, ejectPoint, ejectDir } = scratch;
 
     camera.getWorldDirection(forward);
     right.setFromMatrixColumn(camera.matrixWorld, 0);
@@ -152,9 +155,29 @@ export default function WeaponSystem() {
       .addScaledVector(up, -MUZZLE.down)
       .addScaledVector(forward, MUZZLE.forward);
 
+    // Shell casing: one per trigger pull (not per pellet), ejected up and
+    // back from the receiver. The energy weapon vents instead of ejecting.
+    if (weaponId !== 'energy') {
+      ejectPoint
+        .copy(camera.position)
+        .addScaledVector(right, MUZZLE.right - 0.05)
+        .addScaledVector(up, -MUZZLE.down + 0.14)
+        .addScaledVector(forward, MUZZLE.forward - 0.4);
+      ejectDir.copy(right).addScaledVector(up, 0.55).addScaledVector(forward, -0.35).normalize();
+      effectsBus.spawnCasing({
+        at: [ejectPoint.x, ejectPoint.y, ejectPoint.z],
+        dir: [ejectDir.x, ejectDir.y, ejectDir.z],
+        color: weaponId === 'shotgun' ? '#e2793a' : '#d9b563',
+      });
+    }
+
     const spreadTan = Math.tan((def.spreadDeg * Math.PI) / 180);
     const origin: Vec3 = [camera.position.x, camera.position.y, camera.position.z];
     const directions: Vec3[] = [];
+    const isEnergy = weaponId === 'energy';
+    // One impact sound per trigger pull — a shotgun's 8 pellets shouldn't
+    // stack 8 overlapping thunks into a wall of noise.
+    let impactSoundPlayed = false;
 
     for (let pellet = 0; pellet < def.pellets; pellet++) {
       // Triangular-ish distribution biases pellets toward the center.
@@ -169,13 +192,24 @@ export default function WeaponSystem() {
       const hits = raycaster.intersectObjects(scene.children, true);
       if (hits.length > 0) {
         end.copy(hits[0].point);
-        effectsBus.spawnImpact({ at: [end.x, end.y, end.z], color: def.tracerColor });
+        const surface = surfaceOf(hits[0].object);
+        effectsBus.spawnImpact({
+          at: [end.x, end.y, end.z],
+          color: def.tracerColor,
+          surface: surface ?? undefined,
+          energy: isEnergy,
+        });
+        if (!impactSoundPlayed && surface && surface !== 'player') {
+          audio.impact(isEnergy ? 'energy' : surface);
+          impactSoundPlayed = true;
+        }
       } else {
         end.copy(camera.position).addScaledVector(dir, def.range);
       }
       effectsBus.spawnTracer({
         from: [muzzle.x, muzzle.y, muzzle.z],
         to: [end.x, end.y, end.z],
+        energy: isEnergy,
         color: def.tracerColor,
       });
     }

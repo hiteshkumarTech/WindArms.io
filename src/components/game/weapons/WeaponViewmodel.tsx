@@ -35,6 +35,7 @@ export default function WeaponViewmodel() {
 
   const current = useWeaponStore((state) => state.current);
   const def = WEAPONS[current];
+  const isEnergy = current === 'energy';
   const equippedTint = useAuthStore((state) => state.profile?.equippedTint);
   // Equipped tint recolors the viewmodel accent; guests/default keep the weapon's own accent.
   const accentColor =
@@ -89,7 +90,8 @@ export default function WeaponViewmodel() {
       depthTest: false,
     });
     const flash = new THREE.MeshBasicMaterial({
-      color: '#fff7d9',
+      // The energy weapon vents a violet-white discharge instead of a warm muzzle flash.
+      color: isEnergy ? '#dcd0ff' : '#fff7d9',
       transparent: true,
       opacity: 0.9,
       blending: THREE.AdditiveBlending,
@@ -98,8 +100,8 @@ export default function WeaponViewmodel() {
       toneMapped: false,
     });
     return { body, dark, accent, flash };
-    // Rebuild when the weapon accent (or equipped tint) changes.
-  }, [accentColor]);
+    // Rebuild when the weapon accent (or equipped tint) changes, or on switching to/from energy.
+  }, [accentColor, isEnergy]);
 
   useFrame(({ camera }, delta) => {
     const group = groupRef.current;
@@ -119,11 +121,12 @@ export default function WeaponViewmodel() {
     }
     state.raise = Math.max(0, state.raise - delta * 5);
 
-    // Fire feedback (also cancels an inspect in progress).
+    // Fire feedback (also cancels an inspect in progress). The energy
+    // weapon's discharge lingers slightly longer than a kinetic muzzle flash.
     if (fireSignal.nonce !== state.lastFireNonce) {
       state.lastFireNonce = fireSignal.nonce;
       state.punch = 1;
-      state.flashUntil = now + 45;
+      state.flashUntil = now + (isEnergy ? 70 : 45);
       state.inspectUntil = 0;
     }
     state.punch = Math.max(0, state.punch - delta * 9);
@@ -176,7 +179,10 @@ export default function WeaponViewmodel() {
       flashRef.current.visible = flashing;
       if (flashing) flashRef.current.rotation.z = Math.random() * Math.PI;
     }
-    if (lightRef.current) lightRef.current.intensity = flashing ? 6 : 0;
+    if (lightRef.current) {
+      lightRef.current.intensity = flashing ? 6 : 0;
+      lightRef.current.color.set(isEnergy ? '#b18cff' : '#ffe9b0');
+    }
   });
 
   const bulk = def.visual.bulk;

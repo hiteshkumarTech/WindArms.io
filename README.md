@@ -171,7 +171,9 @@ Movement: wall-run is live — airborne + fast + a wall probe reduces gravity an
 
 Netcode: lag compensation is implemented and unit-tested (per-room pose history ring buffer, RTT-smoothed rewind on `combat:fire`) but ships **behind an env flag** (`LAG_COMP`) — off by default until soak-tested with real players.
 
-Still open from the Phase 9 design (tracked in `docs/PHASE-9-DESIGN.md`): shell casings, surface-specific impact effects, and a visually distinct energy-weapon hit effect (the energy gun currently reuses the generic impact/tracer pipeline); crosshair customization settings (the crosshair already reacts dynamically to fire/movement/hits, it just isn't user-configurable yet); a distinct per-kill confirmation banner separate from streak/multikill banners.
+Combat polish: every trigger pull ejects a pooled shell casing (brass, or an orange hull for the shotgun) that tumbles on a simulated arc — skipped for the energy weapon, which vents instead. Bullet impacts are surface-aware: each map carries a dominant material (metal, snow, stone, crystal; crates are always wood) that drives the impact spark's color, size and lifetime, with matching procedurally-synthesized impact SFX, and remote players' shots resolve the right surface too via a short probe raycast. The energy weapon (Ion Lance) has its own visual identity end to end — a thicker, brighter tracer, a violet-white "stylized energy" impact that overrides surface styling entirely, and a tinted, longer-lingering muzzle discharge. A small "Eliminated" confirmation now appears under the crosshair on every kill, distinct from the center-screen streak/multikill banners.
+
+Still open from the Phase 9 design (tracked in `docs/PHASE-9-DESIGN.md`): crosshair customization settings (the crosshair already reacts dynamically to fire/movement/hits, it just isn't user-configurable yet).
 
 ## Deployment
 
@@ -179,4 +181,4 @@ Client: zero-config on Vercel — import the repo, preset "Next.js", set `NEXT_P
 
 ## Backlog
 
-Friends, parties and achievements (need presence infrastructure); ranked matchmaking, ELO and seasons; Google OAuth; enabling `LAG_COMP` by default (currently flagged off pending a soak test); shell casings, surface-specific impact effects and a distinct energy-weapon hit effect; crosshair customization settings; Industrial Factory / Desert Base map entries; controller support and localization; spectator mode.
+Friends, parties and achievements (need presence infrastructure); ranked matchmaking, ELO and seasons; Google OAuth; enabling `LAG_COMP` by default (currently flagged off pending a soak test); crosshair customization settings; Industrial Factory / Desert Base map entries; controller support and localization; spectator mode.

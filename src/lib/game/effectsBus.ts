@@ -5,15 +5,26 @@
  * re-renders, zero subscription overhead on hot paths.
  */
 
+import type { SurfaceKind } from '@shared/maps';
+
 export interface TracerRequest {
   from: [number, number, number];
   to: [number, number, number];
   color: string;
+  /** Stylized energy weapon shot — renders as a thicker, longer-lived beam. */
+  energy?: boolean;
 }
 
 export interface ImpactRequest {
   at: [number, number, number];
   color: string;
+  /** Pre-resolved surface (local shots already have the raycast hit object). */
+  surface?: SurfaceKind | 'player';
+  /** Incoming travel direction — lets the pool probe for a surface when it
+   * isn't pre-resolved (remote shots, replicated without a hit object). */
+  dir?: [number, number, number];
+  /** Stylized energy weapon hit — overrides surface styling entirely. */
+  energy?: boolean;
 }
 
 export interface DamageNumberRequest {
@@ -22,9 +33,17 @@ export interface DamageNumberRequest {
   headshot: boolean;
 }
 
+export interface CasingRequest {
+  at: [number, number, number];
+  /** Eject direction (world space, roughly right + up relative to the shooter). */
+  dir: [number, number, number];
+  color: string;
+}
+
 const tracerQueue: TracerRequest[] = [];
 const impactQueue: ImpactRequest[] = [];
 const damageNumberQueue: DamageNumberRequest[] = [];
+const casingQueue: CasingRequest[] = [];
 
 export const effectsBus = {
   spawnTracer(request: TracerRequest): void {
@@ -45,6 +64,12 @@ export const effectsBus = {
   },
   takeDamageNumbers(): DamageNumberRequest[] {
     return damageNumberQueue.splice(0, damageNumberQueue.length);
+  },
+  spawnCasing(request: CasingRequest): void {
+    casingQueue.push(request);
+  },
+  takeCasings(): CasingRequest[] {
+    return casingQueue.splice(0, casingQueue.length);
   },
 };
 

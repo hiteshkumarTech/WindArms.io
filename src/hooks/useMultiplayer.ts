@@ -65,6 +65,18 @@ const hitFromScratch: RemotePose = {
   health: 100,
 };
 
+/** Unit direction from one point to another; falls back to "straight up" for a zero-length span. */
+function directionBetween(
+  from: [number, number, number],
+  to: [number, number, number],
+): [number, number, number] {
+  const dx = to[0] - from[0];
+  const dy = to[1] - from[1];
+  const dz = to[2] - from[2];
+  const len = Math.hypot(dx, dy, dz);
+  return len > 1e-6 ? [dx / len, dy / len, dz / len] : [0, 1, 0];
+}
+
 /** Ring of hit sparks + a vertical flash at an elimination site. */
 function spawnDeathBurst(position: [number, number, number], accent: string): void {
   for (let i = 0; i < 10; i++) {
@@ -127,13 +139,12 @@ export function useMultiplayer() {
     const onFired = (event: RemoteFireEvent) => {
       if (event.shooterId === useMultiplayerStore.getState().selfId) return;
       const color = WEAPONS[event.weapon].tracerColor;
+      const isEnergy = event.weapon === 'energy';
+      const from: [number, number, number] = [event.origin[0], event.origin[1] - 0.12, event.origin[2]];
       for (const end of event.ends) {
-        effectsBus.spawnTracer({
-          from: [event.origin[0], event.origin[1] - 0.12, event.origin[2]],
-          to: [end[0], end[1], end[2]],
-          color,
-        });
-        effectsBus.spawnImpact({ at: [end[0], end[1], end[2]], color });
+        const to: [number, number, number] = [end[0], end[1], end[2]];
+        effectsBus.spawnTracer({ from, to, color, energy: isEnergy });
+        effectsBus.spawnImpact({ at: to, color, dir: directionBetween(from, to), energy: isEnergy });
       }
       audio.remoteShot(event.weapon, event.origin);
     };

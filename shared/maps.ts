@@ -11,6 +11,14 @@ import { makeStairs, type ArenaBox, type ArenaRamp } from './arena';
  * uniform across rooms.
  */
 
+/**
+ * Client-only cosmetic tag (never consulted by damage/occlusion logic) that
+ * gives each map's bullet impacts, casings-vs-cover sparks and impact audio
+ * a distinct material read. Lives here rather than in a client module so
+ * `MapTheme` — a single structure both sides import — stays self-contained.
+ */
+export type SurfaceKind = 'metal' | 'stone' | 'snow' | 'wood' | 'crystal';
+
 export interface MapTheme {
   fogColor: string;
   fogNear: number;
@@ -31,6 +39,8 @@ export interface MapTheme {
   sky: { horizon: string; mid: string; zenith: string };
   /** Tone-mapping exposure (1 = renderer default); bright maps raise it. */
   exposure?: number;
+  /** Dominant material for this map's floor/walls/platforms/obstacles. */
+  surfaceMaterial: SurfaceKind;
 }
 
 export interface MapDef {
@@ -122,6 +132,7 @@ const CYBER_CITY: MapDef = {
     particles: 'embers',
     showSkyline: true,
     sky: { horizon: '#0c1420', mid: '#0a1a2a', zenith: '#04070d' },
+    surfaceMaterial: 'metal',
   },
 };
 
@@ -188,6 +199,7 @@ const SNOW_BASE: MapDef = {
     particles: 'snow',
     showSkyline: false,
     sky: { horizon: '#eaf3fc', mid: '#c2d8ee', zenith: '#8fb6dc' },
+    surfaceMaterial: 'snow',
   },
 };
 
@@ -257,6 +269,7 @@ const FOREST_TEMPLE: MapDef = {
     particles: 'motes',
     showSkyline: false,
     sky: { horizon: '#2a3a2a', mid: '#18271b', zenith: '#0a140e' },
+    surfaceMaterial: 'stone',
   },
 };
 
@@ -317,6 +330,7 @@ const SKY_SANCTUM: MapDef = {
     showSkyline: false,
     sky: { horizon: '#dce9f8', mid: '#8fc0ee', zenith: '#3f83d6' },
     exposure: 1.15,
+    surfaceMaterial: 'crystal',
   },
 };
 

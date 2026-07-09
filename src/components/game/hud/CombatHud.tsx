@@ -36,6 +36,9 @@ export default function CombatHud() {
   const reloading = reloadingUntil !== 0;
   const hitmarker = useFlash(hitmarkerNonce, 120);
   const damaged = useFlash(damageNonce, 280);
+  // Longer-lived than the hitmarker flash so the kill confirmation text is
+  // actually readable; gated on lastHitKill so a later non-kill hit hides it.
+  const killConfirm = useFlash(hitmarkerNonce, 650) && lastHitKill;
 
   const healthColor =
     health > 60 ? 'bg-neon-cyan' : health > 30 ? 'bg-neon-orange' : 'bg-red-500';
@@ -82,6 +85,19 @@ export default function CombatHud() {
             className={cn('absolute right-0 top-1/2 h-0.5 w-1.5 -translate-y-1/2', markerColor)}
           />
         </div>
+      </div>
+
+      {/* Kill confirmation — distinct from the big streak/multikill banner, fires on every kill */}
+      <div
+        aria-hidden
+        className={cn(
+          'pointer-events-none absolute inset-x-0 top-[58%] z-20 flex justify-center transition-opacity duration-150',
+          killConfirm ? 'opacity-100' : 'opacity-0',
+        )}
+      >
+        <span className="text-sm font-extrabold uppercase tracking-[0.3em] text-neon-orange drop-shadow-[0_0_8px_rgba(255,122,0,0.8)]">
+          Eliminated
+        </span>
       </div>
 
       {/* Health (above the movement debug readout) */}

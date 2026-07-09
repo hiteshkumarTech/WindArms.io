@@ -1,3 +1,4 @@
+import type { SurfaceKind } from '@shared/maps';
 import type { Vec3, WeaponId } from '@shared/protocol';
 import { localPose } from '@/lib/game/localPose';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -146,6 +147,38 @@ class AudioEngine {
       recipe.thumpFreq * 0.5,
       spatial.pan,
     );
+  }
+
+  /**
+   * Bullet-impact SFX for the local shooter's own shots against world
+   * geometry (never against players — that's `hitConfirm`'s job). Fires
+   * instantly on the client raycast, ahead of the server's hit resolution,
+   * since it's cosmetic and never implies damage.
+   */
+  impact(kind: SurfaceKind | 'energy'): void {
+    switch (kind) {
+      case 'metal':
+        this.tone(1900, 0.05, 0.16, 'triangle');
+        this.noise(0.04, 3200, 0.12, 0, 'highpass');
+        break;
+      case 'stone':
+        this.noise(0.09, 480, 0.22, 0, 'lowpass');
+        break;
+      case 'snow':
+        this.noise(0.11, 360, 0.15, 0, 'lowpass');
+        break;
+      case 'wood':
+        this.noise(0.07, 900, 0.16, 0, 'bandpass');
+        this.tone(220, 0.06, 0.12, 'triangle');
+        break;
+      case 'crystal':
+        this.tone(2600, 0.08, 0.14, 'sine');
+        this.noise(0.04, 4200, 0.1, 0, 'highpass');
+        break;
+      case 'energy':
+        this.tone(1200, 0.09, 0.18, 'sawtooth', 300);
+        break;
+    }
   }
 
   hitConfirm(headshot = false): void {
