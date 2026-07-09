@@ -10,17 +10,7 @@ All eight build phases are complete: (1) landing page, (2) FPS controller, (3) m
 
 ## Quick start
 
-Two processes: the Next.js client and the multiplayer server.
-
-```bash
-# 1. Client
-npm install
-npm run dev              # http://localhost:3000
-
-# 2. Server (second terminal)
-cd server && npm install && cd ..
-npm run dev:server       # ws://localhost:4000
-```
+windarms.com 
 
 Offline practice works without the server; Quick Play / rooms need both running.
 
