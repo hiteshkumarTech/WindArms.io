@@ -34,4 +34,13 @@ export const CONFIG = {
   ARENA_HALF_EXTENT: 32,
   ARENA_MIN_Y: -30,
   ARENA_MAX_Y: 40,
+
+  /**
+   * Lag compensation (F4). When enabled, the server rewinds victim positions
+   * to when the shooter fired (RTT/2 + interpolation delay) before resolving
+   * hits, clamped to LAG_COMP_MAX_REWIND_MS. Shipped dark — defaults off; set
+   * the LAG_COMP=on environment variable to enable.
+   */
+  LAG_COMP: (process.env.LAG_COMP ?? 'off').toLowerCase() === 'on',
+  LAG_COMP_MAX_REWIND_MS: 250,
 };

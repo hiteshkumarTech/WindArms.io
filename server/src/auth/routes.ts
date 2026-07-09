@@ -6,6 +6,12 @@ import type {
   Profile,
 } from '../../../shared/accounts';
 import { levelFromXp } from '../../../shared/progression';
+import {
+  heroSkinById,
+  isHeroSkinId,
+  isWeaponTintId,
+  weaponTintById,
+} from '../../../shared/heroes';
 import { accountsEnabled, getPrisma } from '../db/prisma';
 import { bearerToken, hashPassword, signToken, verifyPassword, verifyToken } from './auth';
 
@@ -25,6 +31,8 @@ function toProfile(user: User): Profile {
     deaths: user.deaths,
     matchesPlayed: user.matchesPlayed,
     timePlayedS: user.timePlayedS,
+    equippedHeroSkin: user.equippedHeroSkin,
+    equippedTint: user.equippedTint,
   };
 }
 
@@ -151,6 +159,42 @@ export function createAuthRouter(): Router {
     } catch (error) {
       console.error('[auth] me failed', error);
       res.status(500).json({ error: 'Could not load profile.' });
+    }
+  });
+
+  router.patch('/account/loadout', async (req: Request, res: Response) => {
+    const prisma = getPrisma();
+    if (!prisma) return unavailable(res);
+    try {
+      const token = bearerToken(req.headers.authorization);
+      const userId = token ? verifyToken(token) : null;
+      if (!userId) {
+        res.status(401).json({ error: 'Not signed in.' });
+        return;
+      }
+      const { heroSkin, weaponTint } = (req.body ?? {}) as Record<string, unknown>;
+      if (!isHeroSkinId(heroSkin) || !isWeaponTintId(weaponTint)) {
+        res.status(400).json({ error: 'Unknown cosmetic.' });
+        return;
+      }
+      const user = await prisma.user.findUnique({ where: { id: userId } });
+      if (!user) {
+        res.status(401).json({ error: 'Account no longer exists.' });
+        return;
+      }
+      const level = levelFromXp(user.xp);
+      if (heroSkinById(heroSkin).unlockLevel > level || weaponTintById(weaponTint).unlockLevel > level) {
+        res.status(400).json({ error: 'That cosmetic is still locked.' });
+        return;
+      }
+      const updated = await prisma.user.update({
+        where: { id: userId },
+        data: { equippedHeroSkin: heroSkin, equippedTint: weaponTint },
+      });
+      res.json({ profile: toProfile(updated) });
+    } catch (error) {
+      console.error('[auth] loadout failed', error);
+      res.status(500).json({ error: 'Could not save your loadout.' });
     }
   });
 

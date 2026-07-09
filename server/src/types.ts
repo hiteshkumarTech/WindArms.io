@@ -7,6 +7,8 @@ export interface SocketData {
     id: string;
     username: string;
     xp: number;
+    equippedHeroSkin: string;
+    equippedTint: string;
   };
 }
 

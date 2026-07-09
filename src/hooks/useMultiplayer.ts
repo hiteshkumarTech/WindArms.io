@@ -54,6 +54,17 @@ const deathPoseScratch: RemotePose = {
   health: 100,
 };
 
+/** Scratch pose for locating the shooter when we take damage (no allocs). */
+const hitFromScratch: RemotePose = {
+  position: [0, 0, 0],
+  yaw: 0,
+  pitch: 0,
+  state: 'idle',
+  alive: true,
+  weapon: 'ar',
+  health: 100,
+};
+
 /** Ring of hit sparks + a vertical flash at an elimination site. */
 function spawnDeathBurst(position: [number, number, number], accent: string): void {
   for (let i = 0; i < 10; i++) {
@@ -129,7 +140,7 @@ export function useMultiplayer() {
     const onHit = (event: HitEvent) => {
       const selfId = useMultiplayerStore.getState().selfId;
       if (event.shooterId === selfId) {
-        useCombatStore.getState().confirmedHit(event.headshot);
+        useCombatStore.getState().confirmedHit(event.headshot, event.victimHealth <= 0);
         audio.hitConfirm(event.headshot);
         effectsBus.spawnDamageNumber({
           at: [event.hitPos[0], event.hitPos[1], event.hitPos[2]],
@@ -141,6 +152,15 @@ export function useMultiplayer() {
         useCombatStore.getState().selfDamaged(event.victimHealth);
         audio.damaged();
         cameraShake.trauma = Math.min(cameraShake.trauma + 0.2 + event.damage / 160, 0.6);
+        // Directional indicator: bearing from us to the shooter, relative to view.
+        if (remoteSnapshots.samplePlayer(event.shooterId, hitFromScratch)) {
+          const dx = hitFromScratch.position[0] - localPose.position[0];
+          const dz = hitFromScratch.position[2] - localPose.position[2];
+          const yawNow = localPose.yaw;
+          const forward = -dx * Math.sin(yawNow) - dz * Math.cos(yawNow);
+          const right = dx * Math.cos(yawNow) - dz * Math.sin(yawNow);
+          useCombatStore.getState().addDamageDirection(Math.atan2(right, forward));
+        }
       }
     };
     const onDeath = (event: DeathEvent) => {
@@ -259,16 +279,21 @@ export function useMultiplayer() {
     };
   }, []);
 
-  // RTT sampling while online.
+  // RTT sampling while online. The measured round-trip is reported back on the
+  // next ping so the server can lag-compensate hits (F4).
   const online = useMultiplayerStore((state) => state.mode === 'online');
   useEffect(() => {
     if (!online) return;
     let cancelled = false;
+    let lastRtt = -1; // unset until the first round-trip completes; server ignores it
     const interval = window.setInterval(async () => {
       try {
         const sentAt = Date.now();
-        await getSocket().timeout(3000).emitWithAck('net:ping', sentAt);
-        if (!cancelled) useMultiplayerStore.getState().setRtt(Date.now() - sentAt);
+        await getSocket().timeout(3000).emitWithAck('net:ping', { clientTime: sentAt, rtt: lastRtt });
+        if (!cancelled) {
+          lastRtt = Date.now() - sentAt;
+          useMultiplayerStore.getState().setRtt(lastRtt);
+        }
       } catch {
         // Timed-out ping: keep the last reading.
       }

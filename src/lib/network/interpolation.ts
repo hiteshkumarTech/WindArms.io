@@ -1,12 +1,18 @@
-import type { MovementState, PlayerSnapshot, RoomSnapshot, WeaponId } from '@shared/protocol';
+import {
+  INTERPOLATION_DELAY_MS,
+  type MovementState,
+  type PlayerSnapshot,
+  type RoomSnapshot,
+  type WeaponId,
+} from '@shared/protocol';
 import { clamp } from '@/lib/utils';
 
 /**
- * Remote players render this far in the past (~2.4 server ticks at 20 Hz),
- * so there is almost always a pair of snapshots to interpolate between —
- * the standard trade of a little latency for perfectly smooth motion.
+ * Remote players render INTERPOLATION_DELAY_MS in the past (~2.4 server ticks
+ * at 20 Hz), so there is almost always a pair of snapshots to interpolate
+ * between — a little latency traded for perfectly smooth motion. The delay is
+ * shared with the server so lag compensation rewinds by exactly this amount.
  */
-const INTERPOLATION_DELAY_MS = 120;
 const HISTORY_LIMIT = 30;
 
 export interface RemotePose {

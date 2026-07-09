@@ -67,6 +67,12 @@ export class RoomManager {
 
  
 
+  updateRtt(socket: TypedSocket, rtt: number): void {
+    const roomId = this.membership.get(socket.id);
+    if (!roomId) return;
+    this.rooms.get(roomId)?.updateRtt(socket.id, rtt);
+  }
+
   handleChat(socket: TypedSocket, text: string): void {
     const roomId = this.membership.get(socket.id);
     if (!roomId) return;

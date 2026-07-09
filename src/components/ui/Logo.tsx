@@ -11,7 +11,7 @@ interface LogoProps {
 export default function Logo({ className }: LogoProps) {
   return (
     <a
-      href="#home"
+      href="/"
       aria-label="WindArms.io home"
       className={cn('group flex shrink-0 items-center gap-2.5', className)}
     >

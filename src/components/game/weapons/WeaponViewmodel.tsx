@@ -1,11 +1,14 @@
 'use client';
 
-import { useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { WEAPONS } from '@shared/weapons';
+import { DEFAULT_TINT_ID, weaponTintById } from '@shared/heroes';
 import { fireSignal } from '@/lib/game/effectsBus';
 import { localPose } from '@/lib/game/localPose';
+import { useAuthStore } from '@/stores/authStore';
+import { useChatStore } from '@/stores/chatStore';
 import { useCombatStore } from '@/stores/combatStore';
 import { usePlayerStore } from '@/stores/playerStore';
 import { useSettingsStore } from '@/stores/settingsStore';
@@ -15,6 +18,8 @@ const noRaycast = () => null;
 
 /** Rest offset of the gun in view space. */
 const REST = { x: 0.26, y: -0.2, z: -0.48 };
+/** Inspect animation length (ms). */
+const INSPECT_MS = 1500;
 
 /**
  * First-person procedural weapon. Parametric geometry driven by each
@@ -30,6 +35,12 @@ export default function WeaponViewmodel() {
 
   const current = useWeaponStore((state) => state.current);
   const def = WEAPONS[current];
+  const equippedTint = useAuthStore((state) => state.profile?.equippedTint);
+  // Equipped tint recolors the viewmodel accent; guests/default keep the weapon's own accent.
+  const accentColor =
+    equippedTint && equippedTint !== DEFAULT_TINT_ID
+      ? weaponTintById(equippedTint).color
+      : def.visual.accent;
 
   const sim = useRef({
     bobPhase: 0,
@@ -41,8 +52,21 @@ export default function WeaponViewmodel() {
     swayX: 0,
     swayY: 0,
     raise: 0,
+    inspectUntil: 0,
     lastWeapon: current,
   });
+
+  // Inspect trigger (F): show off the weapon while idle.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.code !== 'KeyF' || event.repeat) return;
+      if (!document.pointerLockElement || useChatStore.getState().open) return;
+      if (!useCombatStore.getState().alive || useWeaponStore.getState().reloadingUntil !== 0) return;
+      sim.current.inspectUntil = performance.now() + INSPECT_MS;
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
 
   const materials = useMemo(() => {
     const body = new THREE.MeshStandardMaterial({
@@ -59,7 +83,7 @@ export default function WeaponViewmodel() {
     });
     const accent = new THREE.MeshStandardMaterial({
       color: '#03161a',
-      emissive: new THREE.Color(def.visual.accent),
+      emissive: new THREE.Color(accentColor),
       emissiveIntensity: 2.2,
       toneMapped: false,
       depthTest: false,
@@ -74,8 +98,8 @@ export default function WeaponViewmodel() {
       toneMapped: false,
     });
     return { body, dark, accent, flash };
-    // Rebuild when the weapon (and its accent color) changes.
-  }, [def.visual.accent]);
+    // Rebuild when the weapon accent (or equipped tint) changes.
+  }, [accentColor]);
 
   useFrame(({ camera }, delta) => {
     const group = groupRef.current;
@@ -95,11 +119,12 @@ export default function WeaponViewmodel() {
     }
     state.raise = Math.max(0, state.raise - delta * 5);
 
-    // Fire feedback.
+    // Fire feedback (also cancels an inspect in progress).
     if (fireSignal.nonce !== state.lastFireNonce) {
       state.lastFireNonce = fireSignal.nonce;
       state.punch = 1;
       state.flashUntil = now + 45;
+      state.inspectUntil = 0;
     }
     state.punch = Math.max(0, state.punch - delta * 9);
 
@@ -118,14 +143,32 @@ export default function WeaponViewmodel() {
     const reloading = useWeaponStore.getState().reloadingUntil !== 0;
     const reloadDip = reloading ? 0.14 : 0;
 
+    // Inspect is cancelled by reloading or a weapon switch.
+    if (reloading || state.raise > 0.01) state.inspectUntil = 0;
+    const inspectProgress = now < state.inspectUntil ? 1 - (state.inspectUntil - now) / INSPECT_MS : 0;
+    const inspectAmt = Math.sin(inspectProgress * Math.PI); // ease up, then back to rest
+    const inspectTilt = Math.sin(inspectProgress * Math.PI * 2) * 0.22;
+
+    // Idle breathing: a subtle drift that fades in as you slow to a stop.
+    const idle = 1 - Math.min(speed / 2, 1);
+    const breath = idle * Math.sin(now * 0.0016) * 0.004;
+
     group.position.copy(camera.position);
     group.quaternion.copy(camera.quaternion);
-    group.translateX(REST.x + state.swayX + Math.cos(state.bobPhase) * bobAmp);
+    group.translateX(REST.x + state.swayX + Math.cos(state.bobPhase) * bobAmp - inspectAmt * 0.05);
     group.translateY(
-      REST.y + state.swayY + Math.abs(Math.sin(state.bobPhase)) * bobAmp * 1.4 - reloadDip - state.raise * 0.22,
+      REST.y +
+        state.swayY +
+        Math.abs(Math.sin(state.bobPhase)) * bobAmp * 1.4 -
+        reloadDip -
+        state.raise * 0.22 +
+        inspectAmt * 0.04 +
+        breath,
     );
-    group.translateZ(REST.z + state.punch * 0.07);
-    group.rotateX(state.punch * 0.05 - reloadDip * 0.9 - state.raise * 0.4);
+    group.translateZ(REST.z + state.punch * 0.07 + inspectAmt * 0.05);
+    group.rotateX(state.punch * 0.05 - reloadDip * 0.9 - state.raise * 0.4 + inspectTilt);
+    group.rotateY(inspectAmt * 1.9);
+    group.rotateZ(inspectAmt * 0.55);
 
     // Muzzle flash visibility.
     const flashing = now < state.flashUntil;

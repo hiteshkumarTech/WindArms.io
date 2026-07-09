@@ -10,6 +10,7 @@ import { useMultiplayerStore } from '@/stores/multiplayerStore';
 import ChatPanel from './hud/ChatPanel';
 import CombatHud from './hud/CombatHud';
 import Crosshair from './hud/Crosshair';
+import DamageDirection from './hud/DamageDirection';
 import DeathOverlay from './hud/DeathOverlay';
 import DebugHud from './hud/DebugHud';
 import EndPodium from './hud/EndPodium';
@@ -92,6 +93,7 @@ export default function GameView() {
       ) : locked ? (
         <>
           <Crosshair />
+          <DamageDirection />
           <DebugHud />
           <RoomHud />
           <CombatHud />

@@ -8,6 +8,7 @@ import type { MovementState } from '@/types/game';
 const STATE_COLORS: Record<MovementState, string> = {
   idle: 'text-white/60',
   run: 'text-white',
+  wallrun: "text-cyan-400",
   sprint: 'text-neon-cyan',
   slide: 'text-neon-orange',
   dash: 'text-neon-purple',

@@ -9,6 +9,8 @@ interface AuthStore {
   profile: Profile | null;
 
   setSession: (token: string, profile: Profile) => void;
+  /** Replace the profile (e.g. after a loadout change). */
+  setProfile: (profile: Profile) => void;
   /** Live XP updates pushed by the game server after each kill. */
   updateXp: (xp: number, level: number) => void;
   logout: () => void;
@@ -25,6 +27,8 @@ export const useAuthStore = create<AuthStore>()(
       profile: null,
 
       setSession: (token, profile) => set({ token, profile }),
+
+      setProfile: (profile) => set({ profile }),
 
       updateXp: (xp, level) =>
         set((state) => (state.profile ? { profile: { ...state.profile, xp, level } } : state)),

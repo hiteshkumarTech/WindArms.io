@@ -11,6 +11,7 @@ import {
 } from '@react-three/rapier';
 import type { KinematicCharacterController } from '@dimforge/rapier3d-compat';
 import * as THREE from 'three';
+import { MAPS } from '@shared/maps';
 import { audio } from '@/lib/audio/audioEngine';
 import { PLAYER } from '@/lib/game/constants';
 import { cameraShake, viewKick } from '@/lib/game/effectsBus';
@@ -20,6 +21,7 @@ import { accelerate, applyFriction, wishDirection } from '@/lib/game/movement';
 import { clamp } from '@/lib/utils';
 import { useKeyboardInput } from '@/hooks/useKeyboardInput';
 import { useChatStore } from '@/stores/chatStore';
+import { useMultiplayerStore } from '@/stores/multiplayerStore';
 import { usePlayerStore } from '@/stores/playerStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import type { MovementState } from '@/types/game';
@@ -43,10 +45,12 @@ export default function PlayerController() {
   const colliderRef = useRef<RapierCollider>(null);
   const controllerRef = useRef<KinematicCharacterController | null>(null);
 
-  const { world } = useRapier();
+  const { world, rapier } = useRapier();
   const camera = useThree((state) => state.camera) as THREE.PerspectiveCamera;
   const inputRef = useKeyboardInput();
   const setSnapshot = usePlayerStore((store) => store.setSnapshot);
+  const mapId = useMultiplayerStore((state) => state.mapId);
+  const mode = useMultiplayerStore((state) => state.mode);
 
   // Simulation state — refs keep the frame loop allocation- and render-free.
   const velocity = useRef(new THREE.Vector3());
@@ -65,6 +69,14 @@ export default function PlayerController() {
   const smoothedFps = useRef(60);
   const hudAccumulator = useRef(0);
   const stepAccumulator = useRef(0);
+  // Wall-run + slide-hop state.
+  const wallUntil = useRef(-Infinity);
+  const wallSide = useRef(0); // -1 wall on the left, +1 on the right, 0 none
+  const wallNormal = useRef(new THREE.Vector3());
+  const wallReadyAt = useRef(-Infinity);
+  const cameraRoll = useRef(0);
+  const slideHopAt = useRef(-Infinity);
+  const slideStartSpeed = useRef(PLAYER.SLIDE_BOOST);
 
   // Rapier character controller lifecycle.
   useEffect(() => {
@@ -98,6 +110,16 @@ export default function PlayerController() {
     document.addEventListener('mousemove', onMouseMove);
     return () => document.removeEventListener('mousemove', onMouseMove);
   }, [camera]);
+
+  // Offline practice has no server to place the player: drop them on the
+  // selected map's first spawn when entering offline or switching maps, so
+  // floating maps never leave them falling through the void. Online spawns
+  // are authoritative (server correction on join and on every round).
+  useEffect(() => {
+    if (mode !== 'offline') return;
+    const spawn = MAPS[mapId]?.spawnPoints[0];
+    if (spawn) pendingCorrection.position = [spawn[0], spawn[1], spawn[2]];
+  }, [mapId, mode]);
 
   useFrame((_, rawDelta) => {
     const body = bodyRef.current;
@@ -179,6 +201,13 @@ export default function PlayerController() {
       input.pressedAt.slide = -Infinity;
       slideUntil.current = now + PLAYER.SLIDE_DURATION * 1000;
       slideReadyAt.current = now + (PLAYER.SLIDE_DURATION + PLAYER.SLIDE_COOLDOWN) * 1000;
+      // Chained slide-hop: landing into a slide soon after hopping keeps the
+      // incoming momentum instead of resetting to the base slide boost.
+      const incomingSpeed = Math.hypot(vel.x, vel.z);
+      slideStartSpeed.current =
+        now - slideHopAt.current < PLAYER.SLIDE_HOP_CHAIN_WINDOW * 1000
+          ? Math.min(Math.max(incomingSpeed, PLAYER.SLIDE_BOOST), PLAYER.SLIDE_HOP_MAX_SPEED)
+          : PLAYER.SLIDE_BOOST;
       // Slide along current momentum; fall back to intent, then facing.
       slideDirection.current.set(vel.x, 0, vel.z);
       if (slideDirection.current.lengthSq() < 0.25) slideDirection.current.copy(wishDir.current);
@@ -190,6 +219,63 @@ export default function PlayerController() {
 
     const sliding = !dashing && now < slideUntil.current && grounded.current;
 
+    // --- Wall-run detection ---------------------------------------------
+    // While airborne and moving fast, short side-probes against the world
+    // stick the player to a wall (reduced gravity, maintained speed, camera
+    // roll, 45° wall-jump). The raycast is wrapped defensively: a physics
+    // hiccup disables the mechanic instead of breaking the controller.
+    let wallActive = false;
+    if (grounded.current) {
+      wallSide.current = 0;
+    } else if (
+      hasControl &&
+      !dashing &&
+      now >= wallReadyAt.current &&
+      Math.hypot(vel.x, vel.z) > PLAYER.WALLRUN_MIN_SPEED
+    ) {
+      const rightX = Math.cos(yaw.current);
+      const rightZ = -Math.sin(yaw.current);
+      try {
+        const eye = body.translation();
+        const origin = { x: eye.x, y: eye.y, z: eye.z };
+        const rightHit = world.castRay(
+          new rapier.Ray(origin, { x: rightX, y: 0, z: rightZ }),
+          PLAYER.WALLRUN_PROBE,
+          true,
+          undefined,
+          undefined,
+          collider,
+        );
+        const leftHit = rightHit
+          ? null
+          : world.castRay(
+              new rapier.Ray(origin, { x: -rightX, y: 0, z: -rightZ }),
+              PLAYER.WALLRUN_PROBE,
+              true,
+              undefined,
+              undefined,
+              collider,
+            );
+        const side = rightHit ? 1 : leftHit ? -1 : 0;
+        if (side === 0) {
+          wallSide.current = 0;
+        } else {
+          if (side !== wallSide.current) {
+            // New wall (or first contact) → reset the per-wall duration.
+            wallSide.current = side;
+            wallUntil.current = now + PLAYER.WALLRUN_MAX_DURATION * 1000;
+          }
+          if (now < wallUntil.current) {
+            wallActive = true;
+            // Normal points from the wall back toward the player.
+            wallNormal.current.set(-side * rightX, 0, -side * rightZ);
+          }
+        }
+      } catch {
+        wallSide.current = 0;
+      }
+    }
+
     // --- Horizontal velocity --------------------------------------------
     if (dashing) {
       vel.x = dashDirection.current.x * PLAYER.DASH_SPEED;
@@ -198,7 +284,7 @@ export default function PlayerController() {
     } else if (sliding) {
       const remaining = (slideUntil.current - now) / (PLAYER.SLIDE_DURATION * 1000);
       const slideSpeed =
-        PLAYER.SLIDE_END_SPEED + (PLAYER.SLIDE_BOOST - PLAYER.SLIDE_END_SPEED) * remaining;
+        PLAYER.SLIDE_END_SPEED + (slideStartSpeed.current - PLAYER.SLIDE_END_SPEED) * remaining;
       vel.x = slideDirection.current.x * slideSpeed + wishDir.current.x * PLAYER.SLIDE_STEER;
       vel.z = slideDirection.current.z * slideSpeed + wishDir.current.z * PLAYER.SLIDE_STEER;
     } else if (grounded.current) {
@@ -214,13 +300,46 @@ export default function PlayerController() {
 
     // --- Gravity and jump -------------------------------------------------
     if (!dashing) {
-      vel.y = Math.max(vel.y + PLAYER.GRAVITY * dt, PLAYER.MAX_FALL);
+      const gravity = wallActive ? PLAYER.GRAVITY * PLAYER.WALLRUN_GRAVITY_SCALE : PLAYER.GRAVITY;
+      vel.y = Math.max(vel.y + gravity * dt, PLAYER.MAX_FALL);
+      if (wallActive) {
+        // Cling: cap the sink and hold a horizontal speed floor along the wall.
+        vel.y = Math.max(vel.y, -PLAYER.WALLRUN_MAX_SINK);
+        const wallSpeed = Math.hypot(vel.x, vel.z);
+        if (wallSpeed > 1e-3 && wallSpeed < PLAYER.WALLRUN_SPEED_FLOOR) {
+          const scale = PLAYER.WALLRUN_SPEED_FLOOR / wallSpeed;
+          vel.x *= scale;
+          vel.z *= scale;
+        }
+      }
     }
 
     const withinCoyote = now - lastGroundedAt.current < PLAYER.COYOTE_TIME * 1000;
     const jumpBuffered = hasControl && now - input.pressedAt.jump < PLAYER.JUMP_BUFFER * 1000;
-    if (jumpBuffered && !dashing && (grounded.current || withinCoyote)) {
+    if (jumpBuffered && !dashing && wallActive) {
+      // Wall-jump: eject off the wall (~45°) and start the re-stick cooldown.
       input.pressedAt.jump = -Infinity;
+      vel.x += wallNormal.current.x * PLAYER.WALLJUMP_OUT_SPEED;
+      vel.z += wallNormal.current.z * PLAYER.WALLJUMP_OUT_SPEED;
+      vel.y = PLAYER.WALLJUMP_UP_SPEED;
+      wallActive = false;
+      wallUntil.current = -Infinity;
+      wallSide.current = 0;
+      wallReadyAt.current = now + PLAYER.WALLRUN_COOLDOWN * 1000;
+      audio.jump();
+    } else if (jumpBuffered && !dashing && (grounded.current || withinCoyote)) {
+      input.pressedAt.jump = -Infinity;
+      // Slide-hop: jumping out of a slide keeps (and slightly boosts) its speed.
+      if (sliding) {
+        const hopSpeed = Math.hypot(vel.x, vel.z);
+        if (hopSpeed > 1e-3) {
+          const scale =
+            Math.min(hopSpeed * PLAYER.SLIDE_HOP_BOOST, PLAYER.SLIDE_HOP_MAX_SPEED) / hopSpeed;
+          vel.x *= scale;
+          vel.z *= scale;
+        }
+        slideHopAt.current = now;
+      }
       vel.y = PLAYER.JUMP_VELOCITY;
       slideUntil.current = -Infinity;
       grounded.current = false;
@@ -257,7 +376,10 @@ export default function PlayerController() {
     if (nextY < PLAYER.KILL_Y || wantsReset) {
       input.pressedAt.reset = -Infinity;
       vel.set(0, 0, 0);
-      [nextX, nextY, nextZ] = PLAYER.SPAWN;
+      // Map-aware fallback spawn — a floating map's reset must land on an
+      // island, not the hardcoded ground-map spawn (which may be over void).
+      const spawn = MAPS[useMultiplayerStore.getState().mapId]?.spawnPoints[0] ?? PLAYER.SPAWN;
+      [nextX, nextY, nextZ] = spawn;
       body.setTranslation({ x: nextX, y: nextY, z: nextZ }, true);
     } else {
       body.setNextKinematicTranslation({ x: nextX, y: nextY, z: nextZ });
@@ -283,11 +405,13 @@ export default function PlayerController() {
       stepAccumulator.current = 0;
     }
 
-    // Damage screen shake: squared-trauma rotational noise, decaying fast.
-    camera.rotation.z = 0;
+    // Wall-run camera roll (leans toward the wall), with damage shake on top.
+    const targetRoll = wallActive ? -wallSide.current * PLAYER.WALLRUN_CAMERA_ROLL : 0;
+    cameraRoll.current = THREE.MathUtils.lerp(cameraRoll.current, targetRoll, 1 - Math.exp(-10 * dt));
+    camera.rotation.z = cameraRoll.current;
     if (cameraShake.trauma > 0) {
       const magnitude = cameraShake.trauma * cameraShake.trauma;
-      camera.rotation.z = Math.sin(now * 0.055) * 0.045 * magnitude;
+      camera.rotation.z += Math.sin(now * 0.055) * 0.045 * magnitude;
       camera.rotation.x += Math.sin(now * 0.047 + 2.1) * 0.03 * magnitude;
       cameraShake.trauma = Math.max(0, cameraShake.trauma - dt * 1.7);
     }
@@ -301,15 +425,17 @@ export default function PlayerController() {
     // --- Publish pose for the network layer (client prediction) -----------
     const movementState: MovementState = dashing
       ? 'dash'
-      : sliding
-        ? 'slide'
-        : !grounded.current
-          ? 'air'
-          : horizontalSpeed < 0.5
-            ? 'idle'
-            : sprinting
-              ? 'sprint'
-              : 'run';
+      : wallActive
+        ? 'wallrun'
+        : sliding
+          ? 'slide'
+          : !grounded.current
+            ? 'air'
+            : horizontalSpeed < 0.5
+              ? 'idle'
+              : sprinting
+                ? 'sprint'
+                : 'run';
     localPose.position[0] = nextX;
     localPose.position[1] = nextY;
     localPose.position[2] = nextZ;

@@ -21,11 +21,14 @@ export default function IconButton({ children, label, href, onClick, className }
   );
 
   if (href) {
+    const external = href.startsWith('http');
     return (
       <motion.a
         aria-label={label}
         title={label}
         href={href}
+        target={external ? '_blank' : undefined}
+        rel={external ? 'noopener noreferrer' : undefined}
         className={classes}
         whileHover={{ scale: 1.06 }}
         whileTap={{ scale: 0.94 }}

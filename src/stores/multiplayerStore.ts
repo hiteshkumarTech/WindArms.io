@@ -3,6 +3,7 @@
 import { create } from 'zustand';
 import type { MapId, PublicPlayer, RoomInfo } from '@shared/protocol';
 import { DEFAULT_MAP_ID } from '@shared/maps';
+import { DEFAULT_HERO_SKIN_ID, DEFAULT_TINT_ID } from '@shared/heroes';
 import type { MatchPhase, PodiumEntry } from '@shared/match';
 
 export type ConnectionStatus = 'offline' | 'connecting' | 'connected' | 'error';
@@ -42,7 +43,7 @@ interface MultiplayerStore {
   connectionLost: () => void;
   addPlayer: (player: PublicPlayer) => void;
   removePlayer: (id: string) => void;
-  syncRoster: (players: PublicPlayer[]) => void;
+  syncRoster: (players: { id: string; name: string }[]) => void;
   setScores: (scores: Record<string, PlayerScore>) => void;
   setMatchSeconds: (seconds: number) => void;
   setOfflineMap: (mapId: MapId) => void;
@@ -115,7 +116,15 @@ export const useMultiplayerStore = create<MultiplayerStore>()((set) => ({
   removePlayer: (id) =>
     set((state) => ({ players: state.players.filter((player) => player.id !== id) })),
 
-  syncRoster: (players) => set({ players }),
+  syncRoster: (players) =>
+    set((state) => ({
+      // Snapshots only carry id/name — keep each player's replicated cosmetics
+      // (from the join path) instead of dropping them on a roster re-sync.
+      players: players.map((player) => {
+        const existing = state.players.find((entry) => entry.id === player.id);
+        return existing ?? { ...player, heroSkin: DEFAULT_HERO_SKIN_ID, tint: DEFAULT_TINT_ID };
+      }),
+    })),
 
   setScores: (scores) => set({ scores }),
 

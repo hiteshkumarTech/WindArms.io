@@ -135,8 +135,15 @@ export default function GlassButton({
         </MotionLink>
       );
     }
+    const external = href.startsWith('http');
     return (
-      <motion.a ref={setNode} href={href} {...shared}>
+      <motion.a
+        ref={setNode}
+        href={href}
+        target={external ? '_blank' : undefined}
+        rel={external ? 'noopener noreferrer' : undefined}
+        {...shared}
+      >
         {content}
       </motion.a>
     );

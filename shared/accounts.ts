@@ -13,6 +13,9 @@ export interface Profile {
   deaths: number;
   matchesPlayed: number;
   timePlayedS: number;
+  /** Equipped cosmetics (validated against the shared/heroes catalogs). */
+  equippedHeroSkin: string;
+  equippedTint: string;
 }
 
 export interface RegisterRequest {
@@ -24,6 +27,11 @@ export interface RegisterRequest {
 export interface LoginRequest {
   email: string;
   password: string;
+}
+
+export interface LoadoutRequest {
+  heroSkin: string;
+  weaponTint: string;
 }
 
 export interface AuthResponse {

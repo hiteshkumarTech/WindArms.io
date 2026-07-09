@@ -26,6 +26,7 @@ export default function CombatHud() {
   const hitmarkerNonce = useCombatStore((state) => state.hitmarkerNonce);
   const damageNonce = useCombatStore((state) => state.damageNonce);
   const lastHitHeadshot = useCombatStore((state) => state.lastHitHeadshot);
+  const lastHitKill = useCombatStore((state) => state.lastHitKill);
 
   const current = useWeaponStore((state) => state.current);
   const mags = useWeaponStore((state) => state.mags);
@@ -38,9 +39,22 @@ export default function CombatHud() {
 
   const healthColor =
     health > 60 ? 'bg-neon-cyan' : health > 30 ? 'bg-neon-orange' : 'bg-red-500';
+  // Kill confirm (gold) beats headshot (red) beats a normal hit (white).
+  const markerColor = lastHitKill ? 'bg-neon-orange' : lastHitHeadshot ? 'bg-red-400' : 'bg-white';
+  const markerSize = lastHitKill ? 'h-10 w-10' : lastHitHeadshot ? 'h-8 w-8' : 'h-6 w-6';
+  const lowHealth = health <= 30;
 
   return (
     <>
+      {/* Low-health vignette (persistent + pulsing while critical) */}
+      <div
+        aria-hidden
+        className={cn(
+          'pointer-events-none absolute inset-0 z-10 bg-[radial-gradient(110%_110%_at_50%_50%,transparent_45%,rgba(220,38,38,0.3))] transition-opacity duration-500',
+          lowHealth ? 'animate-pulse opacity-100' : 'opacity-0',
+        )}
+      />
+
       {/* Damage vignette */}
       <div
         aria-hidden
@@ -58,30 +72,14 @@ export default function CombatHud() {
           hitmarker ? 'opacity-100' : 'opacity-0',
         )}
       >
-        <div className={cn('relative rotate-45', lastHitHeadshot ? 'h-8 w-8' : 'h-6 w-6')}>
+        <div className={cn('relative rotate-45', markerSize)}>
+          <span className={cn('absolute left-1/2 top-0 h-1.5 w-0.5 -translate-x-1/2', markerColor)} />
           <span
-            className={cn(
-              'absolute left-1/2 top-0 h-1.5 w-0.5 -translate-x-1/2',
-              lastHitHeadshot ? 'bg-red-400' : 'bg-white',
-            )}
+            className={cn('absolute bottom-0 left-1/2 h-1.5 w-0.5 -translate-x-1/2', markerColor)}
           />
+          <span className={cn('absolute left-0 top-1/2 h-0.5 w-1.5 -translate-y-1/2', markerColor)} />
           <span
-            className={cn(
-              'absolute bottom-0 left-1/2 h-1.5 w-0.5 -translate-x-1/2',
-              lastHitHeadshot ? 'bg-red-400' : 'bg-white',
-            )}
-          />
-          <span
-            className={cn(
-              'absolute left-0 top-1/2 h-0.5 w-1.5 -translate-y-1/2',
-              lastHitHeadshot ? 'bg-red-400' : 'bg-white',
-            )}
-          />
-          <span
-            className={cn(
-              'absolute right-0 top-1/2 h-0.5 w-1.5 -translate-y-1/2',
-              lastHitHeadshot ? 'bg-red-400' : 'bg-white',
-            )}
+            className={cn('absolute right-0 top-1/2 h-0.5 w-1.5 -translate-y-1/2', markerColor)}
           />
         </div>
       </div>

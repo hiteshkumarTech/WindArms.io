@@ -27,13 +27,18 @@ export interface MapTheme {
   pointLights: Array<{ position: Vec3; color: string; intensity: number; distance: number }>;
   particles: 'embers' | 'snow' | 'motes';
   showSkyline: boolean;
+  /** Procedural sky-dome gradient (horizon → mid → zenith), replacing void black. */
+  sky: { horizon: string; mid: string; zenith: string };
+  /** Tone-mapping exposure (1 = renderer default); bright maps raise it. */
+  exposure?: number;
 }
 
 export interface MapDef {
   id: MapId;
   name: string;
   description: string;
-  floor: ArenaBox;
+  /** Solid ground plane. Omitted on floating maps, where players fall to killPlaneY. */
+  floor?: ArenaBox;
   walls: ArenaBox[];
   /** Thin walkable surfaces. */
   platforms: ArenaBox[];
@@ -44,6 +49,8 @@ export interface MapDef {
   spawnPoints: Vec3[];
   /** Pushable dynamic crates — client-side flavor, no server occlusion. */
   crates: Vec3[];
+  /** Y below which an alive player is eliminated. Set on floating maps only. */
+  killPlaneY?: number;
   theme: MapTheme;
 }
 
@@ -114,6 +121,7 @@ const CYBER_CITY: MapDef = {
     ],
     particles: 'embers',
     showSkyline: true,
+    sky: { horizon: '#0c1420', mid: '#0a1a2a', zenith: '#04070d' },
   },
 };
 
@@ -179,6 +187,7 @@ const SNOW_BASE: MapDef = {
     ],
     particles: 'snow',
     showSkyline: false,
+    sky: { horizon: '#eaf3fc', mid: '#c2d8ee', zenith: '#8fb6dc' },
   },
 };
 
@@ -247,6 +256,67 @@ const FOREST_TEMPLE: MapDef = {
     ],
     particles: 'motes',
     showSkyline: false,
+    sky: { horizon: '#2a3a2a', mid: '#18271b', zenith: '#0a140e' },
+  },
+};
+
+const SKY_SANCTUM: MapDef = {
+  id: 'sky_sanctum',
+  name: 'Sky Sanctum',
+  description: 'Floating ruins in open sky — long dash gaps and no floor to catch you.',
+  // No `floor`: step off an island and you fall to the kill plane.
+  walls: [],
+  platforms: [
+    { position: [0, 1, 0], size: [11, 1, 11] }, // central hub
+    { position: [0, 2.6, -15], size: [7, 1, 7] }, // north, raised
+    { position: [0, 0.4, 15], size: [7, 1, 7] }, // south, sunken
+    { position: [16, 3.4, 1], size: [6, 1, 6] }, // east perch
+    { position: [-16, 1.4, -1], size: [6, 1, 6] }, // west
+    { position: [12, 5.2, -12], size: [4.5, 1, 4.5] }, // NE high perch
+    { position: [-12, -0.6, 12], size: [4.5, 1, 4.5] }, // SW low island
+    { position: [-13, 4.2, -13], size: [4, 1, 4] }, // NW sniper perch
+  ],
+  obstacles: [
+    { position: [2.6, 2.1, 0], size: [1.6, 1.4, 1.6] }, // central cover
+    { position: [-2.6, 2.1, 0], size: [1.6, 1.4, 1.6] },
+    { position: [0, 3.7, -15], size: [1.5, 1.4, 1.5] }, // north cover
+    { position: [16, 4.5, 1], size: [1.4, 1.4, 1.4] }, // east cover
+  ],
+  ramps: [],
+  stairs: [],
+  spawnPoints: [
+    [4, 4, 4],
+    [-4, 4, -4],
+    [0, 5.5, -15],
+    [0, 3.4, 15],
+    [16, 6.4, 1],
+    [-16, 4.4, -1],
+    [12, 8.2, -12],
+    [-12, 2.4, 12],
+  ],
+  crates: [
+    [0, 2.2, 3.5],
+    [-16, 2.6, -1],
+    [0, 3.8, -13],
+  ],
+  killPlaneY: -8,
+  theme: {
+    fogColor: '#bcd6f2',
+    fogNear: 45,
+    fogFar: 170,
+    floorColor: '#8393a8',
+    structureColor: '#8f9fb4',
+    platformColor: '#aab8cc',
+    gridCellColor: '#7fa8d8',
+    gridSectionColor: '#cfe4ff',
+    accents: ['#00F5FF', '#7C5CFF', '#ffd27f'],
+    ambientIntensity: 0.95,
+    directional: { position: [22, 32, 12], intensity: 2.7, color: '#ffffff' },
+    pointLights: [],
+    particles: 'motes',
+    showSkyline: false,
+    sky: { horizon: '#dce9f8', mid: '#8fc0ee', zenith: '#3f83d6' },
+    exposure: 1.15,
   },
 };
 
@@ -254,14 +324,16 @@ export const MAPS: Record<MapId, MapDef> = {
   cyber_city: CYBER_CITY,
   snow_base: SNOW_BASE,
   forest_temple: FOREST_TEMPLE,
+  sky_sanctum: SKY_SANCTUM,
 };
 
-export const MAP_ORDER: MapId[] = ['cyber_city', 'snow_base', 'forest_temple'];
+export const MAP_ORDER: MapId[] = ['cyber_city', 'snow_base', 'forest_temple', 'sky_sanctum'];
 
 export const DEFAULT_MAP_ID: MapId = 'cyber_city';
 
 /** Static geometry the server raycasts for shot occlusion (ramps excluded). */
 export function occlusionBoxesFor(mapId: MapId): ArenaBox[] {
   const map = MAPS[mapId];
-  return [map.floor, ...map.walls, ...map.platforms, ...map.obstacles, ...map.stairs];
+  const floor = map.floor ? [map.floor] : [];
+  return [...floor, ...map.walls, ...map.platforms, ...map.obstacles, ...map.stairs];
 }

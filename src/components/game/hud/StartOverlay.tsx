@@ -7,6 +7,7 @@ import {
   KeyRound,
   Loader2,
   LogOut,
+  Palette,
   Settings,
   Swords,
   User,
@@ -21,6 +22,7 @@ import Logo from '@/components/ui/Logo';
 import { useAuthStore } from '@/stores/authStore';
 import { useMultiplayerStore } from '@/stores/multiplayerStore';
 import AuthPanel from './AuthPanel';
+import LoadoutPanel from './LoadoutPanel';
 import SettingsPanel from './SettingsPanel';
 
 interface ControlBinding {
@@ -36,6 +38,7 @@ const CONTROLS: ControlBinding[] = [
   { keys: 'C', action: 'Slide' },
   { keys: 'Q', action: 'Dash' },
   { keys: 'R', action: 'Reload' },
+  { keys: 'F', action: 'Inspect' },
   { keys: '1-7', action: 'Weapons' },
   { keys: 'Tab', action: 'Scoreboard' },
   { keys: 'Enter', action: 'Chat' },
@@ -60,6 +63,7 @@ export default function StartOverlay({
   const [code, setCode] = useState('');
   const [showSettings, setShowSettings] = useState(false);
   const [showAuth, setShowAuth] = useState(false);
+  const [showLoadout, setShowLoadout] = useState(false);
   const status = useMultiplayerStore((state) => state.status);
   const lastError = useMultiplayerStore((state) => state.lastError);
   const mapId = useMultiplayerStore((state) => state.mapId);
@@ -77,12 +81,14 @@ export default function StartOverlay({
     useMultiplayerStore.getState().setOfflineMap(next);
   };
 
-  if (showSettings || showAuth) {
+  if (showSettings || showAuth || showLoadout) {
     return (
       <div className="absolute inset-0 z-30 grid place-items-center overflow-y-auto bg-void/60 p-4 backdrop-blur-md">
         <div className="glass-deep w-full max-w-md rounded-2xl p-6">
           {showSettings ? (
             <SettingsPanel onClose={() => setShowSettings(false)} />
+          ) : showLoadout ? (
+            <LoadoutPanel onClose={() => setShowLoadout(false)} />
           ) : (
             <AuthPanel onClose={() => setShowAuth(false)} />
           )}
@@ -114,9 +120,14 @@ export default function StartOverlay({
                   Level {progress.level} · {profile.kills} kills · {profile.matchesPlayed} matches
                 </p>
               </div>
-              <IconButton label="Sign out" onClick={() => useAuthStore.getState().logout()}>
-                <LogOut className="h-4 w-4" aria-hidden />
-              </IconButton>
+              <div className="flex items-center gap-1">
+                <IconButton label="Loadout" onClick={() => setShowLoadout(true)}>
+                  <Palette className="h-4 w-4" aria-hidden />
+                </IconButton>
+                <IconButton label="Sign out" onClick={() => useAuthStore.getState().logout()}>
+                  <LogOut className="h-4 w-4" aria-hidden />
+                </IconButton>
+              </div>
             </div>
             <div className="mt-2 h-1 overflow-hidden rounded-full bg-white/10">
               <div

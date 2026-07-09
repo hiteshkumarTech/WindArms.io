@@ -55,10 +55,16 @@ io.use(async (socket, next) => {
       if (userId && prisma) {
         const user = await prisma.user.findUnique({
           where: { id: userId },
-          select: { id: true, username: true, xp: true },
+          select: { id: true, username: true, xp: true, equippedHeroSkin: true, equippedTint: true },
         });
         if (user) {
-          socket.data.user = { id: user.id, username: user.username, xp: user.xp };
+          socket.data.user = {
+            id: user.id,
+            username: user.username,
+            xp: user.xp,
+            equippedHeroSkin: user.equippedHeroSkin,
+            equippedTint: user.equippedTint,
+          };
         }
       }
     }
@@ -114,13 +120,8 @@ io.on('connection', (socket) => {
     roomManager.handleChat(socket, cleaned);
   });
 
-  socket.on('chat:send', (text) => {
-    const cleaned = sanitizeChatText(text);
-    if (cleaned.length === 0) return;
-    roomManager.handleChat(socket, cleaned);
-  });
-
-  socket.on('net:ping', (_clientTime, ack) => {
+  socket.on('net:ping', (payload, ack) => {
+    if (payload && typeof payload.rtt === 'number') roomManager.updateRtt(socket, payload.rtt);
     if (typeof ack === 'function') ack(Date.now());
   });
 

@@ -86,19 +86,19 @@ export default function LeaderboardView() {
             </div>
           ) : (
             <div className="mt-5 overflow-hidden rounded-xl border border-white/10">
-              <div className="grid grid-cols-[3rem_1fr_4rem_4.5rem_4rem_4rem] gap-2 bg-white/5 px-4 py-2 text-[10px] uppercase tracking-widest text-white/45">
+              <div className="grid grid-cols-[2.5rem_1fr_3rem_3.5rem] gap-2 bg-white/5 px-3 py-2 text-[10px] uppercase tracking-widest text-white/45 sm:grid-cols-[3rem_1fr_4rem_4.5rem_4rem_4rem] sm:px-4">
                 <span>Rank</span>
                 <span>Pilot</span>
                 <span className="text-right">Level</span>
-                <span className="text-right">XP</span>
+                <span className="hidden text-right sm:block">XP</span>
                 <span className="text-right">Kills</span>
-                <span className="text-right">K/D</span>
+                <span className="hidden text-right sm:block">K/D</span>
               </div>
               {state.entries.map((entry, index) => (
                 <div
                   key={entry.rank}
                   className={cn(
-                    'grid grid-cols-[3rem_1fr_4rem_4.5rem_4rem_4rem] gap-2 px-4 py-2.5 text-sm',
+                    'grid grid-cols-[2.5rem_1fr_3rem_3.5rem] gap-2 px-3 py-2.5 text-sm sm:grid-cols-[3rem_1fr_4rem_4.5rem_4rem_4rem] sm:px-4',
                     index % 2 === 1 && 'bg-white/[0.03]',
                   )}
                 >
@@ -107,11 +107,11 @@ export default function LeaderboardView() {
                   </span>
                   <span className="truncate font-medium text-white/90">{entry.username}</span>
                   <span className="text-right tabular-nums text-white/70">{entry.level}</span>
-                  <span className="text-right tabular-nums text-white/70">
+                  <span className="hidden text-right tabular-nums text-white/70 sm:block">
                     {entry.xp.toLocaleString('en-US')}
                   </span>
                   <span className="text-right tabular-nums text-white/70">{entry.kills}</span>
-                  <span className="text-right tabular-nums text-white/50">
+                  <span className="hidden text-right tabular-nums text-white/50 sm:block">
                     {entry.deaths === 0 ? entry.kills.toFixed(1) : (entry.kills / entry.deaths).toFixed(1)}
                   </span>
                 </div>

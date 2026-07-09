@@ -1,6 +1,7 @@
 import type {
   AuthResponse,
   LeaderboardResponse,
+  LoadoutRequest,
   LoginRequest,
   Profile,
   RegisterRequest,
@@ -44,6 +45,13 @@ export const api = {
 
   me: (token: string) =>
     request<{ profile: Profile }>('/auth/me', { headers: { Authorization: `Bearer ${token}` } }),
+
+  loadout: (token: string, payload: LoadoutRequest) =>
+    request<{ profile: Profile }>('/account/loadout', {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${token}` },
+      body: JSON.stringify(payload),
+    }),
 
   leaderboard: () => request<LeaderboardResponse>('/leaderboard'),
 };

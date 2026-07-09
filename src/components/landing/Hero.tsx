@@ -5,9 +5,11 @@ import gsap from 'gsap';
 import { Crosshair, Download, Play } from 'lucide-react';
 import DiscordIcon from '@/components/ui/DiscordIcon';
 import GlassButton from '@/components/ui/GlassButton';
+import { DISCORD_URL } from '@/lib/constants';
 import { cn } from '@/lib/utils';
 import { useIsomorphicLayoutEffect } from '@/hooks/useIsomorphicLayoutEffect';
 import { usePrefersReducedMotion } from '@/hooks/usePrefersReducedMotion';
+import { useUiStore } from '@/stores/uiStore';
 import PreviewCards from './PreviewCards';
 import StatCards from './StatCards';
 import StatusRow from './StatusRow';
@@ -65,6 +67,7 @@ export default function Hero() {
   const rootRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const reducedMotion = usePrefersReducedMotion();
+  const openDownload = useUiStore((state) => state.openDownload);
 
   // Entrance timeline: blur-fade word stagger, then description, CTAs, cards.
   useIsomorphicLayoutEffect(() => {
@@ -159,13 +162,13 @@ export default function Hero() {
             <GlassButton variant="primary" icon={Play} href="/play">
               Play Free Now
             </GlassButton>
-            <GlassButton variant="outline" icon={Crosshair} href="#weapons">
+            <GlassButton variant="outline" icon={Crosshair} href="/weapons">
               View Arsenal
             </GlassButton>
-            <GlassButton variant="glass" icon={DiscordIcon} href="#community">
+            <GlassButton variant="glass" icon={DiscordIcon} href={DISCORD_URL}>
               Join Discord
             </GlassButton>
-            <GlassButton variant="glass" icon={Download} href="#download">
+            <GlassButton variant="glass" icon={Download} onClick={openDownload}>
               Download Client
             </GlassButton>
           </div>

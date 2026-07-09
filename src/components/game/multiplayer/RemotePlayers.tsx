@@ -4,31 +4,56 @@ import { useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { Html } from '@react-three/drei';
 import * as THREE from 'three';
+import { appearanceForSkin } from '@shared/heroes';
 import { remoteSnapshots, type RemotePose } from '@/lib/network/interpolation';
 import { useMultiplayerStore } from '@/stores/multiplayerStore';
+import HeroRig, { type RigHandle } from '../characters/HeroRig';
+import {
+  createHeroPose,
+  poseFor,
+  resolveLocomotion,
+  strideCadence,
+  type Locomotion,
+} from '../characters/heroAnimator';
 
-const AVATAR_ACCENTS = ['#00F5FF', '#FF7A00', '#7C5CFF', '#34d399', '#f472b6'];
+/** Death collapse + fade duration before the corpse is hidden (ms). */
+const DEATH_MS = 1400;
+/** Exponential smoothing rate for joint angles (higher = snappier). */
+const SMOOTH = 16;
+/** Exponential smoothing rate for the measured speed estimate. */
+const SPEED_SMOOTH = 8;
+/** Clamp per-frame dt so a tab stall can't fling the smoothing. */
+const MAX_DT = 0.05;
+const TWO_PI = Math.PI * 2;
 
-function hashString(value: string): number {
-  let hash = 0;
-  for (let i = 0; i < value.length; i++) {
-    hash = (hash * 31 + value.charCodeAt(i)) | 0;
-  }
-  return Math.abs(hash);
+interface AnimState {
+  prevLoco: Locomotion;
+  phase: number;
+  speed: number;
+  lastPos: [number, number, number] | null;
+  /** performance.now() of death, or 0 while alive. */
+  deathAt: number;
 }
 
 interface RemoteAvatarProps {
   id: string;
   name: string;
+  heroSkin: string;
+  tint: string;
 }
 
 /**
- * One interpolated remote player: capsule body, emissive visor facing the
- * player's look direction, accent ring and a floating nametag. Pose is
- * sampled from the snapshot buffer every frame — no React state involved.
+ * One interpolated remote player rendered as an articulated hero rig.
+ * The outer group owns world position/yaw/visibility; the rig owns its own
+ * bones, posed every frame by the animator from the sampled MovementState,
+ * a locally measured speed and the look pitch. No React state on the frame
+ * path — poses are written straight onto the rig's groups.
  */
-function RemoteAvatar({ id, name }: RemoteAvatarProps) {
+function RemoteAvatar({ id, name, heroSkin, tint }: RemoteAvatarProps) {
   const groupRef = useRef<THREE.Group>(null);
+  const rigRef = useRef<RigHandle>(null);
+  const appearance = useMemo(() => appearanceForSkin(heroSkin), [heroSkin]);
+
   const poseRef = useRef<RemotePose>({
     position: [0, -100, 0],
     yaw: 0,
@@ -38,57 +63,106 @@ function RemoteAvatar({ id, name }: RemoteAvatarProps) {
     weapon: 'ar',
     health: 100,
   });
-  const accent = useMemo(() => AVATAR_ACCENTS[hashString(id) % AVATAR_ACCENTS.length], [id]);
+  const outPose = useRef(createHeroPose());
+  const anim = useRef<AnimState>({
+    prevLoco: 'idle',
+    phase: 0,
+    speed: 0,
+    lastPos: null,
+    deathAt: 0,
+  });
 
   useFrame((_, delta) => {
     const group = groupRef.current;
-    if (!group) return;
+    const rig = rigRef.current;
+    if (!group || !rig) return;
 
     const pose = poseRef.current;
-    const hasData = remoteSnapshots.samplePlayer(id, pose);
-    group.visible = hasData && pose.alive;
-    if (!group.visible) return;
+    if (!remoteSnapshots.samplePlayer(id, pose)) {
+      group.visible = false;
+      return;
+    }
 
+    const dt = Math.min(delta, MAX_DT);
+    const state = anim.current;
+
+    // Measure horizontal speed from the interpolated position delta.
+    if (state.lastPos) {
+      const dx = pose.position[0] - state.lastPos[0];
+      const dz = pose.position[2] - state.lastPos[2];
+      const instant = Math.hypot(dx, dz) / Math.max(dt, 1e-3);
+      state.speed = THREE.MathUtils.lerp(state.speed, instant, 1 - Math.exp(-SPEED_SMOOTH * dt));
+      state.lastPos[0] = pose.position[0];
+      state.lastPos[1] = pose.position[1];
+      state.lastPos[2] = pose.position[2];
+    } else {
+      state.lastPos = [pose.position[0], pose.position[1], pose.position[2]];
+      state.speed = 0;
+    }
+
+    // Death latch: start the collapse timer on the alive→dead edge; clear it
+    // (and restore opacity) when the player respawns.
+    const now = performance.now();
+    if (pose.alive) {
+      if (state.deathAt !== 0) {
+        state.deathAt = 0;
+        rig.setOpacity(1);
+      }
+    } else if (state.deathAt === 0) {
+      state.deathAt = now;
+    }
+
+    const loco = resolveLocomotion(state.prevLoco, {
+      state: pose.state,
+      speed: state.speed,
+      alive: pose.alive,
+    });
+    state.prevLoco = loco;
+
+    state.phase = (state.phase + strideCadence(loco, state.speed) * dt) % TWO_PI;
+    const target = poseFor(loco, state.phase, state.speed, pose.pitch, outPose.current);
+
+    // World transform (already smoothed by snapshot interpolation).
+    group.visible = true;
     group.position.set(pose.position[0], pose.position[1], pose.position[2]);
     group.rotation.y = pose.yaw;
 
-    // Squash the capsule while sliding — reads clearly at a distance.
-    const targetScaleY = pose.state === 'slide' ? 0.55 : 1;
-    group.scale.y = THREE.MathUtils.lerp(group.scale.y, targetScaleY, 1 - Math.exp(-10 * delta));
+    // Death sink + dissolve.
+    let sink = 0;
+    if (state.deathAt !== 0) {
+      const t = Math.min((now - state.deathAt) / DEATH_MS, 1);
+      sink = -0.35 * t;
+      rig.setOpacity(1 - t);
+      if (t >= 1) {
+        group.visible = false;
+        return;
+      }
+    }
+
+    // Apply the pose to the bones with exponential smoothing so locomotion
+    // changes (land → run, run → slide, death) blend instead of popping.
+    const k = 1 - Math.exp(-SMOOTH * dt);
+    const lerp = THREE.MathUtils.lerp;
+    rig.body.position.y = lerp(rig.body.position.y, target.rootY + sink, k);
+    rig.torso.rotation.x = lerp(rig.torso.rotation.x, target.torsoPitch, k);
+    rig.torso.rotation.z = lerp(rig.torso.rotation.z, target.torsoRoll, k);
+    rig.head.rotation.x = lerp(rig.head.rotation.x, target.headPitch, k);
+    rig.head.rotation.y = lerp(rig.head.rotation.y, target.headYaw, k);
+    rig.armL.rotation.x = lerp(rig.armL.rotation.x, target.armLPitch, k);
+    rig.armL.rotation.z = lerp(rig.armL.rotation.z, target.armLRoll, k);
+    rig.forearmL.rotation.x = lerp(rig.forearmL.rotation.x, target.elbowL, k);
+    rig.armR.rotation.x = lerp(rig.armR.rotation.x, target.armRPitch, k);
+    rig.armR.rotation.z = lerp(rig.armR.rotation.z, target.armRRoll, k);
+    rig.forearmR.rotation.x = lerp(rig.forearmR.rotation.x, target.elbowR, k);
+    rig.legL.rotation.x = lerp(rig.legL.rotation.x, target.legLPitch, k);
+    rig.legR.rotation.x = lerp(rig.legR.rotation.x, target.legRPitch, k);
+    rig.weapon.rotation.x = lerp(rig.weapon.rotation.x, target.weaponPitch, k);
   });
 
   return (
     <group ref={groupRef} visible={false}>
-      <mesh>
-        <capsuleGeometry args={[0.4, 1.2, 6, 14]} />
-        <meshStandardMaterial color="#141a23" roughness={0.5} metalness={0.5} />
-      </mesh>
-      {/* Visor (faces -Z, the yaw-forward direction) */}
-      <mesh position={[0, 0.45, -0.28]}>
-        <boxGeometry args={[0.34, 0.12, 0.16]} />
-        <meshStandardMaterial
-          color="#02090a"
-          emissive={accent}
-          emissiveIntensity={2.4}
-          toneMapped={false}
-        />
-      </mesh>
-      {/* Accent ring */}
-      <mesh position={[0, -0.1, 0]}>
-        <cylinderGeometry args={[0.415, 0.415, 0.06, 16]} />
-        <meshStandardMaterial
-          color="#02090a"
-          emissive={accent}
-          emissiveIntensity={1.6}
-          toneMapped={false}
-        />
-      </mesh>
-      {/* Held weapon (generic silhouette, points along look direction) */}
-      <mesh position={[0.28, 0.3, -0.35]}>
-        <boxGeometry args={[0.07, 0.09, 0.5]} />
-        <meshStandardMaterial color="#10151d" metalness={0.8} roughness={0.4} />
-      </mesh>
-      <Html position={[0, 1.35, 0]} center distanceFactor={14} style={{ pointerEvents: 'none' }}>
+      <HeroRig ref={rigRef} appearance={appearance} tint={tint} />
+      <Html position={[0, 1.0, 0]} center distanceFactor={14} style={{ pointerEvents: 'none' }}>
         <div className="whitespace-nowrap rounded-md border border-white/10 bg-black/60 px-2 py-0.5 text-[11px] font-medium text-white/85">
           {name}
         </div>
@@ -97,7 +171,7 @@ function RemoteAvatar({ id, name }: RemoteAvatarProps) {
   );
 }
 
-/** Mounts an interpolated avatar for every other player in the room. */
+/** Mounts an interpolated hero avatar for every other player in the room. */
 export default function RemotePlayers() {
   const players = useMultiplayerStore((state) => state.players);
   const selfId = useMultiplayerStore((state) => state.selfId);
@@ -106,7 +180,7 @@ export default function RemotePlayers() {
   return (
     <>
       {remotes.map((player) => (
-        <RemoteAvatar key={player.id} id={player.id} name={player.name} />
+        <RemoteAvatar key={player.id} id={player.id} name={player.name} heroSkin={player.heroSkin} tint={player.tint} />
       ))}
     </>
   );

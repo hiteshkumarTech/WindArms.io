@@ -17,17 +17,19 @@ export default function TestArena() {
 
   return (
     <group key={mapId}>
-      {/* Floor */}
-      <RigidBody type="fixed" colliders={false}>
-        <CuboidCollider
-          args={[map.floor.size[0] / 2, map.floor.size[1] / 2, map.floor.size[2] / 2]}
-          position={map.floor.position}
-        />
-        <mesh position={map.floor.position} receiveShadow>
-          <boxGeometry args={map.floor.size} />
-          <meshStandardMaterial color={theme.floorColor} roughness={0.9} metalness={0.2} />
-        </mesh>
-      </RigidBody>
+      {/* Floor — omitted on floating maps, where a fall means death */}
+      {map.floor ? (
+        <RigidBody type="fixed" colliders={false}>
+          <CuboidCollider
+            args={[map.floor.size[0] / 2, map.floor.size[1] / 2, map.floor.size[2] / 2]}
+            position={map.floor.position}
+          />
+          <mesh position={map.floor.position} receiveShadow>
+            <boxGeometry args={map.floor.size} />
+            <meshStandardMaterial color={theme.floorColor} roughness={0.9} metalness={0.2} />
+          </mesh>
+        </RigidBody>
+      ) : null}
 
       {/* Perimeter walls */}
       {map.walls.map((wall, index) => (

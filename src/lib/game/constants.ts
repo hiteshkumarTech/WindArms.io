@@ -47,4 +47,21 @@ export const PLAYER = {
   // World
   SPAWN: [0, 3, 10] as [number, number, number],
   KILL_Y: -25,
+
+  // Wall-run (F5) — tune live; movement feel needs playtesting.
+  WALLRUN_MIN_SPEED: 7, // horizontal speed (m/s) needed to stick to a wall
+  WALLRUN_PROBE: 0.75, // side-ray length from the capsule center (radius 0.4 + reach)
+  WALLRUN_GRAVITY_SCALE: 0.32, // fraction of gravity while wall-running
+  WALLRUN_MAX_SINK: 2.5, // max downward speed (m/s) while stuck
+  WALLRUN_SPEED_FLOOR: 8, // maintained horizontal speed along the wall
+  WALLRUN_MAX_DURATION: 1.6, // seconds of wall-run per wall
+  WALLRUN_COOLDOWN: 0.35, // re-stick delay after a wall-jump
+  WALLRUN_CAMERA_ROLL: 0.21, // camera roll while wall-running (~12°)
+  WALLJUMP_OUT_SPEED: 9, // horizontal ejection off the wall
+  WALLJUMP_UP_SPEED: 7.5, // vertical ejection (≈45° with OUT)
+
+  // Slide-hop (F5)
+  SLIDE_HOP_BOOST: 1.05, // speed multiplier when jumping out of a slide
+  SLIDE_HOP_MAX_SPEED: 12.5, // cap on chained slide-hop speed
+  SLIDE_HOP_CHAIN_WINDOW: 0.3, // land-into-slide window that preserves momentum
 };

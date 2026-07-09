@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useReducer } from 'react';
-import { Crosshair, Skull } from 'lucide-react';
+import { ChevronsDown, Crosshair, Skull } from 'lucide-react';
 import { WEAPONS } from '@shared/weapons';
 import { cn } from '@/lib/utils';
 import { useCombatStore } from '@/stores/combatStore';
@@ -34,22 +34,36 @@ export default function KillFeed() {
             entry.self === 'victim' && 'border-red-500/40',
           )}
         >
-          <span className={cn(entry.self === 'killer' ? 'text-neon-cyan' : 'text-white/85')}>
-            {entry.killerName}
-          </span>
-          <span className="flex items-center gap-1 text-white/40">
-            {entry.headshot ? (
-              <Skull className="h-3 w-3 text-red-400" aria-hidden />
-            ) : (
-              <Crosshair className="h-3 w-3" aria-hidden />
-            )}
-            <span className="text-[10px] uppercase tracking-wider">
-              {WEAPONS[entry.weapon].name}
-            </span>
-          </span>
-          <span className={cn(entry.self === 'victim' ? 'text-red-400' : 'text-white/85')}>
-            {entry.victimName}
-          </span>
+          {entry.environmental ? (
+            <>
+              <span className="flex items-center gap-1 text-sky-300/80">
+                <ChevronsDown className="h-3 w-3" aria-hidden />
+                <span className="text-[10px] uppercase tracking-wider">fell</span>
+              </span>
+              <span className={cn(entry.self === 'victim' ? 'text-red-400' : 'text-white/85')}>
+                {entry.victimName}
+              </span>
+            </>
+          ) : (
+            <>
+              <span className={cn(entry.self === 'killer' ? 'text-neon-cyan' : 'text-white/85')}>
+                {entry.killerName}
+              </span>
+              <span className="flex items-center gap-1 text-white/40">
+                {entry.headshot ? (
+                  <Skull className="h-3 w-3 text-red-400" aria-hidden />
+                ) : (
+                  <Crosshair className="h-3 w-3" aria-hidden />
+                )}
+                <span className="text-[10px] uppercase tracking-wider">
+                  {WEAPONS[entry.weapon].name}
+                </span>
+              </span>
+              <span className={cn(entry.self === 'victim' ? 'text-red-400' : 'text-white/85')}>
+                {entry.victimName}
+              </span>
+            </>
+          )}
         </div>
       ))}
     </div>

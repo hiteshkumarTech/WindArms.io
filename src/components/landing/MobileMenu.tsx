@@ -5,6 +5,7 @@ import { X } from 'lucide-react';
 import GlassButton from '@/components/ui/GlassButton';
 import Logo from '@/components/ui/Logo';
 import { NAV_LINKS } from '@/lib/constants';
+import { useUiStore } from '@/stores/uiStore';
 
 interface MobileMenuProps {
   open: boolean;
@@ -28,6 +29,7 @@ const itemVariants: Variants = {
 };
 
 export default function MobileMenu({ open, onClose }: MobileMenuProps) {
+  const openDownload = useUiStore((state) => state.openDownload);
   return (
     <AnimatePresence>
       {open ? (
@@ -71,7 +73,14 @@ export default function MobileMenu({ open, onClose }: MobileMenuProps) {
             <GlassButton variant="primary" href="/play" className="w-full" onClick={onClose}>
               Play Now
             </GlassButton>
-            <GlassButton variant="glass" href="#download" className="w-full" onClick={onClose}>
+            <GlassButton
+              variant="glass"
+              className="w-full"
+              onClick={() => {
+                onClose();
+                openDownload();
+              }}
+            >
               Download
             </GlassButton>
           </div>

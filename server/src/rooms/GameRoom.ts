@@ -12,6 +12,7 @@ import {
 } from '../../../shared/protocol';
 import type { ArenaBox } from '../../../shared/arena';
 import { MAPS, MAP_ORDER, occlusionBoxesFor } from '../../../shared/maps';
+import { DEFAULT_TINT_ID, pickHeroAppearance } from '../../../shared/heroes';
 import {
   INTERMISSION_MS,
   ROUND_DURATION_MS,
@@ -38,6 +39,8 @@ import {
   resolvePlayerHit,
 } from '../game/combat';
 import { createStreakState, recordKill, resetOnDeath, type StreakState } from '../game/streaks';
+import { PoseHistory } from '../game/history';
+import { rewindTime, updateRttEma, RTT_UNSET } from '../game/lagcomp';
 import {
   coerceMovementState,
   validateMovement,
@@ -55,6 +58,8 @@ const VIOLATION_LIMIT = 20;
 const VIOLATION_WINDOW_MS = 60000;
 /** All pellets of one trigger pull must stay inside this cone of the first. */
 const PELLET_CONE_MIN_DOT = Math.cos((20 * Math.PI) / 180);
+/** Pose-history depth: ~1.2 s at the tick rate, covering the lag-comp rewind cap. */
+const HISTORY_CAPACITY = 24;
 
 /** Quantize a coordinate to cm precision — trims snapshot bandwidth ~30%. */
 function quantize(value: number): number {
@@ -90,6 +95,11 @@ interface SessionPlayer {
   totalDeaths: number;
   sessionHeadshotKills: number;
   streakState: StreakState;
+  /** EMA-smoothed round-trip time (ms) from net:ping; RTT_UNSET until first sample. */
+  rtt: number;
+  /** Equipped cosmetics, resolved at join (deterministic for guests). */
+  heroSkin: string;
+  tint: string;
 }
 
 /**
@@ -110,6 +120,7 @@ export class GameRoom {
   private tick = 0;
   private spawnCursor = 0;
   private chatCounter = 0;
+  private readonly history = new PoseHistory(HISTORY_CAPACITY);
 
   constructor(
     private readonly io: TypedServer,
@@ -145,6 +156,9 @@ export class GameRoom {
     const spawn = this.nextSpawn();
     // Authenticated players are identified by their account call sign.
     const account = socket.data.user ?? null;
+    // Accounts wear their equipped cosmetics; guests get a stable deterministic look.
+    const heroSkin = account?.equippedHeroSkin ?? pickHeroAppearance(socket.id).skin.id;
+    const tint = account?.equippedTint ?? DEFAULT_TINT_ID;
 
     const player: SessionPlayer = {
       id: socket.id,
@@ -175,17 +189,28 @@ export class GameRoom {
       totalDeaths: 0,
       sessionHeadshotKills: 0,
       streakState: createStreakState(),
+      rtt: RTT_UNSET,
+      heroSkin,
+      tint,
     };
 
     this.players.set(socket.id, player);
     socket.join(this.id);
-    socket.to(this.id).emit('room:playerJoined', { id: player.id, name: player.name });
+    socket.to(this.id).emit('room:playerJoined', {
+      id: player.id,
+      name: player.name,
+      heroSkin: player.heroSkin,
+      tint: player.tint,
+    });
     // Late joiners need the current round state immediately.
     socket.emit('match:phase', {
       phase: this.phase,
       endsAt: this.phaseEndsAt,
       mapId: this.currentMapId,
     });
+    // Authoritatively place the newcomer at their spawn so floating maps
+    // never drop a just-joined player through the void before their first input.
+    socket.emit('player:correction', [...spawn] as Vec3);
 
     return {
       roomId: this.id,
@@ -288,6 +313,12 @@ export class GameRoom {
       }
     }
 
+    // Lag compensation (F4, flag-gated): rewind victims to where the shooter
+    // saw them. Disabled → hit tests use live positions, exactly as before.
+    const rewindAt = CONFIG.LAG_COMP
+      ? rewindTime(now, shooter.rtt, CONFIG.LAG_COMP_MAX_REWIND_MS)
+      : null;
+
     const ends: Vec3[] = [];
     for (const rawDirection of packet.directions) {
       const dir = normalize(rawDirection);
@@ -304,7 +335,11 @@ export class GameRoom {
       let victimHeadshot = false;
       for (const candidate of this.players.values()) {
         if (candidate.id === shooter.id || !candidate.alive) continue;
-        const hit = resolvePlayerHit(packet.origin, dir, def.range, candidate.position);
+        const candidatePos =
+          rewindAt === null
+            ? candidate.position
+            : this.history.sampleAt(candidate.id, rewindAt) ?? candidate.position;
+        const hit = resolvePlayerHit(packet.origin, dir, def.range, candidatePos);
         if (hit !== null && hit.t < victimT) {
           victim = candidate;
           victimT = hit.t;
@@ -371,8 +406,19 @@ export class GameRoom {
     });
   }
 
+  /** Feed a fresh RTT sample (from net:ping) into the player's rewind estimate. */
+  updateRtt(socketId: string, sample: number): void {
+    const player = this.players.get(socketId);
+    if (player) player.rtt = updateRttEma(player.rtt, sample);
+  }
+
   roster(): PublicPlayer[] {
-    return [...this.players.values()].map((player) => ({ id: player.id, name: player.name }));
+    return [...this.players.values()].map((player) => ({
+      id: player.id,
+      name: player.name,
+      heroSkin: player.heroSkin,
+      tint: player.tint,
+    }));
   }
 
   dispose(): void {
@@ -532,6 +578,7 @@ export class GameRoom {
     this.occlusion = occlusionBoxesFor(this.currentMapId);
     this.spawnPoints = MAPS[this.currentMapId].spawnPoints;
     this.spawnCursor = 0;
+    this.history.clear(); // positions from the previous map must never be rewound to
 
     this.phase = 'playing';
     this.phaseEndsAt = now + ROUND_DURATION_MS;
@@ -565,13 +612,50 @@ export class GameRoom {
     console.log(`[match] new round in ${this.id} on ${this.currentMapId}`);
   }
 
+  /**
+   * Environmental deaths: on floating maps an alive player below the map's
+   * kill plane is eliminated with no killer and no XP, reusing the normal
+   * death/respawn path. Skipped during intermission so the podium can't be
+   * disturbed by a falling body.
+   */
+  private checkKillPlane(now: number): void {
+    const killY = MAPS[this.currentMapId].killPlaneY;
+    if (killY === undefined || this.phase !== 'playing') return;
+
+    for (const player of this.players.values()) {
+      if (!player.alive || player.position[1] >= killY) continue;
+      player.alive = false;
+      player.diedAt = now;
+      player.deaths += 1;
+      player.totalDeaths += 1;
+      const victimStreakEnded = resetOnDeath(player.streakState);
+      this.io.to(this.id).emit('combat:death', {
+        killerId: '',
+        killerName: '',
+        victimId: player.id,
+        victimName: player.name,
+        weapon: player.weapon,
+        headshot: false,
+        environmental: true,
+        victimStreakEnded,
+      });
+      console.log(`[combat] ${player.name} fell out of ${this.id}`);
+    }
+  }
+
   private broadcast(): void {
     if (this.players.size === 0) return;
-    this.updatePhase(Date.now());
+    const now = Date.now();
+    this.updatePhase(now);
+    this.checkKillPlane(now);
+    this.history.record(
+      now,
+      [...this.players.values()].map((player) => [player.id, player.position] as const),
+    );
     this.tick += 1;
     const snapshot: RoomSnapshot = {
       tick: this.tick,
-      serverTime: Date.now(),
+      serverTime: now,
       players: [...this.players.values()].map((player) => ({
         id: player.id,
         name: player.name,
