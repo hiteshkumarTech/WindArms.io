@@ -12,23 +12,6 @@ All eight build phases are complete: (1) landing page, (2) FPS controller, (3) m
 
 windarms.com 
 
-Offline practice works without the server; Quick Play / rooms need both running.
-
-Production:
-
-```bash
-npm run build
-npm run start
-```
-
-Quality gates:
-
-```bash
-npm run typecheck  # tsc --noEmit
-npm run lint       # next lint
-```
-
-**Environment variables** (see `.env.example`): all optional locally. `NEXT_PUBLIC_WS_URL` points the client at the game server (default `http://localhost:4000`); the server reads `PORT` and `CLIENT_ORIGIN` (CORS allow-list, default `http://localhost:3000`).
 
 ## Tech
 
