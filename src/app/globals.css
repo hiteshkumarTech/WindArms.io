@@ -15,7 +15,7 @@
   }
 
   body {
-    @apply overflow-hidden bg-void text-white antialiased;
+    @apply bg-void text-white antialiased;
   }
 
   ::selection {
