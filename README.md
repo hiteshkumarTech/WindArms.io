@@ -1,10 +1,10 @@
 # WindArms.io
 
-A complete browser multiplayer FPS built from scratch: cinematic landing page, movement-shooter character controller, authoritative multiplayer server, seven weapons with server-side hit detection, three themed maps, fully procedural audio, accounts with persistent XP and a global leaderboard, anti-cheat, and a unit-tested core. No downloads, no game engine — Next.js, Three.js, Rapier, Socket.IO, PostgreSQL.
+A complete browser multiplayer FPS built from scratch: cinematic landing page, movement-shooter character controller, authoritative multiplayer server, seven weapons with server-side hit detection, four themed maps, fully procedural audio, accounts with persistent XP and a global leaderboard, anti-cheat, round-based match lifecycle, procedural hero rigs, and a unit-tested core. No downloads, no game engine — Next.js, Three.js, Rapier, Socket.IO, PostgreSQL.
 
 **Play:** `/play` · **Leaderboard:** `/leaderboard`
 
-All eight build phases are complete: (1) landing page, (2) FPS controller, (3) multiplayer, (4) combat, (5) match UI, (6) maps/audio/VFX, (7) accounts/progression, (8) anti-cheat/security/testing/deployment.
+All eight original build phases are complete — (1) landing page, (2) FPS controller, (3) multiplayer, (4) combat, (5) match UI, (6) maps/audio/VFX, (7) accounts/progression, (8) anti-cheat/security/testing/deployment — plus Phase 9 (see below): match lifecycle, headshots, hero rigs, wall-run, lag compensation, and cosmetics.
 
 ![Stack](https://img.shields.io/badge/Next.js%2014-black) ![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue) ![Three.js](https://img.shields.io/badge/Three.js-r169-green)
 
@@ -159,10 +159,24 @@ Security: strict CORS, baseline security headers, 10 KB JSON body limit, per-IP 
 
 Testing: the deterministic core — ray/AABB and ray/capsule intersection, occlusion, damage falloff, movement validation, sanitizers, and the XP curve — is covered by `node:test` suites with zero test-framework dependencies. Run with `npm test` in `server/`. Performance: snapshots quantize positions to centimeters (~30% smaller payloads), and the game canvas drops render resolution under sustained load and recovers automatically (`PerformanceMonitor`-driven DPR).
 
+## Phase 9 — AAA Experience Upgrade
+
+Match lifecycle: rooms now run timed rounds (`playing` → `intermission` → next map) instead of an endless deathmatch. Round end broadcasts a podium (top 3 + full standings) with win/top-3 XP bonuses, and rotates to the next map in a fixed order — a fourth map, **Sky Sanctum**, joins the rotation (floating platforms over a kill plane).
+
+Combat feel: hit resolution is now two-zone (head sphere tested before the body capsule) with per-weapon headshot multipliers, backed by pooled floating damage numbers and a dedicated hit marker. Kill streaks (Rampage/Unstoppable/Storm Lord) and multikills (Double/Triple/Quad) get center-screen banners; ending someone else's 5+ streak is called out in the feed.
+
+Characters: remote players render as procedurally rigged hero characters (9-node primitive skeleton) driven by a pure, unit-tested pose animator instead of bare capsules. Cosmetic loadouts (hero skin + weapon tint) are unlocked by account level, equipped from a lobby panel, and persisted server-side.
+
+Movement: wall-run is live — airborne + fast + a wall probe reduces gravity and lets players ride the wall before ejecting on a wall-jump; validated server-side with its own speed-tolerance band rather than trusting the client.
+
+Netcode: lag compensation is implemented and unit-tested (per-room pose history ring buffer, RTT-smoothed rewind on `combat:fire`) but ships **behind an env flag** (`LAG_COMP`) — off by default until soak-tested with real players.
+
+Still open from the Phase 9 design (tracked in `docs/PHASE-9-DESIGN.md`): shell casings, surface-specific impact effects, and a visually distinct energy-weapon hit effect (the energy gun currently reuses the generic impact/tracer pipeline); crosshair customization settings (the crosshair already reacts dynamically to fire/movement/hits, it just isn't user-configurable yet); a distinct per-kill confirmation banner separate from streak/multikill banners.
+
 ## Deployment
 
 Client: zero-config on Vercel — import the repo, preset "Next.js", set `NEXT_PUBLIC_WS_URL` to the deployed server URL. Server: deploy `server/` to Railway or Render (build `npm run build`, start `npm start`, root directory `server`), set `CLIENT_ORIGIN` to the Vercel domain, plus `DATABASE_URL`/`JWT_SECRET` for accounts. A `Dockerfile.server` is included for container platforms (`docker build -f Dockerfile.server .` from the repo root). `GET /health` reports uptime and whether accounts are enabled.
 
 ## Backlog
 
-Friends, parties and achievements (need presence infrastructure); Google OAuth; lag compensation with hit rewind; Floating Islands / Industrial Factory / Desert Base map entries; wall-run movement; hero characters, skins and cosmetics; match lifecycle (rounds, win conditions); spectator mode.
+Friends, parties and achievements (need presence infrastructure); ranked matchmaking, ELO and seasons; Google OAuth; enabling `LAG_COMP` by default (currently flagged off pending a soak test); shell casings, surface-specific impact effects and a distinct energy-weapon hit effect; crosshair customization settings; Industrial Factory / Desert Base map entries; controller support and localization; spectator mode.
