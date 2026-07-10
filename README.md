@@ -6,7 +6,13 @@ A complete browser multiplayer FPS built from scratch: cinematic landing page, m
 
 All eight original build phases are complete — (1) landing page, (2) FPS controller, (3) multiplayer, (4) combat, (5) match UI, (6) maps/audio/VFX, (7) accounts/progression, (8) anti-cheat/security/testing/deployment — plus Phase 9 (see below): match lifecycle, headshots, hero rigs, wall-run, lag compensation, and cosmetics, followed by a visual-quality pass, a weapon-geometry overhaul, and a stability fix round (see below).
 
-![Stack](https://img.shields.io/badge/Next.js%2014-black) ![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue) ![Three.js](https://img.shields.io/badge/Three.js-r169-green)
+![Stack](https://img.shields.io/badge/Next.js%2014-black) ![TypeScript](https://img.shields.io/badge/TypeScript-strict-blue) ![Three.js](https://img.shields.io/badge/Three.js-r169-green) ![Version](https://img.shields.io/badge/version-v1-informational)
+
+## Version
+
+**v1 — stable, frozen.** Everything in this README describes v1: the original eight build phases, Phase 9, the visual quality pass, the weapon geometry overhaul, and the stability fix round. This snapshot is tagged [`prototype-v1`](https://github.com/hiteshkumarTech/WindArms.io/tree/prototype-v1) as a rollback point.
+
+**v2 is a planned ground-up visual/architecture rebuild**, starting separately — not incremental changes on top of v1. Until that work lands, treat v1 as the reference build.
 
 ## Quick start
 
