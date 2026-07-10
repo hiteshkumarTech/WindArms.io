@@ -10,6 +10,7 @@ import RemotePlayers from './multiplayer/RemotePlayers';
 import PlayerController from './player/PlayerController';
 import DamageNumbers from './weapons/DamageNumbers';
 import ExplosionPool from './weapons/ExplosionPool';
+import HeatDistortionPool from './weapons/HeatDistortionPool';
 import MuzzleSmokePool from './weapons/MuzzleSmokePool';
 import ShellCasingPool from './weapons/ShellCasingPool';
 import TracerPool from './weapons/TracerPool';
@@ -44,8 +45,13 @@ export default function GameCanvas({ onCanvasReady }: GameCanvasProps) {
       shadows={highQuality ? 'soft' : false}
       gl={{ antialias: true, powerPreference: 'high-performance' }}
       camera={{ fov: 75, near: 0.05, far: 150, position: [0, 2, 10] }}
-      onCreated={({ gl }) => {
+      onCreated={({ gl, camera }) => {
         gl.setClearColor('#050505');
+        // Layer 1 carries the first-person viewmodel (see WeaponViewmodel) —
+        // the main camera needs it explicitly enabled since layer 0 alone
+        // wouldn't render it, while reflection/mirror cameras elsewhere
+        // (Cyber City's floor) stay layer-0-only and never see it.
+        camera.layers.enable(1);
         onCanvasReady(gl.domElement);
       }}
     >
@@ -61,19 +67,23 @@ export default function GameCanvas({ onCanvasReady }: GameCanvasProps) {
       />
       <Suspense fallback={null}>
         <ArenaEnvironment />
+        {/* Mounted (and its useFrame subscribed) before PlayerController so the
+            viewKick it writes on a shot is drained by the camera the same tick
+            it's fired, instead of landing one frame late behind mount order. */}
+        <WeaponSystem />
         <Physics gravity={[0, -24, 0]} timeStep="vary">
           <TestArena />
           <PlayerController />
         </Physics>
         <RemotePlayers />
         <NetworkSync />
-        <WeaponSystem />
         <WeaponViewmodel />
         <TracerPool />
         <ShellCasingPool />
         <MuzzleSmokePool />
         <ExplosionPool />
         <DamageNumbers />
+        {highQuality ? <HeatDistortionPool /> : null}
         {highQuality ? <GameEffects /> : null}
       </Suspense>
     </Canvas>

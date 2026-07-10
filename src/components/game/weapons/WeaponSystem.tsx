@@ -47,6 +47,8 @@ export default function WeaponSystem() {
   const triggerQueued = useRef(false);
   const lastFireAt = useRef(0);
   const fireSeq = useRef(0);
+  /** Builds on auto-weapon shots, decays when not firing — gates the heat-shimmer VFX to sustained fire only. */
+  const heat = useRef(0);
 
   // Input bindings (active only while the pointer is captured).
   useEffect(() => {
@@ -97,8 +99,11 @@ export default function WeaponSystem() {
     };
   }, []);
 
-  useFrame(() => {
+  useFrame((_, delta) => {
     const now = performance.now();
+    // Decays every frame regardless of fire state, so heat-shimmer only
+    // builds during genuinely sustained fire and fades quickly once it stops.
+    heat.current = Math.max(0, heat.current - delta * 2.5);
     const weaponState = useWeaponStore.getState();
     const def = WEAPONS[weaponState.current];
 
@@ -172,6 +177,15 @@ export default function WeaponSystem() {
     }
     // Muzzle smoke: also once per trigger pull, not per pellet.
     effectsBus.spawnMuzzleSmoke({ at: [muzzle.x, muzzle.y, muzzle.z], energy: weaponId === 'energy' });
+
+    // Heat shimmer only builds on auto weapons and only shows once the barrel's
+    // genuinely hot (a few consecutive shots) — see the per-frame decay above.
+    if (def.auto) {
+      heat.current = Math.min(heat.current + 1, 10);
+      if (heat.current >= 3) {
+        effectsBus.spawnHeatShimmer({ at: [muzzle.x, muzzle.y, muzzle.z], energy: weaponId === 'energy' });
+      }
+    }
 
     const spreadTan = Math.tan((def.spreadDeg * Math.PI) / 180);
     const origin: Vec3 = [camera.position.x, camera.position.y, camera.position.z];

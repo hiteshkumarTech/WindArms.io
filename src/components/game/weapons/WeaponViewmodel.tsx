@@ -3,7 +3,13 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
-import { AMMO_FEED_MODULE_KINDS, WEAPONS, type WeaponModule, type WeaponModuleKind } from '@shared/weapons';
+import {
+  AMMO_FEED_MODULE_KINDS,
+  MECHANISM_MODULE_KINDS,
+  WEAPON_ORDER,
+  WEAPONS,
+  type WeaponModule,
+} from '@shared/weapons';
 import { DEFAULT_TINT_ID, weaponTintById } from '@shared/heroes';
 import { fireSignal, groundImpact } from '@/lib/game/effectsBus';
 import { localPose } from '@/lib/game/localPose';
@@ -14,8 +20,7 @@ import { useCombatStore } from '@/stores/combatStore';
 import { usePlayerStore } from '@/stores/playerStore';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useWeaponStore } from '@/stores/weaponStore';
-
-const noRaycast = () => null;
+import { ChassisGeometry, ModuleGeometry, noRaycast, type WeaponSurfaceMaterials } from './weaponGeometry';
 
 /** Rest offset of the gun in view space. */
 const REST = { x: 0.26, y: -0.2, z: -0.48 };
@@ -30,242 +35,39 @@ function reloadFeedOffset(t: number): number {
   const settle = (c - 0.85) / 0.15;
   return Math.sin(settle * Math.PI * 2) * 0.012 * (1 - settle);
 }
+/** Shotgun pump rack: back, hold, forward — its own phase timing, reused across the reload window. */
+function pumpOffset(t: number): number {
+  const c = THREE.MathUtils.clamp(t, 0, 1);
+  if (c < 0.4) return THREE.MathUtils.lerp(0, 0.09, THREE.MathUtils.smoothstep(c, 0, 0.4));
+  if (c < 0.6) return 0.09;
+  if (c < 0.9) return THREE.MathUtils.lerp(0.09, 0, THREE.MathUtils.smoothstep(c, 0.6, 0.9));
+  return 0;
+}
 
-interface ViewmodelMaterials {
-  body: THREE.MeshStandardMaterial;
-  metal: THREE.MeshStandardMaterial;
-  polymer: THREE.MeshStandardMaterial;
-  accent: THREE.MeshPhysicalMaterial;
+interface ViewmodelMaterials extends WeaponSurfaceMaterials {
   flash: THREE.MeshBasicMaterial;
   rim: THREE.ShaderMaterial;
 }
 
 /**
- * Builds the primitive geometry for one attachment kind. Position/rotation/
- * scale are applied by the caller's wrapping `<group>` — this only returns
- * the kind's own local-space meshes, so the same builder serves both the
- * static module loop and the specially-ref'd ammo-feed module.
- */
-function ModuleGeometry({ kind, materials }: { kind: WeaponModuleKind; materials: ViewmodelMaterials }) {
-  switch (kind) {
-    case 'ironSight':
-      return (
-        <mesh material={materials.metal} raycast={noRaycast} renderOrder={1000}>
-          <boxGeometry args={[0.014, 0.035, 0.014]} />
-        </mesh>
-      );
-    case 'redDot':
-      return (
-        <>
-          <mesh material={materials.body} raycast={noRaycast} renderOrder={1000}>
-            <boxGeometry args={[0.032, 0.024, 0.05]} />
-          </mesh>
-          <mesh material={materials.accent} position={[0, 0.014, 0]} raycast={noRaycast} renderOrder={1001}>
-            <circleGeometry args={[0.011, 12]} />
-          </mesh>
-        </>
-      );
-    case 'scope':
-      return (
-        <>
-          <mesh material={materials.metal} rotation={[Math.PI / 2, 0, 0]} raycast={noRaycast} renderOrder={1000}>
-            <cylinderGeometry args={[0.017, 0.017, 0.16, 10]} />
-          </mesh>
-          <mesh
-            material={materials.accent}
-            position={[0, 0, -0.081]}
-            rotation={[Math.PI / 2, 0, 0]}
-            raycast={noRaycast}
-            renderOrder={1001}
-          >
-            <cylinderGeometry args={[0.0175, 0.0175, 0.006, 10]} />
-          </mesh>
-          <mesh
-            material={materials.accent}
-            position={[0, 0, 0.081]}
-            rotation={[Math.PI / 2, 0, 0]}
-            raycast={noRaycast}
-            renderOrder={1001}
-          >
-            <cylinderGeometry args={[0.0175, 0.0175, 0.006, 10]} />
-          </mesh>
-        </>
-      );
-    case 'stickMag':
-      return (
-        <mesh material={materials.polymer} raycast={noRaycast} renderOrder={1000}>
-          <boxGeometry args={[0.05, 0.16, 0.06]} />
-        </mesh>
-      );
-    case 'drumMag':
-      return (
-        <mesh material={materials.polymer} rotation={[Math.PI / 2, 0, 0]} raycast={noRaycast} renderOrder={1000}>
-          <cylinderGeometry args={[0.07, 0.07, 0.08, 16]} />
-        </mesh>
-      );
-    case 'tube':
-      return (
-        <mesh material={materials.metal} rotation={[Math.PI / 2, 0, 0]} raycast={noRaycast} renderOrder={1000}>
-          <cylinderGeometry args={[0.014, 0.014, 0.28, 10]} />
-        </mesh>
-      );
-    case 'cell':
-      return (
-        <mesh material={materials.accent} raycast={noRaycast} renderOrder={1001}>
-          <boxGeometry args={[0.045, 0.05, 0.07]} />
-        </mesh>
-      );
-    case 'foldingStock':
-      return (
-        <>
-          <mesh
-            material={materials.metal}
-            position={[0.015, 0, 0]}
-            rotation={[Math.PI / 2, 0, 0]}
-            raycast={noRaycast}
-            renderOrder={1000}
-          >
-            <cylinderGeometry args={[0.006, 0.006, 0.16, 6]} />
-          </mesh>
-          <mesh
-            material={materials.metal}
-            position={[-0.015, 0, 0]}
-            rotation={[Math.PI / 2, 0, 0]}
-            raycast={noRaycast}
-            renderOrder={1000}
-          >
-            <cylinderGeometry args={[0.006, 0.006, 0.16, 6]} />
-          </mesh>
-          <mesh material={materials.polymer} position={[0, 0, 0.08]} raycast={noRaycast} renderOrder={1000}>
-            <boxGeometry args={[0.05, 0.06, 0.015]} />
-          </mesh>
-        </>
-      );
-    case 'soloStock':
-      return (
-        <mesh material={materials.polymer} raycast={noRaycast} renderOrder={1000}>
-          <boxGeometry args={[0.05, 0.08, 0.18]} />
-        </mesh>
-      );
-    case 'cheekRest':
-      return (
-        <>
-          <mesh material={materials.polymer} raycast={noRaycast} renderOrder={1000}>
-            <boxGeometry args={[0.045, 0.07, 0.26]} />
-          </mesh>
-          <mesh material={materials.polymer} position={[0, 0.045, -0.05]} raycast={noRaycast} renderOrder={1000}>
-            <boxGeometry args={[0.04, 0.03, 0.1]} />
-          </mesh>
-        </>
-      );
-    case 'bipod':
-      return (
-        <>
-          <mesh
-            material={materials.metal}
-            position={[0.05, -0.08, 0]}
-            rotation={[0, 0, 0.5]}
-            raycast={noRaycast}
-            renderOrder={1000}
-          >
-            <cylinderGeometry args={[0.006, 0.006, 0.16, 6]} />
-          </mesh>
-          <mesh
-            material={materials.metal}
-            position={[-0.05, -0.08, 0]}
-            rotation={[0, 0, -0.5]}
-            raycast={noRaycast}
-            renderOrder={1000}
-          >
-            <cylinderGeometry args={[0.006, 0.006, 0.16, 6]} />
-          </mesh>
-        </>
-      );
-    case 'railHandguard':
-      return (
-        <>
-          <mesh material={materials.body} raycast={noRaycast} renderOrder={1000}>
-            <boxGeometry args={[0.05, 0.05, 0.24]} />
-          </mesh>
-          {[0, 1, 2].map((i) => (
-            <mesh
-              key={i}
-              material={materials.metal}
-              position={[0, 0.028, -0.08 + i * 0.08]}
-              raycast={noRaycast}
-              renderOrder={1000}
-            >
-              <boxGeometry args={[0.052, 0.006, 0.02]} />
-            </mesh>
-          ))}
-        </>
-      );
-    case 'barrelShroud':
-      return (
-        <>
-          {[0, 1, 2, 3, 4].map((i) => (
-            <mesh
-              key={i}
-              material={materials.metal}
-              position={[0, 0, -i * 0.055]}
-              rotation={[Math.PI / 2, 0, 0]}
-              raycast={noRaycast}
-              renderOrder={1000}
-            >
-              <torusGeometry args={[0.024, 0.004, 6, 10]} />
-            </mesh>
-          ))}
-        </>
-      );
-    case 'compensator':
-      return (
-        <mesh material={materials.metal} rotation={[Math.PI / 2, 0, 0]} raycast={noRaycast} renderOrder={1000}>
-          <cylinderGeometry args={[0.02, 0.017, 0.05, 8]} />
-        </mesh>
-      );
-    case 'choke':
-      return (
-        <mesh material={materials.metal} rotation={[Math.PI / 2, 0, 0]} raycast={noRaycast} renderOrder={1000}>
-          <coneGeometry args={[0.032, 0.05, 10]} />
-        </mesh>
-      );
-    case 'crystalCore':
-      return (
-        <mesh material={materials.accent} raycast={noRaycast} renderOrder={1001}>
-          <icosahedronGeometry args={[0.035, 0]} />
-        </mesh>
-      );
-    case 'coil':
-      return (
-        <mesh material={materials.accent} rotation={[Math.PI / 2, 0, 0]} raycast={noRaycast} renderOrder={1001}>
-          <torusGeometry args={[0.022, 0.005, 8, 12]} />
-        </mesh>
-      );
-    case 'ventFin':
-      return (
-        <mesh material={materials.body} raycast={noRaycast} renderOrder={1000}>
-          <boxGeometry args={[0.008, 0.02, 0.06]} />
-        </mesh>
-      );
-  }
-}
-
-/**
  * First-person procedural weapon. Each of the 7 weapons builds a distinct
- * silhouette from a shared chassis (receiver/barrel/grip, data-driven via
- * `WeaponVisual`) plus a data-driven `modules` list (scope/stock/mag/bipod/
- * energy dressing) — no external models. Follows the camera with bob
- * (speed- and mass-scaled), sway (look deltas, mass-scaled), recoil punch,
- * a phased reload with an independently animated ammo-feed module, a
- * landing/jump dip, a sprint-carry pose, and switch raise. Renders above
- * the world (depthTest off) so it never clips into walls, and is invisible
- * to raycasts.
+ * silhouette from a shared, layered chassis (`ChassisGeometry`, data-driven
+ * via `WeaponVisual.chassis`) plus a data-driven `modules` list
+ * (scope/stock/mag/bipod/energy dressing) — no external models. Follows the
+ * camera with bob (speed- and mass-scaled), sway (look deltas, mass-scaled),
+ * recoil punch, a phased reload with an independently animated ammo-feed
+ * module, per-class mechanical-action animation (slide/charging-handle/
+ * pump), a landing/jump dip, a sprint-carry pose, and switch raise. Renders
+ * above the world (depthTest off) so it never clips into walls, and is
+ * invisible to raycasts.
  */
 export default function WeaponViewmodel() {
   const groupRef = useRef<THREE.Group>(null);
   const flashRef = useRef<THREE.Mesh>(null);
   const lightRef = useRef<THREE.PointLight>(null);
   const feedRef = useRef<THREE.Group>(null);
+  const mechRef = useRef<THREE.Group>(null);
+  const pumpRef = useRef<THREE.Group>(null);
 
   const current = useWeaponStore((state) => state.current);
   const def = WEAPONS[current];
@@ -276,14 +78,20 @@ export default function WeaponViewmodel() {
     equippedTint && equippedTint !== DEFAULT_TINT_ID
       ? weaponTintById(equippedTint).color
       : def.visual.accent;
+  // Stable per-weapon seed so the chassis's baked wear jitter doesn't reshuffle on remount.
+  const seed = WEAPON_ORDER.indexOf(current) * 9001;
 
   const feedModule = useMemo<WeaponModule | undefined>(
     () => def.visual.modules.find((m) => AMMO_FEED_MODULE_KINDS.includes(m.kind)),
     [def],
   );
+  const mechModule = useMemo<WeaponModule | undefined>(
+    () => def.visual.modules.find((m) => MECHANISM_MODULE_KINDS.includes(m.kind)),
+    [def],
+  );
   const staticModules = useMemo(
-    () => def.visual.modules.filter((m) => m !== feedModule),
-    [def, feedModule],
+    () => def.visual.modules.filter((m) => m !== feedModule && m !== mechModule),
+    [def, feedModule, mechModule],
   );
 
   const sim = useRef({
@@ -338,6 +146,22 @@ export default function WeaponViewmodel() {
       roughness: 0.8,
       depthTest: false,
     });
+    // Woven carbon-fiber composite — modern handguards/stocks (AR/SMG/sniper family).
+    const carbon = new THREE.MeshStandardMaterial({
+      color: '#0a0b0d',
+      metalness: 0.1,
+      roughness: 0.42,
+      depthTest: false,
+    });
+    // Coated ceramic — scope mounts, chokes, energy housings; a soft clearcoat sheen.
+    const ceramic = new THREE.MeshPhysicalMaterial({
+      color: '#20242b',
+      metalness: 0.15,
+      roughness: 0.5,
+      clearcoat: 0.6,
+      clearcoatRoughness: 0.35,
+      depthTest: false,
+    });
     const accent = new THREE.MeshPhysicalMaterial({
       color: '#03161a',
       emissive: new THREE.Color(accentColor),
@@ -359,7 +183,7 @@ export default function WeaponViewmodel() {
     });
     const rim = createRimMaterial(accentColor, 0.8);
     rim.depthTest = false;
-    return { body, metal, polymer, accent, flash, rim };
+    return { body, metal, polymer, carbon, ceramic, accent, flash, rim };
     // Rebuild when the weapon accent (or equipped tint) changes, or on switching to/from energy.
   }, [accentColor, isEnergy]);
 
@@ -368,6 +192,8 @@ export default function WeaponViewmodel() {
       materials.body.dispose();
       materials.metal.dispose();
       materials.polymer.dispose();
+      materials.carbon.dispose();
+      materials.ceramic.dispose();
       materials.accent.dispose();
       materials.flash.dispose();
       materials.rim.dispose();
@@ -378,6 +204,15 @@ export default function WeaponViewmodel() {
   useFrame(({ camera }, delta) => {
     const group = groupRef.current;
     if (!group) return;
+
+    // Confine the whole viewmodel (it and every child, re-applied every frame
+    // since modules remount on weapon switch) to layer 1. Cyber City's
+    // MeshReflectorMaterial renders its reflection with a fresh camera that
+    // only ever sees the default layer 0 (drei never copies the main
+    // camera's layers onto it) — without this, the viewmodel gets rendered
+    // a second time into the floor reflection from the mirrored camera's
+    // very different vantage point, appearing as a huge distorted double.
+    group.traverse((child) => child.layers.set(1));
 
     const state = sim.current;
     const now = performance.now();
@@ -398,15 +233,17 @@ export default function WeaponViewmodel() {
 
     // Fire feedback (also cancels an inspect in progress). The energy
     // weapon's discharge lingers slightly longer than a kinetic muzzle flash.
-    if (fireSignal.nonce !== state.lastFireNonce) {
+    const justFired = fireSignal.nonce !== state.lastFireNonce;
+    if (justFired) {
       state.lastFireNonce = fireSignal.nonce;
       state.punch = 1;
       state.flashUntil = now + (isEnergy ? 70 : 45);
       state.inspectUntil = 0;
     }
     state.punch = Math.max(0, state.punch - delta * 9);
-    // Emissive accent pulses with fire recency instead of sitting at a flat intensity.
-    materials.accent.emissiveIntensity = 2.2 + state.punch * 2.0;
+    // Emissive accent pulses with fire recency; the energy weapon also idles with a slow breathing glow.
+    materials.accent.emissiveIntensity =
+      2.2 + state.punch * 2.0 + (isEnergy ? Math.sin(now * 0.0035) * 0.3 : 0);
 
     // Bob (mass-scaled) from movement speed; sway (mass-scaled) from look deltas.
     const speed = usePlayerStore.getState().speed;
@@ -434,11 +271,38 @@ export default function WeaponViewmodel() {
     const targetFeedY = reloading ? reloadFeedOffset(reloadT) : 0;
     state.feedY = THREE.MathUtils.lerp(state.feedY, targetFeedY, 1 - Math.exp(-14 * delta));
     if (feedRef.current && feedModule) {
-      feedRef.current.position.set(feedModule.position[0], feedModule.position[1] + state.feedY, feedModule.position[2]);
+      // The LMG's drum/belt module also gets a subtle per-shot lateral creep, reusing the
+      // fire-recency `punch` value instead of a new signal — reads as belt-feed motion.
+      const creepX = current === 'lmg' ? state.punch * 0.008 : 0;
+      feedRef.current.position.set(
+        feedModule.position[0] + creepX,
+        feedModule.position[1] + state.feedY,
+        feedModule.position[2],
+      );
     }
     // Energy cell swap doubles as a charge-up cue on the accent material.
     if (isEnergy && reloading) materials.accent.emissiveIntensity += reloadT * 1.4;
     const reloadDip = reloading ? 0.14 : 0;
+
+    // Mechanical-action animation — per weapon class, driven by signals already in play.
+    if (mechRef.current && mechModule) {
+      let mechOffsetZ = 0;
+      if (current === 'pistol') {
+        // Slide racks back on the shot, springs back forward with the punch decay.
+        mechOffsetZ = -state.punch * 0.05;
+      } else if (current === 'ar') {
+        // Charging handle flicks once, right at the reload's insert->settle boundary.
+        const flick = reloading && reloadT > 0.82 && reloadT < 0.94
+          ? Math.sin(((reloadT - 0.82) / 0.12) * Math.PI)
+          : 0;
+        mechOffsetZ = flick * 0.03;
+      }
+      mechRef.current.position.set(mechModule.position[0], mechModule.position[1], mechModule.position[2] + mechOffsetZ);
+    }
+    // Shotgun pump: a chassis feature, not a module — racks back/forward across the reload window.
+    if (pumpRef.current && current === 'shotgun') {
+      pumpRef.current.position.z = -0.24 - (reloading ? pumpOffset(reloadT) : 0);
+    }
 
     // Landing/jump dip — proportional to the impact speed PlayerController reported.
     if (groundImpact.nonce !== state.lastGroundNonce) {
@@ -502,11 +366,18 @@ export default function WeaponViewmodel() {
 
   return (
     <group ref={groupRef} renderOrder={1000} visible={false}>
-      {/* Receiver */}
-      <mesh material={materials.body} raycast={noRaycast} renderOrder={1000} position={[0, 0, -length / 2]}>
-        <boxGeometry args={[0.075 * bulk, 0.095 * bulk, length]} />
-      </mesh>
-      {/* Fresnel rim shell — a slightly larger duplicate, additive, unlit */}
+      <ChassisGeometry
+        chassis={def.visual.chassis}
+        bulk={bulk}
+        length={length}
+        barrelLength={barrelLength}
+        barrelRadius={barrelRadius}
+        gripRake={def.visual.gripRake}
+        materials={materials}
+        seed={seed}
+      />
+
+      {/* Fresnel rim shells — thin duplicate meshes, additive/unlit, over the receiver, grip and front collar */}
       <mesh
         material={materials.rim}
         raycast={noRaycast}
@@ -516,26 +387,26 @@ export default function WeaponViewmodel() {
       >
         <boxGeometry args={[0.075 * bulk, 0.095 * bulk, length]} />
       </mesh>
-      {/* Barrel */}
       <mesh
-        material={materials.metal}
-        raycast={noRaycast}
-        renderOrder={1000}
-        position={[0, 0.012, -length - barrelLength / 2]}
-        rotation={[Math.PI / 2, 0, 0]}
-      >
-        <cylinderGeometry args={[barrelRadius, barrelRadius, barrelLength, 12]} />
-      </mesh>
-      {/* Grip */}
-      <mesh
-        material={materials.polymer}
+        material={materials.rim}
         raycast={noRaycast}
         renderOrder={1000}
         position={[0, -0.08, -0.06]}
         rotation={[def.visual.gripRake, 0, 0]}
+        scale={1.08}
       >
         <boxGeometry args={[0.045 * bulk, 0.11, 0.05]} />
       </mesh>
+      <mesh
+        material={materials.rim}
+        raycast={noRaycast}
+        renderOrder={1000}
+        position={[0, 0.012, -length - length * 0.02]}
+        scale={1.1}
+      >
+        <boxGeometry args={[0.075 * 0.5 * bulk, 0.095 * 0.55 * bulk, length * 0.06]} />
+      </mesh>
+
       {/* Accent energy strip */}
       <mesh material={materials.accent} raycast={noRaycast} renderOrder={1001} position={[0, 0.055 * bulk, -length / 2]}>
         <boxGeometry args={[0.018, 0.012, length * 0.7]} />
@@ -550,6 +421,21 @@ export default function WeaponViewmodel() {
       {feedModule ? (
         <group ref={feedRef} position={feedModule.position} rotation={feedModule.rotation} scale={feedModule.scale}>
           <ModuleGeometry kind={feedModule.kind} materials={materials} />
+        </group>
+      ) : null}
+      {mechModule ? (
+        <group ref={mechRef} position={mechModule.position} rotation={mechModule.rotation} scale={mechModule.scale}>
+          <ModuleGeometry kind={mechModule.kind} materials={materials} />
+        </group>
+      ) : null}
+      {current === 'shotgun' ? (
+        <group ref={pumpRef} position={[0, -0.028, -0.24]}>
+          <mesh material={materials.polymer} raycast={noRaycast} renderOrder={1000}>
+            <cylinderGeometry args={[0.021, 0.021, 0.09, 10]} />
+          </mesh>
+          <mesh material={materials.carbon} position={[0, 0, 0]} raycast={noRaycast} renderOrder={1000}>
+            <boxGeometry args={[0.048, 0.028, 0.07]} />
+          </mesh>
         </group>
       ) : null}
 

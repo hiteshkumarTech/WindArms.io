@@ -3,8 +3,11 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from 'react';
 import * as THREE from 'three';
 import { weaponTintById, type HeroAppearance } from '@shared/heroes';
+import type { WeaponId } from '@shared/protocol';
+import { WEAPONS } from '@shared/weapons';
 import { createRimMaterial } from '@/lib/three/rimLight';
 import { useGraphicsStore } from '@/stores/graphicsStore';
+import { ChassisGeometry, type WeaponSurfaceMaterials } from '../weapons/weaponGeometry';
 
 /**
  * Imperative handle onto the rig's bone groups. The driver (RemoteAvatar)
@@ -30,6 +33,8 @@ export interface RigHandle {
 interface HeroRigProps {
   appearance: HeroAppearance;
   tint: string;
+  /** Currently-equipped weapon, already replicated in every PlayerSnapshot — drives the held weapon's silhouette. */
+  weapon: WeaponId;
 }
 
 /**
@@ -45,7 +50,7 @@ interface HeroRigProps {
  * renders any silhouette/skin. The head sits at the server's head-hitbox
  * height, so headshots line up with the visible head.
  */
-const HeroRig = forwardRef<RigHandle, HeroRigProps>(function HeroRig({ appearance, tint }, ref) {
+const HeroRig = forwardRef<RigHandle, HeroRigProps>(function HeroRig({ appearance, tint, weapon: weaponId }, ref) {
   const { silhouette, skin } = appearance;
   const b = silhouette.build; // thickness
   const h = silhouette.heightScale; // height
@@ -64,6 +69,7 @@ const HeroRig = forwardRef<RigHandle, HeroRigProps>(function HeroRig({ appearanc
   const legR = useRef<THREE.Group>(null);
   const weapon = useRef<THREE.Group>(null);
   const highQuality = useGraphicsStore((state) => state.quality === 'high');
+  const weaponDef = WEAPONS[weaponId];
 
   // Shared materials for the entire rig (design §7: "share 3 materials").
   const materials = useMemo(() => {
@@ -98,6 +104,22 @@ const HeroRig = forwardRef<RigHandle, HeroRigProps>(function HeroRig({ appearanc
       rimMat: createRimMaterial(skin.accent, 0.6),
     };
   }, [skin.primary, skin.secondary, skin.accent, tint]);
+
+  // Remaps HeroRig's own shared materials onto the weapon-geometry role
+  // names — no new material instances, so the rig's flat material budget
+  // (design §7) holds even though the held weapon is now per-weapon-class
+  // instead of one hardcoded silhouette.
+  const weaponSurfaceMaterials = useMemo<WeaponSurfaceMaterials>(
+    () => ({
+      body: materials.weaponMat,
+      metal: materials.weaponMat,
+      polymer: materials.panelMat,
+      carbon: materials.panelMat,
+      ceramic: materials.weaponMat,
+      accent: materials.tintMat,
+    }),
+    [materials],
+  );
 
   useEffect(
     () => () => {
@@ -187,17 +209,23 @@ const HeroRig = forwardRef<RigHandle, HeroRigProps>(function HeroRig({ appearanc
             <mesh position={[0, -0.13 * h, 0]} material={materials.panelMat} castShadow>
               <boxGeometry args={[0.09 * b, 0.28 * h, 0.09 * b]} />
             </mesh>
-            {/* Held weapon — generic rifle silhouette, elevates via weaponPitch */}
-            <group ref={weapon} position={[0.02, -0.24 * h, -0.02]}>
-              <mesh position={[0, 0, -0.2]} material={materials.weaponMat}>
-                <boxGeometry args={[0.07 * b, 0.09 * b, 0.42]} />
-              </mesh>
-              <mesh position={[0, 0.02, -0.44]} material={materials.weaponMat}>
-                <boxGeometry args={[0.035, 0.035, 0.22]} />
-              </mesh>
-              <mesh position={[0, 0.02, -0.57]} material={materials.tintMat}>
-                <boxGeometry args={[0.05, 0.05, 0.05]} />
-              </mesh>
+            {/* Held weapon — reduced-fidelity chassis matching the equipped weapon's
+                class (shared with the first-person viewmodel's geometry system),
+                elevates via weaponPitch. No trim jitter, no attached modules, no
+                mechanism-ref animation — see weaponGeometry.tsx's ChassisGeometry
+                'reduced' path for the x8-player draw-call budget this respects. */}
+            <group ref={weapon} position={[0.02, -0.24 * h, -0.02]} scale={0.92}>
+              <ChassisGeometry
+                chassis={weaponDef.visual.chassis}
+                bulk={weaponDef.visual.bulk}
+                length={weaponDef.visual.length}
+                barrelLength={weaponDef.visual.barrelLength}
+                barrelRadius={weaponDef.visual.barrelRadius}
+                gripRake={weaponDef.visual.gripRake}
+                materials={weaponSurfaceMaterials}
+                fidelity="reduced"
+                seed={0}
+              />
             </group>
           </group>
         </group>

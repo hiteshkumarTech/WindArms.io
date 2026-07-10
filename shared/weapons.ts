@@ -37,10 +37,22 @@ export type WeaponModuleKind =
   | 'choke'
   | 'crystalCore'
   | 'coil'
-  | 'ventFin';
+  | 'ventFin'
+  | 'boltHandle';
 
 /** Ammo-feed kinds get their own ref in the viewmodel so reload can animate them independently. */
 export const AMMO_FEED_MODULE_KINDS: readonly WeaponModuleKind[] = ['stickMag', 'drumMag', 'tube', 'cell'];
+
+/** Mechanical-action kinds (slide/charging handle) get their own ref so firing/reload can animate them independently. */
+export const MECHANISM_MODULE_KINDS: readonly WeaponModuleKind[] = ['boltHandle'];
+
+/**
+ * Per-weapon-class silhouette template the static chassis (receiver/barrel/
+ * grip) is built from — this is what gives each weapon a distinct read
+ * beyond its attachment list (a pistol chassis and an LMG chassis should
+ * never look like the same box at different scales).
+ */
+export type ChassisKind = 'sidearm' | 'compact' | 'balanced' | 'heavy' | 'precision' | 'support' | 'sci-fi';
 
 export interface WeaponModule {
   kind: WeaponModuleKind;
@@ -58,6 +70,8 @@ export interface WeaponVisual {
   bulk: number;
   accent: string;
   frame: WeaponFrame;
+  /** Silhouette template the static chassis is composed from. */
+  chassis: ChassisKind;
   /** Independent of `length` — lets the barrel protrude a different amount than the receiver's span. */
   barrelLength: number;
   barrelRadius: number;
@@ -121,11 +135,13 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
       bulk: 0.8,
       accent: '#00F5FF',
       frame: 'kinetic',
+      chassis: 'sidearm',
       barrelLength: 0.14,
       barrelRadius: 0.013,
       gripRake: 0.55,
       modules: [
         { kind: 'ironSight', position: [0, 0.05, -0.32] },
+        { kind: 'boltHandle', position: [0, 0.038, -0.06] },
         { kind: 'stickMag', position: [0, -0.075, -0.05], rotation: [0.05, 0, 0], scale: [0.85, 0.7, 0.9] },
       ],
     },
@@ -152,6 +168,7 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
       bulk: 0.9,
       accent: '#00F5FF',
       frame: 'kinetic',
+      chassis: 'compact',
       barrelLength: 0.2,
       barrelRadius: 0.016,
       gripRake: 0.4,
@@ -184,6 +201,7 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
       bulk: 1,
       accent: '#FF7A00',
       frame: 'kinetic',
+      chassis: 'balanced',
       barrelLength: 0.28,
       barrelRadius: 0.017,
       gripRake: 0.35,
@@ -191,6 +209,7 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
         { kind: 'railHandguard', position: [0, 0.02, -0.68] },
         { kind: 'ironSight', position: [0, 0.05, -0.78] },
         { kind: 'redDot', position: [0, 0.058, -0.28] },
+        { kind: 'boltHandle', position: [0.032, 0.045, -0.02] },
         { kind: 'soloStock', position: [0, 0.005, 0.11], scale: [1, 1, 0.7] },
         { kind: 'stickMag', position: [0, -0.1, -0.28], rotation: [-0.3, 0, 0] },
       ],
@@ -218,6 +237,7 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
       bulk: 1.15,
       accent: '#FF7A00',
       frame: 'kinetic',
+      chassis: 'heavy',
       barrelLength: 0.24,
       barrelRadius: 0.026,
       gripRake: 0.3,
@@ -250,6 +270,7 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
       bulk: 0.95,
       accent: '#7C5CFF',
       frame: 'kinetic',
+      chassis: 'precision',
       barrelLength: 0.42,
       barrelRadius: 0.013,
       gripRake: 0.3,
@@ -283,6 +304,7 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
       bulk: 1.25,
       accent: '#FF7A00',
       frame: 'kinetic',
+      chassis: 'support',
       barrelLength: 0.32,
       barrelRadius: 0.022,
       gripRake: 0.3,
@@ -316,6 +338,7 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
       bulk: 1.05,
       accent: '#7C5CFF',
       frame: 'energy',
+      chassis: 'sci-fi',
       barrelLength: 0.3,
       barrelRadius: 0.02,
       gripRake: 0.3,

@@ -1,10 +1,12 @@
 'use client';
 
-import { useMemo, useRef } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useFrame } from '@react-three/fiber';
 import { Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { appearanceForSkin } from '@shared/heroes';
+import type { WeaponId } from '@shared/protocol';
+import { DEFAULT_WEAPON } from '@shared/weapons';
 import { remoteSnapshots, type RemotePose } from '@/lib/network/interpolation';
 import { useMultiplayerStore } from '@/stores/multiplayerStore';
 import HeroRig, { type RigHandle } from '../characters/HeroRig';
@@ -71,6 +73,11 @@ function RemoteAvatar({ id, name, heroSkin, tint }: RemoteAvatarProps) {
     lastPos: null,
     deathAt: 0,
   });
+  // pose.weapon is sampled from the server snapshot every frame (20 Hz), but
+  // weapon switches are rare — mirror it into React state only on change so
+  // HeroRig's held-weapon geometry updates without re-rendering on every tick.
+  const [weaponId, setWeaponId] = useState<WeaponId>(DEFAULT_WEAPON);
+  const lastWeapon = useRef<WeaponId>(DEFAULT_WEAPON);
 
   useFrame((_, delta) => {
     const group = groupRef.current;
@@ -81,6 +88,11 @@ function RemoteAvatar({ id, name, heroSkin, tint }: RemoteAvatarProps) {
     if (!remoteSnapshots.samplePlayer(id, pose)) {
       group.visible = false;
       return;
+    }
+
+    if (pose.weapon !== lastWeapon.current) {
+      lastWeapon.current = pose.weapon;
+      setWeaponId(pose.weapon);
     }
 
     const dt = Math.min(delta, MAX_DT);
@@ -161,7 +173,7 @@ function RemoteAvatar({ id, name, heroSkin, tint }: RemoteAvatarProps) {
 
   return (
     <group ref={groupRef} visible={false}>
-      <HeroRig ref={rigRef} appearance={appearance} tint={tint} />
+      <HeroRig ref={rigRef} appearance={appearance} tint={tint} weapon={weaponId} />
       <Html position={[0, 1.0, 0]} center distanceFactor={14} style={{ pointerEvents: 'none' }}>
         <div className="whitespace-nowrap rounded-md border border-white/10 bg-black/60 px-2 py-0.5 text-[11px] font-medium text-white/85">
           {name}

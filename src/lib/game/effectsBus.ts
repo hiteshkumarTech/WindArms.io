@@ -51,12 +51,19 @@ export interface MuzzleSmokeRequest {
   energy?: boolean;
 }
 
+/** Muzzle heat-shimmer during sustained automatic fire — see WeaponSystem's heat accumulator. */
+export interface HeatShimmerRequest {
+  at: [number, number, number];
+  energy?: boolean;
+}
+
 const tracerQueue: TracerRequest[] = [];
 const impactQueue: ImpactRequest[] = [];
 const damageNumberQueue: DamageNumberRequest[] = [];
 const casingQueue: CasingRequest[] = [];
 const explosionQueue: ExplosionRequest[] = [];
 const muzzleSmokeQueue: MuzzleSmokeRequest[] = [];
+const heatShimmerQueue: HeatShimmerRequest[] = [];
 
 export const effectsBus = {
   spawnTracer(request: TracerRequest): void {
@@ -95,6 +102,12 @@ export const effectsBus = {
   },
   takeMuzzleSmoke(): MuzzleSmokeRequest[] {
     return muzzleSmokeQueue.splice(0, muzzleSmokeQueue.length);
+  },
+  spawnHeatShimmer(request: HeatShimmerRequest): void {
+    heatShimmerQueue.push(request);
+  },
+  takeHeatShimmer(): HeatShimmerRequest[] {
+    return heatShimmerQueue.splice(0, heatShimmerQueue.length);
   },
 };
 
