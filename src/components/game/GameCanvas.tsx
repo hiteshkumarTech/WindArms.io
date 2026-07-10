@@ -56,6 +56,17 @@ export default function GameCanvas({ onCanvasReady }: GameCanvasProps) {
       }}
     >
       <PerformanceMonitor
+        // Default bounds ([40, 60]) leave only a 20fps gap between the
+        // decline and incline triggers, but dropping to 'low' quality cuts
+        // a large chunk of render cost in one step (shadows, post-fx,
+        // weather, reflections) — enough to swing FPS from ~35 straight
+        // past 60 in the very next sampling window. That immediately
+        // re-triggers onIncline, which re-adds the cost, which drops FPS
+        // again: a self-sustaining hunting oscillation, not a transient
+        // dip. Widening the gap (must be genuinely struggling to drop,
+        // genuinely comfortable to restore) gives the tier room to settle
+        // instead of flapping every ~2.5-5s during sustained combat.
+        bounds={(refreshrate) => (refreshrate > 100 ? [60, 100] : [30, 58])}
         onDecline={() => {
           setDpr(1);
           setQuality('low');

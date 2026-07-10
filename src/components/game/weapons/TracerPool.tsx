@@ -63,6 +63,7 @@ export default function TracerPool() {
   const impactCursor = useRef(0);
 
   const scene = useThree((state) => state.scene);
+  const camera = useThree((state) => state.camera);
   const probeRaycaster = useMemo(() => new THREE.Raycaster(), []);
   const probeOrigin = useMemo(() => new THREE.Vector3(), []);
   const probeDir = useMemo(() => new THREE.Vector3(), []);
@@ -190,6 +191,9 @@ export default function TracerPool() {
           probeDir.set(request.dir[0], request.dir[1], request.dir[2]);
           probeOrigin.set(request.at[0], request.at[1], request.at[2]).addScaledVector(probeDir, -PROBE_BACKOFF);
           probeRaycaster.set(probeOrigin, probeDir);
+          // Same requirement as WeaponSystem's raycaster — THREE.Sprite.raycast()
+          // needs raycaster.camera set or it throws on any visible sprite.
+          probeRaycaster.camera = camera;
           probeRaycaster.far = PROBE_RANGE;
           const probeHits = probeRaycaster.intersectObjects(scene.children, true);
           surface = probeHits[0] ? (surfaceOf(probeHits[0].object) ?? undefined) : undefined;

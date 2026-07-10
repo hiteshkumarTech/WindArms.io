@@ -59,9 +59,15 @@ class AudioEngine {
         return null;
       }
     }
+    // `resume()` is asynchronous — it cannot have settled by the next line,
+    // so gating the return on `state === 'running'` here always failed
+    // while suspended, silently dropping that call's sound with no retry.
+    // Scheduling nodes on a still-suspended context is valid (they simply
+    // produce no output until it resumes, which the call above already
+    // kicked off), so return the context unconditionally once it exists.
     if (this.ctx.state === 'suspended') void this.ctx.resume();
     if (this.master) this.master.gain.value = useSettingsStore.getState().masterVolume;
-    return this.ctx.state === 'running' ? this.ctx : null;
+    return this.ctx;
   }
 
   private noise(

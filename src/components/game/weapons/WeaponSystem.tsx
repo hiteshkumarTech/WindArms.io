@@ -11,6 +11,7 @@ import { surfaceOf } from '@/lib/game/surfaces';
 import { getSocket } from '@/lib/network/socket';
 import { useChatStore } from '@/stores/chatStore';
 import { useCombatStore } from '@/stores/combatStore';
+import { useGraphicsStore } from '@/stores/graphicsStore';
 import { useMultiplayerStore } from '@/stores/multiplayerStore';
 import { useWeaponStore } from '@/stores/weaponStore';
 
@@ -180,9 +181,13 @@ export default function WeaponSystem() {
 
     // Heat shimmer only builds on auto weapons and only shows once the barrel's
     // genuinely hot (a few consecutive shots) — see the per-frame decay above.
+    // HeatDistortionPool (the only consumer of this queue) only mounts at
+    // 'high' quality — gate the producer the same way, or every shot fired
+    // at 'low' quality pushes a request nothing will ever drain, growing the
+    // queue without bound for the rest of the session.
     if (def.auto) {
       heat.current = Math.min(heat.current + 1, 10);
-      if (heat.current >= 3) {
+      if (heat.current >= 3 && useGraphicsStore.getState().quality === 'high') {
         effectsBus.spawnHeatShimmer({ at: [muzzle.x, muzzle.y, muzzle.z], energy: weaponId === 'energy' });
       }
     }
@@ -204,6 +209,14 @@ export default function WeaponSystem() {
 
       // Local raycast for the tracer endpoint (visuals only — server decides damage).
       raycaster.set(camera.position, dir);
+      // THREE.Sprite.raycast() dereferences raycaster.camera unconditionally — if it's
+      // never set, intersecting a scene that contains ANY visible sprite (muzzle smoke,
+      // impact sparks, damage numbers) throws. That throw aborts fire() before it ever
+      // reaches audio.shot() below, and — since R3F's frame loop runs every useFrame
+      // subscriber in one uncaught loop before calling gl.render() — also skips that
+      // frame's render entirely, which is why sustained fire could make weapon audio
+      // and on-screen motion (weather included) both drop out together.
+      raycaster.camera = camera;
       raycaster.far = def.range;
       const hits = raycaster.intersectObjects(scene.children, true);
       if (hits.length > 0) {
