@@ -4,15 +4,18 @@ import { Suspense, useState } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { PerformanceMonitor } from '@react-three/drei';
 import { Physics } from '@react-three/rapier';
+import { useGraphicsStore } from '@/stores/graphicsStore';
 import NetworkSync from './multiplayer/NetworkSync';
 import RemotePlayers from './multiplayer/RemotePlayers';
 import PlayerController from './player/PlayerController';
 import DamageNumbers from './weapons/DamageNumbers';
+import ExplosionPool from './weapons/ExplosionPool';
 import ShellCasingPool from './weapons/ShellCasingPool';
 import TracerPool from './weapons/TracerPool';
 import WeaponSystem from './weapons/WeaponSystem';
 import WeaponViewmodel from './weapons/WeaponViewmodel';
 import ArenaEnvironment from './world/ArenaEnvironment';
+import GameEffects from './world/GameEffects';
 import TestArena from './world/TestArena';
 
 interface GameCanvasProps {
@@ -30,10 +33,14 @@ export default function GameCanvas({ onCanvasReady }: GameCanvasProps) {
   // Adaptive resolution: drop to 1.0 DPR under sustained load, recover when
   // headroom returns — frame rate beats pixel density in a shooter.
   const [dpr, setDpr] = useState(1.5);
+  const quality = useGraphicsStore((state) => state.quality);
+  const setQuality = useGraphicsStore((state) => state.setQuality);
+  const highQuality = quality === 'high';
 
   return (
     <Canvas
       dpr={dpr}
+      shadows={highQuality ? 'soft' : false}
       gl={{ antialias: true, powerPreference: 'high-performance' }}
       camera={{ fov: 75, near: 0.05, far: 150, position: [0, 2, 10] }}
       onCreated={({ gl }) => {
@@ -41,7 +48,16 @@ export default function GameCanvas({ onCanvasReady }: GameCanvasProps) {
         onCanvasReady(gl.domElement);
       }}
     >
-      <PerformanceMonitor onDecline={() => setDpr(1)} onIncline={() => setDpr(1.5)} />
+      <PerformanceMonitor
+        onDecline={() => {
+          setDpr(1);
+          setQuality('low');
+        }}
+        onIncline={() => {
+          setDpr(1.5);
+          setQuality('high');
+        }}
+      />
       <Suspense fallback={null}>
         <ArenaEnvironment />
         <Physics gravity={[0, -24, 0]} timeStep="vary">
@@ -54,7 +70,9 @@ export default function GameCanvas({ onCanvasReady }: GameCanvasProps) {
         <WeaponViewmodel />
         <TracerPool />
         <ShellCasingPool />
+        <ExplosionPool />
         <DamageNumbers />
+        {highQuality ? <GameEffects /> : null}
       </Suspense>
     </Canvas>
   );

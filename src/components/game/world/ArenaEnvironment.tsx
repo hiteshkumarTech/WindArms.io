@@ -5,9 +5,12 @@ import { useThree } from '@react-three/fiber';
 import { Grid } from '@react-three/drei';
 import { MAPS } from '@shared/maps';
 import CitySkyline from '@/components/three/scene/CitySkyline';
+import { useGraphicsStore } from '@/stores/graphicsStore';
 import { useMultiplayerStore } from '@/stores/multiplayerStore';
 import AmbientParticles from './AmbientParticles';
+import GroundFog from './GroundFog';
 import SkyDome from './SkyDome';
+import WeatherParticles from './WeatherParticles';
 
 /**
  * Non-physical scene dressing driven entirely by the active map's theme:
@@ -21,6 +24,7 @@ export default function ArenaEnvironment() {
   const map = MAPS[mapId];
   const { theme } = map;
   const gl = useThree((state) => state.gl);
+  const highQuality = useGraphicsStore((state) => state.quality === 'high');
 
   // Per-map tone-mapping exposure — bright maps read hotter. Restored on unmount.
   useEffect(() => {
@@ -41,6 +45,16 @@ export default function ArenaEnvironment() {
         position={theme.directional.position}
         intensity={theme.directional.intensity}
         color={theme.directional.color}
+        castShadow
+        shadow-mapSize={[2048, 2048]}
+        shadow-bias={-0.0015}
+        // Every map shares a 60×60 footprint, so one fixed frustum covers them all.
+        shadow-camera-left={-35}
+        shadow-camera-right={35}
+        shadow-camera-top={35}
+        shadow-camera-bottom={-35}
+        shadow-camera-near={1}
+        shadow-camera-far={80}
       />
       {theme.pointLights.map((light, index) => (
         <pointLight
@@ -80,6 +94,8 @@ export default function ArenaEnvironment() {
       ) : null}
 
       <AmbientParticles preset={theme.particles} />
+      {theme.weather && highQuality ? <WeatherParticles preset={theme.weather} /> : null}
+      {map.floor && highQuality ? <GroundFog color={theme.fogColor} /> : null}
     </group>
   );
 }

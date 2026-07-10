@@ -1,7 +1,9 @@
 'use client';
 
+import { MeshReflectorMaterial } from '@react-three/drei';
 import { CuboidCollider, RigidBody } from '@react-three/rapier';
 import { MAPS } from '@shared/maps';
+import { useGraphicsStore } from '@/stores/graphicsStore';
 import { useMultiplayerStore } from '@/stores/multiplayerStore';
 
 /**
@@ -14,6 +16,8 @@ export default function TestArena() {
   const mapId = useMultiplayerStore((state) => state.mapId);
   const map = MAPS[mapId];
   const { theme } = map;
+  const highQuality = useGraphicsStore((state) => state.quality === 'high');
+  const reflective = Boolean(theme.reflectiveFloor) && highQuality;
 
   return (
     <group key={mapId}>
@@ -26,7 +30,22 @@ export default function TestArena() {
           />
           <mesh position={map.floor.position} userData={{ surface: theme.surfaceMaterial }} receiveShadow>
             <boxGeometry args={map.floor.size} />
-            <meshStandardMaterial color={theme.floorColor} roughness={0.9} metalness={0.2} />
+            {reflective ? (
+              <MeshReflectorMaterial
+                resolution={512}
+                mirror={0.35}
+                mixBlur={4}
+                mixStrength={2.2}
+                roughness={0.35}
+                metalness={0.5}
+                color={theme.floorColor}
+                depthScale={0.4}
+                minDepthThreshold={0.85}
+                maxDepthThreshold={1}
+              />
+            ) : (
+              <meshStandardMaterial color={theme.floorColor} roughness={0.9} metalness={0.2} />
+            )}
           </mesh>
         </RigidBody>
       ) : null}
@@ -34,7 +53,7 @@ export default function TestArena() {
       {/* Perimeter walls */}
       {map.walls.map((wall, index) => (
         <RigidBody key={`wall-${index}`} type="fixed" colliders="cuboid">
-          <mesh position={wall.position} userData={{ surface: theme.surfaceMaterial }}>
+          <mesh position={wall.position} userData={{ surface: theme.surfaceMaterial }} castShadow receiveShadow>
             <boxGeometry args={wall.size} />
             <meshStandardMaterial color={theme.structureColor} roughness={0.85} metalness={0.3} />
           </mesh>
@@ -44,7 +63,7 @@ export default function TestArena() {
       {/* Platforms */}
       {map.platforms.map((platform, index) => (
         <RigidBody key={`platform-${index}`} type="fixed" colliders="cuboid">
-          <mesh position={platform.position} userData={{ surface: theme.surfaceMaterial }}>
+          <mesh position={platform.position} userData={{ surface: theme.surfaceMaterial }} castShadow receiveShadow>
             <boxGeometry args={platform.size} />
             <meshStandardMaterial color={theme.platformColor} roughness={0.7} metalness={0.4} />
           </mesh>
@@ -60,7 +79,7 @@ export default function TestArena() {
           position={ramp.position}
           rotation={ramp.rotation}
         >
-          <mesh userData={{ surface: theme.surfaceMaterial }}>
+          <mesh userData={{ surface: theme.surfaceMaterial }} castShadow receiveShadow>
             <boxGeometry args={ramp.size} />
             <meshStandardMaterial color={theme.platformColor} roughness={0.7} metalness={0.4} />
           </mesh>
@@ -70,7 +89,13 @@ export default function TestArena() {
       {/* Stairs */}
       <RigidBody type="fixed" colliders="cuboid">
         {map.stairs.map((step, index) => (
-          <mesh key={`step-${index}`} position={step.position} userData={{ surface: theme.surfaceMaterial }}>
+          <mesh
+            key={`step-${index}`}
+            position={step.position}
+            userData={{ surface: theme.surfaceMaterial }}
+            castShadow
+            receiveShadow
+          >
             <boxGeometry args={step.size} />
             <meshStandardMaterial color={theme.structureColor} roughness={0.75} metalness={0.35} />
           </mesh>
@@ -81,11 +106,17 @@ export default function TestArena() {
       {map.obstacles.map((obstacle, index) => (
         <group key={`obstacle-${index}`}>
           <RigidBody type="fixed" colliders="cuboid">
-            <mesh position={obstacle.position} userData={{ surface: theme.surfaceMaterial }}>
+            <mesh
+              position={obstacle.position}
+              userData={{ surface: theme.surfaceMaterial }}
+              castShadow
+              receiveShadow
+            >
               <boxGeometry args={obstacle.size} />
               <meshStandardMaterial color={theme.structureColor} roughness={0.8} metalness={0.3} />
             </mesh>
           </RigidBody>
+          {/* Thin emissive strip — skips shadows, it's paper-thin and self-lit */}
           <mesh position={obstacle.position} userData={{ surface: theme.surfaceMaterial }}>
             <boxGeometry
               args={[obstacle.size[0] + 0.04, Math.min(0.12, obstacle.size[1] * 0.2), obstacle.size[2] + 0.04]}
@@ -103,7 +134,7 @@ export default function TestArena() {
       {/* Pushable dynamic crates — always wood, regardless of map material */}
       {map.crates.map((position, index) => (
         <RigidBody key={`crate-${index}`} type="dynamic" colliders="cuboid" position={position}>
-          <mesh userData={{ surface: 'wood' }}>
+          <mesh userData={{ surface: 'wood' }} castShadow receiveShadow>
             <boxGeometry args={[1, 1, 1]} />
             <meshStandardMaterial color={theme.platformColor} roughness={0.6} metalness={0.5} />
           </mesh>

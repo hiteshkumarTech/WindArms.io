@@ -77,7 +77,7 @@ function directionBetween(
   return len > 1e-6 ? [dx / len, dy / len, dz / len] : [0, 1, 0];
 }
 
-/** Ring of hit sparks + a vertical flash at an elimination site. */
+/** Ring of hit sparks plus an expanding shockwave ring and light flash at an elimination site. */
 function spawnDeathBurst(position: [number, number, number], accent: string): void {
   for (let i = 0; i < 10; i++) {
     const angle = (i / 10) * Math.PI * 2;
@@ -90,6 +90,7 @@ function spawnDeathBurst(position: [number, number, number], accent: string): vo
       color: i % 2 === 0 ? accent : '#ffd27f',
     });
   }
+  effectsBus.spawnExplosion({ at: position, color: accent });
 }
 
 /**

@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
+import { usePrefersReducedMotion } from '@/hooks/usePrefersReducedMotion';
 
 export interface SkyColors {
   horizon: string;
@@ -19,6 +20,7 @@ export interface SkyColors {
  */
 export default function SkyDome({ colors }: { colors: SkyColors }) {
   const meshRef = useRef<THREE.Mesh>(null);
+  const reducedMotion = usePrefersReducedMotion();
 
   const material = useMemo(
     () =>
@@ -30,6 +32,7 @@ export default function SkyDome({ colors }: { colors: SkyColors }) {
           uHorizon: { value: new THREE.Color(colors.horizon) },
           uMid: { value: new THREE.Color(colors.mid) },
           uZenith: { value: new THREE.Color(colors.zenith) },
+          uTime: { value: 0 },
         },
         vertexShader: /* glsl */ `
           varying vec3 vDir;
@@ -43,10 +46,27 @@ export default function SkyDome({ colors }: { colors: SkyColors }) {
           uniform vec3 uHorizon;
           uniform vec3 uMid;
           uniform vec3 uZenith;
+          uniform float uTime;
+
+          // Cheap layered-sine "clouds" — no texture lookups, stays inside
+          // the project's zero-asset shader philosophy.
+          float clouds(vec3 dir, float time) {
+            float a = sin(dir.x * 3.1 + time * 0.05) * cos(dir.z * 2.3 - time * 0.035);
+            float b = sin(dir.x * 6.7 - time * 0.08 + dir.z * 1.8);
+            return a * 0.5 + b * 0.25;
+          }
+
           void main() {
             float t = clamp(vDir.y * 0.5 + 0.5, 0.0, 1.0);
             vec3 lower = mix(uHorizon, uMid, smoothstep(0.0, 0.5, t));
             vec3 color = mix(lower, uZenith, smoothstep(0.5, 1.0, t));
+
+            // Slow drifting cloud bands, faded out near the horizon and
+            // zenith so they only read in the mid sky — an "alive
+            // atmosphere" cue rather than a literal cloud layer.
+            float band = smoothstep(0.15, 0.55, t) * (1.0 - smoothstep(0.75, 1.0, t));
+            color += uZenith * clouds(vDir, uTime) * 0.06 * band;
+
             gl_FragColor = vec4(color, 1.0);
           }
         `,
@@ -56,9 +76,11 @@ export default function SkyDome({ colors }: { colors: SkyColors }) {
 
   useEffect(() => () => material.dispose(), [material]);
 
-  // Keep the dome centred on the camera so it reads as an infinite sky.
-  useFrame(({ camera }) => {
+  // Keep the dome centred on the camera so it reads as an infinite sky, and
+  // drift the cloud bands forward every frame.
+  useFrame(({ camera, clock }) => {
     meshRef.current?.position.copy(camera.position);
+    if (!reducedMotion) material.uniforms.uTime.value = clock.elapsedTime;
   });
 
   return (

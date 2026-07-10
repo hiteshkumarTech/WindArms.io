@@ -40,10 +40,16 @@ export interface CasingRequest {
   color: string;
 }
 
+export interface ExplosionRequest {
+  at: [number, number, number];
+  color: string;
+}
+
 const tracerQueue: TracerRequest[] = [];
 const impactQueue: ImpactRequest[] = [];
 const damageNumberQueue: DamageNumberRequest[] = [];
 const casingQueue: CasingRequest[] = [];
+const explosionQueue: ExplosionRequest[] = [];
 
 export const effectsBus = {
   spawnTracer(request: TracerRequest): void {
@@ -70,6 +76,12 @@ export const effectsBus = {
   },
   takeCasings(): CasingRequest[] {
     return casingQueue.splice(0, casingQueue.length);
+  },
+  spawnExplosion(request: ExplosionRequest): void {
+    explosionQueue.push(request);
+  },
+  takeExplosions(): ExplosionRequest[] {
+    return explosionQueue.splice(0, explosionQueue.length);
   },
 };
 

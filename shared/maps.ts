@@ -34,6 +34,8 @@ export interface MapTheme {
   directional: { position: Vec3; intensity: number; color: string };
   pointLights: Array<{ position: Vec3; color: string; intensity: number; distance: number }>;
   particles: 'embers' | 'snow' | 'motes';
+  /** Optional GPU-driven weather layer, additive to `particles` above. */
+  weather?: 'rain' | 'dust';
   showSkyline: boolean;
   /** Procedural sky-dome gradient (horizon → mid → zenith), replacing void black. */
   sky: { horizon: string; mid: string; zenith: string };
@@ -41,6 +43,8 @@ export interface MapTheme {
   exposure?: number;
   /** Dominant material for this map's floor/walls/platforms/obstacles. */
   surfaceMaterial: SurfaceKind;
+  /** Wet/polished floor reads as a mirror (rendered only at the 'high' quality tier). */
+  reflectiveFloor?: boolean;
 }
 
 export interface MapDef {
@@ -130,9 +134,11 @@ const CYBER_CITY: MapDef = {
       { position: [16, 6, 16], color: '#7C5CFF', intensity: 40, distance: 30 },
     ],
     particles: 'embers',
+    weather: 'rain',
     showSkyline: true,
     sky: { horizon: '#0c1420', mid: '#0a1a2a', zenith: '#04070d' },
     surfaceMaterial: 'metal',
+    reflectiveFloor: true,
   },
 };
 
@@ -267,6 +273,7 @@ const FOREST_TEMPLE: MapDef = {
       { position: [14, 4, 14], color: '#34d399', intensity: 30, distance: 24 },
     ],
     particles: 'motes',
+    weather: 'dust',
     showSkyline: false,
     sky: { horizon: '#2a3a2a', mid: '#18271b', zenith: '#0a140e' },
     surfaceMaterial: 'stone',
