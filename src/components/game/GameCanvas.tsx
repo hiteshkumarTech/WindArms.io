@@ -10,6 +10,7 @@ import RemotePlayers from './multiplayer/RemotePlayers';
 import PlayerController from './player/PlayerController';
 import DamageNumbers from './weapons/DamageNumbers';
 import ExplosionPool from './weapons/ExplosionPool';
+import MuzzleSmokePool from './weapons/MuzzleSmokePool';
 import ShellCasingPool from './weapons/ShellCasingPool';
 import TracerPool from './weapons/TracerPool';
 import WeaponSystem from './weapons/WeaponSystem';
@@ -70,6 +71,7 @@ export default function GameCanvas({ onCanvasReady }: GameCanvasProps) {
         <WeaponViewmodel />
         <TracerPool />
         <ShellCasingPool />
+        <MuzzleSmokePool />
         <ExplosionPool />
         <DamageNumbers />
         {highQuality ? <GameEffects /> : null}

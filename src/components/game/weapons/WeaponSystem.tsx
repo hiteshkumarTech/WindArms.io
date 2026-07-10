@@ -170,6 +170,8 @@ export default function WeaponSystem() {
         color: weaponId === 'shotgun' ? '#e2793a' : '#d9b563',
       });
     }
+    // Muzzle smoke: also once per trigger pull, not per pellet.
+    effectsBus.spawnMuzzleSmoke({ at: [muzzle.x, muzzle.y, muzzle.z], energy: weaponId === 'energy' });
 
     const spreadTan = Math.tan((def.spreadDeg * Math.PI) / 180);
     const origin: Vec3 = [camera.position.x, camera.position.y, camera.position.z];

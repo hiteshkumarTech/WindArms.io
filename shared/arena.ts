@@ -33,3 +33,32 @@ export function makeStairs(
     size: [width, stepHeight, stepDepth] as Vec3,
   }));
 }
+
+/**
+ * Purely cosmetic vertical struts hung under boxes that float well above
+ * `groundY` (elevated platforms/ramps) so they read as supported structure
+ * instead of levitating. Client-only decoration — like ramps and crates,
+ * never appended to a MapDef's own arrays and never fed into
+ * `occlusionBoxesFor`, so it can't affect server hit-scan or bounds.
+ */
+export function supportBeamsFor(boxes: readonly ArenaBox[], groundY: number): ArenaBox[] {
+  const MIN_HEIGHT = 1.4;
+  const BEAM_SIZE = 0.22;
+  const beams: ArenaBox[] = [];
+  for (const box of boxes) {
+    const bottom = box.position[1] - box.size[1] / 2;
+    const height = bottom - groundY;
+    if (height < MIN_HEIGHT) continue;
+    const centerY = groundY + height / 2;
+    beams.push({ position: [box.position[0], centerY, box.position[2]], size: [BEAM_SIZE, height, BEAM_SIZE] });
+    // Larger platforms get a second strut so they don't look single-stilted.
+    if (Math.max(box.size[0], box.size[2]) > 5) {
+      const offset = Math.min(box.size[0], box.size[2]) * 0.3;
+      beams.push({
+        position: [box.position[0] + offset, centerY, box.position[2] + offset],
+        size: [BEAM_SIZE, height, BEAM_SIZE],
+      });
+    }
+  }
+  return beams;
+}

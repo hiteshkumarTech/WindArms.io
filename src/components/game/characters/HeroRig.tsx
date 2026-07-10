@@ -3,6 +3,8 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from 'react';
 import * as THREE from 'three';
 import { weaponTintById, type HeroAppearance } from '@shared/heroes';
+import { createRimMaterial } from '@/lib/three/rimLight';
+import { useGraphicsStore } from '@/stores/graphicsStore';
 
 /**
  * Imperative handle onto the rig's bone groups. The driver (RemoteAvatar)
@@ -34,9 +36,10 @@ interface HeroRigProps {
  * A low-poly articulated character built entirely from primitives — zero
  * external assets, matching the project's procedural philosophy. Nine
  * animated nodes (hips/body, torso, head, upper+lower arms ×2, legs ×2)
- * plus a held weapon, driven by heroAnimator. Four materials are shared
- * across the whole rig and disposed on unmount, keeping the draw-call and
- * memory budget flat at eight players (design §7).
+ * plus a held weapon, driven by heroAnimator. Five materials (plus a
+ * 'high'-quality-only fresnel rim shell) are shared across the whole rig
+ * and disposed on unmount, keeping the draw-call and memory budget flat
+ * at eight players (design §7).
  *
  * Proportions and colors come from the shared hero catalog, so the same rig
  * renders any silhouette/skin. The head sits at the server's head-hitbox
@@ -60,8 +63,9 @@ const HeroRig = forwardRef<RigHandle, HeroRigProps>(function HeroRig({ appearanc
   const legL = useRef<THREE.Group>(null);
   const legR = useRef<THREE.Group>(null);
   const weapon = useRef<THREE.Group>(null);
+  const highQuality = useGraphicsStore((state) => state.quality === 'high');
 
-  // Four shared materials for the entire rig (design §7: "share 3 materials").
+  // Shared materials for the entire rig (design §7: "share 3 materials").
   const materials = useMemo(() => {
     const std = (color: string, roughness: number, metalness: number) =>
       new THREE.MeshStandardMaterial({ color, roughness, metalness, transparent: true, depthWrite: true });
@@ -91,6 +95,7 @@ const HeroRig = forwardRef<RigHandle, HeroRigProps>(function HeroRig({ appearanc
         transparent: true,
         depthWrite: true,
       }),
+      rimMat: createRimMaterial(skin.accent, 0.6),
     };
   }, [skin.primary, skin.secondary, skin.accent, tint]);
 
@@ -101,6 +106,7 @@ const HeroRig = forwardRef<RigHandle, HeroRigProps>(function HeroRig({ appearanc
       materials.accentMat.dispose();
       materials.weaponMat.dispose();
       materials.tintMat.dispose();
+      materials.rimMat.dispose();
     },
     [materials],
   );
@@ -145,6 +151,12 @@ const HeroRig = forwardRef<RigHandle, HeroRigProps>(function HeroRig({ appearanc
         <mesh position={[0, 0.26 * h, 0]} material={materials.bodyMat} castShadow>
           <boxGeometry args={[0.34 * b, 0.46 * h, 0.2 * b]} />
         </mesh>
+        {/* Fresnel rim shell — 'high' quality only, gated for the ×8-player budget */}
+        {highQuality ? (
+          <mesh position={[0, 0.26 * h, 0]} material={materials.rimMat} scale={[1.06, 1.04, 1.08]}>
+            <boxGeometry args={[0.34 * b, 0.46 * h, 0.2 * b]} />
+          </mesh>
+        ) : null}
         {/* Emissive chest strip — team/skin read at distance */}
         <mesh position={[0, 0.3 * h, -0.1 * b - 0.01]} material={materials.accentMat}>
           <boxGeometry args={[0.16 * b, 0.1 * h, 0.04]} />
@@ -155,6 +167,11 @@ const HeroRig = forwardRef<RigHandle, HeroRigProps>(function HeroRig({ appearanc
           <mesh position={[0, 0.1 * h, 0]} material={materials.bodyMat} castShadow>
             <boxGeometry args={[0.2 * b, 0.22 * h, 0.2 * b]} />
           </mesh>
+          {highQuality ? (
+            <mesh position={[0, 0.1 * h, 0]} material={materials.rimMat} scale={[1.08, 1.06, 1.08]}>
+              <boxGeometry args={[0.2 * b, 0.22 * h, 0.2 * b]} />
+            </mesh>
+          ) : null}
           {/* Visor faces -Z (forward) */}
           <mesh position={[0, 0.1 * h, -0.1 * b - 0.01]} material={materials.accentMat}>
             <boxGeometry args={[0.16 * b, 0.07 * h, 0.04]} />

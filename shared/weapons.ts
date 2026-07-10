@@ -9,12 +9,62 @@ import type { WeaponId } from './protocol';
  * intended engagement distance.
  */
 
+/** Kinetic weapons get a magazine/tube; the energy weapon gets its own muzzle/impact treatment entirely. */
+export type WeaponFrame = 'kinetic' | 'energy';
+
+/**
+ * Closed set of attachment shapes the viewmodel renderer knows how to build
+ * from primitives only (see WeaponViewmodel.tsx's ModuleGeometry). Data
+ * decides which modules a weapon has and where; code owns how each kind is
+ * built, so one component renders all 7 silhouettes distinctly with no
+ * per-weapon branches.
+ */
+export type WeaponModuleKind =
+  | 'ironSight'
+  | 'redDot'
+  | 'scope'
+  | 'stickMag'
+  | 'drumMag'
+  | 'tube'
+  | 'cell'
+  | 'foldingStock'
+  | 'soloStock'
+  | 'cheekRest'
+  | 'bipod'
+  | 'railHandguard'
+  | 'barrelShroud'
+  | 'compensator'
+  | 'choke'
+  | 'crystalCore'
+  | 'coil'
+  | 'ventFin';
+
+/** Ammo-feed kinds get their own ref in the viewmodel so reload can animate them independently. */
+export const AMMO_FEED_MODULE_KINDS: readonly WeaponModuleKind[] = ['stickMag', 'drumMag', 'tube', 'cell'];
+
+export interface WeaponModule {
+  kind: WeaponModuleKind;
+  /** Offset from the chassis origin (meters; z negative = toward the muzzle, matching the receiver/barrel convention). */
+  position: [number, number, number];
+  rotation?: [number, number, number];
+  /** Already the final per-instance size — not re-multiplied by bulk/length again. */
+  scale?: [number, number, number] | number;
+}
+
 export interface WeaponVisual {
   /** Barrel/body length of the procedural viewmodel (m). */
   length: number;
   /** Body thickness multiplier. */
   bulk: number;
   accent: string;
+  frame: WeaponFrame;
+  /** Independent of `length` — lets the barrel protrude a different amount than the receiver's span. */
+  barrelLength: number;
+  barrelRadius: number;
+  /** Grip rotation (rad); higher = more rearward rake. */
+  gripRake: number;
+  /** Attachments that give each weapon a distinct, data-driven silhouette. */
+  modules: WeaponModule[];
 }
 
 export interface WeaponRecoil {
@@ -66,7 +116,19 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     minDamageMultiplier: 0.6,
     recoil: { vertical: 0.012, horizontal: 0.004 },
     tracerColor: '#9fe8ff',
-    visual: { length: 0.3, bulk: 0.8, accent: '#00F5FF' },
+    visual: {
+      length: 0.3,
+      bulk: 0.8,
+      accent: '#00F5FF',
+      frame: 'kinetic',
+      barrelLength: 0.14,
+      barrelRadius: 0.013,
+      gripRake: 0.55,
+      modules: [
+        { kind: 'ironSight', position: [0, 0.05, -0.32] },
+        { kind: 'stickMag', position: [0, -0.075, -0.05], rotation: [0.05, 0, 0], scale: [0.85, 0.7, 0.9] },
+      ],
+    },
   },
   smg: {
     id: 'smg',
@@ -85,7 +147,20 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     minDamageMultiplier: 0.5,
     recoil: { vertical: 0.007, horizontal: 0.006 },
     tracerColor: '#00F5FF',
-    visual: { length: 0.42, bulk: 0.9, accent: '#00F5FF' },
+    visual: {
+      length: 0.42,
+      bulk: 0.9,
+      accent: '#00F5FF',
+      frame: 'kinetic',
+      barrelLength: 0.2,
+      barrelRadius: 0.016,
+      gripRake: 0.4,
+      modules: [
+        { kind: 'compensator', position: [0, 0.012, -0.62] },
+        { kind: 'foldingStock', position: [0, 0.05, 0.05] },
+        { kind: 'stickMag', position: [0, -0.11, -0.16], rotation: [-0.55, 0, 0], scale: [0.85, 1, 0.8] },
+      ],
+    },
   },
   ar: {
     id: 'ar',
@@ -104,7 +179,22 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     minDamageMultiplier: 0.65,
     recoil: { vertical: 0.01, horizontal: 0.005 },
     tracerColor: '#ffd27f',
-    visual: { length: 0.55, bulk: 1, accent: '#FF7A00' },
+    visual: {
+      length: 0.55,
+      bulk: 1,
+      accent: '#FF7A00',
+      frame: 'kinetic',
+      barrelLength: 0.28,
+      barrelRadius: 0.017,
+      gripRake: 0.35,
+      modules: [
+        { kind: 'railHandguard', position: [0, 0.02, -0.68] },
+        { kind: 'ironSight', position: [0, 0.05, -0.78] },
+        { kind: 'redDot', position: [0, 0.058, -0.28] },
+        { kind: 'soloStock', position: [0, 0.005, 0.11], scale: [1, 1, 0.7] },
+        { kind: 'stickMag', position: [0, -0.1, -0.28], rotation: [-0.3, 0, 0] },
+      ],
+    },
   },
   shotgun: {
     id: 'shotgun',
@@ -123,7 +213,20 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     minDamageMultiplier: 0.3,
     recoil: { vertical: 0.035, horizontal: 0.01 },
     tracerColor: '#ffb066',
-    visual: { length: 0.5, bulk: 1.15, accent: '#FF7A00' },
+    visual: {
+      length: 0.5,
+      bulk: 1.15,
+      accent: '#FF7A00',
+      frame: 'kinetic',
+      barrelLength: 0.24,
+      barrelRadius: 0.026,
+      gripRake: 0.3,
+      modules: [
+        { kind: 'tube', position: [0, -0.028, -0.36] },
+        { kind: 'choke', position: [0, 0.012, -0.75] },
+        { kind: 'soloStock', position: [0, 0.005, 0.14], scale: [1.35, 1.25, 0.85] },
+      ],
+    },
   },
   sniper: {
     id: 'sniper',
@@ -142,7 +245,21 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     minDamageMultiplier: 1,
     recoil: { vertical: 0.05, horizontal: 0.012 },
     tracerColor: '#d9c2ff',
-    visual: { length: 0.72, bulk: 0.95, accent: '#7C5CFF' },
+    visual: {
+      length: 0.72,
+      bulk: 0.95,
+      accent: '#7C5CFF',
+      frame: 'kinetic',
+      barrelLength: 0.42,
+      barrelRadius: 0.013,
+      gripRake: 0.3,
+      modules: [
+        { kind: 'scope', position: [0, 0.075, -0.4] },
+        { kind: 'cheekRest', position: [0, 0.01, 0.22] },
+        { kind: 'bipod', position: [0, -0.02, -0.85] },
+        { kind: 'stickMag', position: [0, -0.09, -0.4], rotation: [-0.15, 0, 0], scale: [0.75, 0.85, 0.8] },
+      ],
+    },
   },
   lmg: {
     id: 'lmg',
@@ -161,7 +278,21 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     minDamageMultiplier: 0.6,
     recoil: { vertical: 0.011, horizontal: 0.008 },
     tracerColor: '#ffe08a',
-    visual: { length: 0.6, bulk: 1.25, accent: '#FF7A00' },
+    visual: {
+      length: 0.6,
+      bulk: 1.25,
+      accent: '#FF7A00',
+      frame: 'kinetic',
+      barrelLength: 0.32,
+      barrelRadius: 0.022,
+      gripRake: 0.3,
+      modules: [
+        { kind: 'barrelShroud', position: [0, 0.012, -0.62] },
+        { kind: 'bipod', position: [0, -0.03, -0.78] },
+        { kind: 'soloStock', position: [0, 0.005, 0.1], scale: [1.1, 1.15, 0.65] },
+        { kind: 'drumMag', position: [0, -0.13, -0.24] },
+      ],
+    },
   },
   energy: {
     id: 'energy',
@@ -180,7 +311,23 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     minDamageMultiplier: 0.7,
     recoil: { vertical: 0.018, horizontal: 0.006 },
     tracerColor: '#b18cff',
-    visual: { length: 0.58, bulk: 1.05, accent: '#7C5CFF' },
+    visual: {
+      length: 0.58,
+      bulk: 1.05,
+      accent: '#7C5CFF',
+      frame: 'energy',
+      barrelLength: 0.3,
+      barrelRadius: 0.02,
+      gripRake: 0.3,
+      modules: [
+        { kind: 'crystalCore', position: [0, 0.06, -0.42] },
+        { kind: 'coil', position: [0, 0.012, -0.58] },
+        { kind: 'coil', position: [0, 0.012, -0.72] },
+        { kind: 'ventFin', position: [0.035, 0.01, -0.4], rotation: [0, 0, 0.3] },
+        { kind: 'ventFin', position: [-0.035, 0.01, -0.4], rotation: [0, 0, -0.3] },
+        { kind: 'cell', position: [0, -0.08, -0.1] },
+      ],
+    },
   },
 };
 

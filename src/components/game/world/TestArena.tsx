@@ -1,16 +1,27 @@
 'use client';
 
+import { useMemo } from 'react';
 import { MeshReflectorMaterial } from '@react-three/drei';
 import { CuboidCollider, RigidBody } from '@react-three/rapier';
+import { supportBeamsFor } from '@shared/arena';
 import { MAPS } from '@shared/maps';
+import { createRng } from '@/lib/utils';
+import { useVariedBoxGeometries } from '@/lib/three/variedGeometry';
 import { useGraphicsStore } from '@/stores/graphicsStore';
 import { useMultiplayerStore } from '@/stores/multiplayerStore';
+
+const UNIT_BOX = { size: [1, 1, 1] as [number, number, number] };
 
 /**
  * Physical arena geometry, built from the active map's shared layout data
  * — the exact same boxes the server raycasts for shot occlusion, so cover
  * behaves identically on both sides. Keyed by map id: switching maps
  * remounts every rigid body, letting Rapier rebuild colliders cleanly.
+ *
+ * Every structural mesh below wears a baked per-face vertex-color jitter
+ * (`useVariedBoxGeometries`) instead of one flat MeshStandardMaterial
+ * color — breaks up the classic gray-box look at zero shader risk, since
+ * it rides `vertexColors`, a first-class MeshStandardMaterial feature.
  */
 export default function TestArena() {
   const mapId = useMultiplayerStore((state) => state.mapId);
@@ -18,6 +29,31 @@ export default function TestArena() {
   const { theme } = map;
   const highQuality = useGraphicsStore((state) => state.quality === 'high');
   const reflective = Boolean(theme.reflectiveFloor) && highQuality;
+
+  const wallGeometries = useVariedBoxGeometries(map.walls, 1000);
+  const platformGeometries = useVariedBoxGeometries(map.platforms, 2000);
+  const rampGeometries = useVariedBoxGeometries(map.ramps, 3000);
+  const stairGeometries = useVariedBoxGeometries(map.stairs, 4000);
+  const obstacleGeometries = useVariedBoxGeometries(map.obstacles, 5000);
+  const crateBoxes = useMemo(() => map.crates.map(() => UNIT_BOX), [map.crates]);
+  const crateGeometries = useVariedBoxGeometries(crateBoxes, 6000);
+
+  // Purely cosmetic struts under elevated platforms/ramps so they read as
+  // supported rather than levitating — never fed into server occlusion.
+  const groundY = map.floor ? map.floor.position[1] + map.floor.size[1] / 2 : (map.killPlaneY ?? -8) + 0.5;
+  const beams = useMemo(() => supportBeamsFor([...map.platforms, ...map.ramps], groundY), [map, groundY]);
+  const beamGeometries = useVariedBoxGeometries(beams, 7000, 0.05);
+
+  // Per-crate size/rotation variety, seeded — the most repeated prop in
+  // every map no longer reads as pixel-identical copies of one box.
+  const crateVariants = useMemo(
+    () =>
+      map.crates.map((_, i) => {
+        const rng = createRng(8000 + i * 53);
+        return { scale: 0.9 + rng() * 0.25, yRot: rng() * Math.PI * 2 };
+      }),
+    [map.crates],
+  );
 
   return (
     <group key={mapId}>
@@ -54,8 +90,8 @@ export default function TestArena() {
       {map.walls.map((wall, index) => (
         <RigidBody key={`wall-${index}`} type="fixed" colliders="cuboid">
           <mesh position={wall.position} userData={{ surface: theme.surfaceMaterial }} castShadow receiveShadow>
-            <boxGeometry args={wall.size} />
-            <meshStandardMaterial color={theme.structureColor} roughness={0.85} metalness={0.3} />
+            <primitive object={wallGeometries[index]} attach="geometry" />
+            <meshStandardMaterial color={theme.structureColor} roughness={0.85} metalness={0.3} vertexColors />
           </mesh>
         </RigidBody>
       ))}
@@ -64,8 +100,8 @@ export default function TestArena() {
       {map.platforms.map((platform, index) => (
         <RigidBody key={`platform-${index}`} type="fixed" colliders="cuboid">
           <mesh position={platform.position} userData={{ surface: theme.surfaceMaterial }} castShadow receiveShadow>
-            <boxGeometry args={platform.size} />
-            <meshStandardMaterial color={theme.platformColor} roughness={0.7} metalness={0.4} />
+            <primitive object={platformGeometries[index]} attach="geometry" />
+            <meshStandardMaterial color={theme.platformColor} roughness={0.7} metalness={0.4} vertexColors />
           </mesh>
         </RigidBody>
       ))}
@@ -80,8 +116,8 @@ export default function TestArena() {
           rotation={ramp.rotation}
         >
           <mesh userData={{ surface: theme.surfaceMaterial }} castShadow receiveShadow>
-            <boxGeometry args={ramp.size} />
-            <meshStandardMaterial color={theme.platformColor} roughness={0.7} metalness={0.4} />
+            <primitive object={rampGeometries[index]} attach="geometry" />
+            <meshStandardMaterial color={theme.platformColor} roughness={0.7} metalness={0.4} vertexColors />
           </mesh>
         </RigidBody>
       ))}
@@ -96,8 +132,8 @@ export default function TestArena() {
             castShadow
             receiveShadow
           >
-            <boxGeometry args={step.size} />
-            <meshStandardMaterial color={theme.structureColor} roughness={0.75} metalness={0.35} />
+            <primitive object={stairGeometries[index]} attach="geometry" />
+            <meshStandardMaterial color={theme.structureColor} roughness={0.75} metalness={0.35} vertexColors />
           </mesh>
         ))}
       </RigidBody>
@@ -112,8 +148,8 @@ export default function TestArena() {
               castShadow
               receiveShadow
             >
-              <boxGeometry args={obstacle.size} />
-              <meshStandardMaterial color={theme.structureColor} roughness={0.8} metalness={0.3} />
+              <primitive object={obstacleGeometries[index]} attach="geometry" />
+              <meshStandardMaterial color={theme.structureColor} roughness={0.8} metalness={0.3} vertexColors />
             </mesh>
           </RigidBody>
           {/* Thin emissive strip — skips shadows, it's paper-thin and self-lit */}
@@ -132,13 +168,30 @@ export default function TestArena() {
       ))}
 
       {/* Pushable dynamic crates — always wood, regardless of map material */}
-      {map.crates.map((position, index) => (
-        <RigidBody key={`crate-${index}`} type="dynamic" colliders="cuboid" position={position}>
-          <mesh userData={{ surface: 'wood' }} castShadow receiveShadow>
-            <boxGeometry args={[1, 1, 1]} />
-            <meshStandardMaterial color={theme.platformColor} roughness={0.6} metalness={0.5} />
-          </mesh>
-        </RigidBody>
+      {map.crates.map((position, index) => {
+        const variant = crateVariants[index];
+        return (
+          <RigidBody
+            key={`crate-${index}`}
+            type="dynamic"
+            colliders="cuboid"
+            position={position}
+            rotation={[0, variant.yRot, 0]}
+          >
+            <mesh userData={{ surface: 'wood' }} castShadow receiveShadow scale={variant.scale}>
+              <primitive object={crateGeometries[index]} attach="geometry" />
+              <meshStandardMaterial color={theme.platformColor} roughness={0.6} metalness={0.5} vertexColors />
+            </mesh>
+          </RigidBody>
+        );
+      })}
+
+      {/* Support struts under elevated platforms/ramps — cosmetic only, no collider */}
+      {beams.map((beam, index) => (
+        <mesh key={`beam-${index}`} position={beam.position} castShadow userData={{ surface: theme.surfaceMaterial }}>
+          <primitive object={beamGeometries[index]} attach="geometry" />
+          <meshStandardMaterial color={theme.structureColor} roughness={0.6} metalness={0.5} vertexColors />
+        </mesh>
       ))}
     </group>
   );

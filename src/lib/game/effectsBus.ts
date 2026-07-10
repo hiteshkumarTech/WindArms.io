@@ -45,11 +45,18 @@ export interface ExplosionRequest {
   color: string;
 }
 
+export interface MuzzleSmokeRequest {
+  at: [number, number, number];
+  /** Cooler violet-white puff for the energy weapon instead of grey smoke. */
+  energy?: boolean;
+}
+
 const tracerQueue: TracerRequest[] = [];
 const impactQueue: ImpactRequest[] = [];
 const damageNumberQueue: DamageNumberRequest[] = [];
 const casingQueue: CasingRequest[] = [];
 const explosionQueue: ExplosionRequest[] = [];
+const muzzleSmokeQueue: MuzzleSmokeRequest[] = [];
 
 export const effectsBus = {
   spawnTracer(request: TracerRequest): void {
@@ -83,6 +90,12 @@ export const effectsBus = {
   takeExplosions(): ExplosionRequest[] {
     return explosionQueue.splice(0, explosionQueue.length);
   },
+  spawnMuzzleSmoke(request: MuzzleSmokeRequest): void {
+    muzzleSmokeQueue.push(request);
+  },
+  takeMuzzleSmoke(): MuzzleSmokeRequest[] {
+    return muzzleSmokeQueue.splice(0, muzzleSmokeQueue.length);
+  },
 };
 
 /**
@@ -103,4 +116,14 @@ export const fireSignal = { nonce: 0 };
  * and decays it every frame.
  */
 export const cameraShake = { trauma: 0 };
+
+/**
+ * Jump/landing signal for the viewmodel dip. PlayerController bumps the
+ * nonce and writes `velocity` (vertical, m/s) at the exact frame it detects
+ * a landing (negative, magnitude scales the dip) or a jump launch (small
+ * positive) — the same low-latency singleton-bridge convention as
+ * `viewKick`/`fireSignal`/`cameraShake` above, since `usePlayerStore` is
+ * throttled to ~10 Hz and carries no impact-speed field.
+ */
+export const groundImpact = { nonce: 0, velocity: 0 };
 

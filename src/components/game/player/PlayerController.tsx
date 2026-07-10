@@ -14,7 +14,7 @@ import * as THREE from 'three';
 import { MAPS } from '@shared/maps';
 import { audio } from '@/lib/audio/audioEngine';
 import { PLAYER } from '@/lib/game/constants';
-import { cameraShake, viewKick } from '@/lib/game/effectsBus';
+import { cameraShake, groundImpact, viewKick } from '@/lib/game/effectsBus';
 import { localPose, pendingCorrection } from '@/lib/game/localPose';
 import { useCombatStore } from '@/stores/combatStore';
 import { accelerate, applyFriction, wishDirection } from '@/lib/game/movement';
@@ -327,6 +327,8 @@ export default function PlayerController() {
       wallSide.current = 0;
       wallReadyAt.current = now + PLAYER.WALLRUN_COOLDOWN * 1000;
       audio.jump();
+      groundImpact.velocity = 6;
+      groundImpact.nonce += 1;
     } else if (jumpBuffered && !dashing && (grounded.current || withinCoyote)) {
       input.pressedAt.jump = -Infinity;
       // Slide-hop: jumping out of a slide keeps (and slightly boosts) its speed.
@@ -345,6 +347,8 @@ export default function PlayerController() {
       grounded.current = false;
       lastGroundedAt.current = -Infinity;
       audio.jump();
+      groundImpact.velocity = 6;
+      groundImpact.nonce += 1;
     }
 
     // --- Collide-and-slide through the character controller ---------------
@@ -360,7 +364,11 @@ export default function PlayerController() {
     if (grounded.current) {
       lastGroundedAt.current = now;
       // Landing thump scaled by impact speed (only meaningful falls).
-      if (!wasGrounded && vel.y < -8) audio.land(Math.min(-vel.y - 8, 12));
+      if (!wasGrounded && vel.y < -8) {
+        audio.land(Math.min(-vel.y - 8, 12));
+        groundImpact.velocity = vel.y;
+        groundImpact.nonce += 1;
+      }
       if (vel.y < 0) vel.y = -0.6; // small downward bias keeps ground snap engaged
     } else if (wasRising && corrected.y < desiredY - 1e-6) {
       vel.y = 0; // bumped a ceiling

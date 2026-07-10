@@ -147,6 +147,8 @@ export function useMultiplayer() {
         effectsBus.spawnTracer({ from, to, color, energy: isEnergy });
         effectsBus.spawnImpact({ at: to, color, dir: directionBetween(from, to), energy: isEnergy });
       }
+      // Once per shot event, not per pellet end — matches the local shooter's cadence.
+      effectsBus.spawnMuzzleSmoke({ at: from, energy: isEnergy });
       audio.remoteShot(event.weapon, event.origin);
     };
     const onHit = (event: HitEvent) => {

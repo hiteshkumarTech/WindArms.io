@@ -41,6 +41,8 @@ export interface MapTheme {
   sky: { horizon: string; mid: string; zenith: string };
   /** Tone-mapping exposure (1 = renderer default); bright maps raise it. */
   exposure?: number;
+  /** Post-process contrast delta (0 = renderer default); moody maps push it up. */
+  contrast?: number;
   /** Dominant material for this map's floor/walls/platforms/obstacles. */
   surfaceMaterial: SurfaceKind;
   /** Wet/polished floor reads as a mirror (rendered only at the 'high' quality tier). */
@@ -137,6 +139,8 @@ const CYBER_CITY: MapDef = {
     weather: 'rain',
     showSkyline: true,
     sky: { horizon: '#0c1420', mid: '#0a1a2a', zenith: '#04070d' },
+    exposure: 0.85,
+    contrast: 0.06,
     surfaceMaterial: 'metal',
     reflectiveFloor: true,
   },
@@ -205,6 +209,8 @@ const SNOW_BASE: MapDef = {
     particles: 'snow',
     showSkyline: false,
     sky: { horizon: '#eaf3fc', mid: '#c2d8ee', zenith: '#8fb6dc' },
+    exposure: 1.2,
+    contrast: -0.03,
     surfaceMaterial: 'snow',
   },
 };
@@ -276,6 +282,8 @@ const FOREST_TEMPLE: MapDef = {
     weather: 'dust',
     showSkyline: false,
     sky: { horizon: '#2a3a2a', mid: '#18271b', zenith: '#0a140e' },
+    exposure: 0.9,
+    contrast: 0.03,
     surfaceMaterial: 'stone',
   },
 };

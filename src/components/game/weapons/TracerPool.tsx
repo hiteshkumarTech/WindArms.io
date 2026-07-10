@@ -67,19 +67,49 @@ export default function TracerPool() {
   const probeOrigin = useMemo(() => new THREE.Vector3(), []);
   const probeDir = useMemo(() => new THREE.Vector3(), []);
 
+  // Base cross-section (0.025 x 0.025) and unit length — the tracer shader
+  // below hardcodes these same half-extents to derive local-space radial
+  // distance and head/tail position, so keep them in sync if this changes.
   const tracerGeometry = useMemo(() => new THREE.BoxGeometry(0.025, 0.025, 1), []);
   const tracerMaterials = useMemo(
     () =>
       Array.from(
         { length: TRACER_COUNT },
         () =>
-          new THREE.MeshBasicMaterial({
-            color: '#ffffff',
+          new THREE.ShaderMaterial({
             transparent: true,
-            opacity: 0,
-            blending: THREE.AdditiveBlending,
             depthWrite: false,
-            toneMapped: false,
+            blending: THREE.AdditiveBlending,
+            uniforms: {
+              uColor: { value: new THREE.Color('#ffffff') },
+              uOpacity: { value: 0 },
+            },
+            vertexShader: /* glsl */ `
+              varying vec2 vLocalXY;
+              varying float vHeadFactor;
+              void main() {
+                // Cross-section half-width is 0.0125 (half of the 0.025 base box).
+                vLocalXY = position.xy / 0.0125;
+                // mesh.lookAt(to) points local -Z at the head, so -position.z
+                // increases toward it; remap the box's -0.5..0.5 span to 0..1.
+                vHeadFactor = 0.5 - position.z;
+                gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+              }
+            `,
+            fragmentShader: /* glsl */ `
+              varying vec2 vLocalXY;
+              varying float vHeadFactor;
+              uniform vec3 uColor;
+              uniform float uOpacity;
+              void main() {
+                float radial = length(vLocalXY);
+                float core = smoothstep(1.0, 0.15, radial);
+                float headGlow = mix(0.35, 1.0, clamp(vHeadFactor, 0.0, 1.0));
+                float alpha = core * headGlow * uOpacity;
+                if (alpha < 0.02) discard;
+                gl_FragColor = vec4(uColor, alpha);
+              }
+            `,
           }),
       ),
     [],
@@ -130,7 +160,7 @@ export default function TracerPool() {
       mesh.position.copy(from).add(to).multiplyScalar(0.5);
       mesh.lookAt(to);
       mesh.scale.set(thickness, thickness, length);
-      tracerMaterials[slot].color.set(request.color);
+      tracerMaterials[slot].uniforms.uColor.value.set(request.color);
       tracerData.current[slot] = {
         bornAt: now,
         life: request.energy ? ENERGY_TRACER_LIFE_MS : TRACER_LIFE_MS,
@@ -186,9 +216,9 @@ export default function TracerPool() {
       if (!mesh || !mesh.visible) continue;
       if (age >= data.life) {
         mesh.visible = false;
-        tracerMaterials[slot].opacity = 0;
+        tracerMaterials[slot].uniforms.uOpacity.value = 0;
       } else {
-        tracerMaterials[slot].opacity = data.peakOpacity * (1 - age / data.life);
+        tracerMaterials[slot].uniforms.uOpacity.value = data.peakOpacity * (1 - age / data.life);
       }
     }
     for (let slot = 0; slot < IMPACT_COUNT; slot++) {
