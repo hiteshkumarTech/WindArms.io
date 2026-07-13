@@ -9,21 +9,21 @@ const inter = Inter({
 });
 
 const description =
-  'Enter WindArms.io — a fast-paced multiplayer FPS where futuristic anime heroes, precision gunplay, and strategic teamwork collide inside breathtaking competitive arenas. Play free in your browser, no downloads.';
+  'The War Above the Storm. Humanity’s last civilization fights across floating megacities on ancient wind technology — a fast-paced multiplayer FPS, free in your browser. No downloads.';
 
 export const metadata: Metadata = {
-  title: 'WindArms.io — Master the Storm. Dominate Every Match.',
+  title: 'WindArms — The War Above the Storm',
   description,
   keywords: ['WindArms', 'browser FPS', 'multiplayer shooter', 'io game', 'competitive FPS', 'free FPS'],
   openGraph: {
-    title: 'WindArms.io — Fast-Paced Browser Multiplayer FPS',
+    title: 'WindArms — The War Above the Storm',
     description,
     type: 'website',
-    siteName: 'WindArms.io',
+    siteName: 'WindArms',
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'WindArms.io — Fast-Paced Browser Multiplayer FPS',
+    title: 'WindArms — The War Above the Storm',
     description,
   },
 };
@@ -31,7 +31,7 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
-  themeColor: '#050505',
+  themeColor: '#0A1522',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

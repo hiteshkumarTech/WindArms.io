@@ -34,6 +34,60 @@
   }
 }
 
+/* ── WindArms V2 landing ─────────────────────────────────────────── */
+
+/* Navbar frosts after the hero (class toggled via classList, not state) */
+.v2-nav-frosted {
+  background-color: rgba(10, 21, 34, 0.72);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(16px);
+}
+
+/* Boot preloader progress fill */
+.v2-boot-fill {
+  width: 0%;
+  animation-name: v2-boot-fill;
+  animation-timing-function: cubic-bezier(0.3, 0.8, 0.4, 1);
+  animation-fill-mode: forwards;
+}
+
+@keyframes v2-boot-fill {
+  0% {
+    width: 0%;
+  }
+  80% {
+    width: 88%;
+  }
+  100% {
+    width: 100%;
+  }
+}
+
+/* Floating islands in the Skyfront SVG diagram */
+.v2-float {
+  animation: v2-float 6s ease-in-out infinite;
+}
+
+@keyframes v2-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-1.6px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .v2-float,
+  .v2-boot-fill {
+    animation: none;
+  }
+  .v2-boot-fill {
+    width: 100%;
+  }
+}
+
 /* Click ripple spawned by GlassButton */
 .glass-ripple {
   position: absolute;
