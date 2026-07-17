@@ -1,6 +1,8 @@
-# WindArms — Weapons (v1)
+# WindArms — Weapons
 
-> Topic-sliced excerpt of the v1 build. Full context in [../versions/v1.md](../versions/v1.md); nothing here has been reworded. Covers weapon data, viewmodels, and the Phase 9 headshot/visual/geometry work. General combat resolution (server-authoritative hit detection) lives in [mechanics.md](mechanics.md).
+> v1 section is a topic-sliced excerpt of the v1 build (full context in [../versions/v1.md](../versions/v1.md); nothing there has been reworded). V2 section is grounded in the actual shipped code, added 2026-07-14. General combat resolution (server-authoritative hit detection) lives in [mechanics.md](mechanics.md).
+
+## V1 weapons
 
 ## Weapon classes
 
@@ -29,3 +31,20 @@ Weapon geometry overhaul: the shared chassis builder (`weapons/weaponGeometry.ts
 ## Still open
 
 Still open from the Phase 9 design (tracked in [`../technical/PHASE-9-DESIGN.md`](../technical/PHASE-9-DESIGN.md)): crosshair customization settings (the crosshair already reacts dynamically to fire/movement/hits, it just isn't user-configurable yet).
+
+## V2 Arsenal (windWeapons.ts)
+
+`shared/windWeapons.ts` is explicitly commented as *"WindArms V2 — wind-powered arsenal, single source of truth... designed so the game itself adopts this exact config when the V2 combat phase lands. Do not fork this data into the landing layer."* It's consumed today by the V2 preview landing page's Arsenal section (`ArsenalSection.tsx`, `WeaponCard.tsx`) — presentation only, no combat implementation yet.
+
+| Weapon | Class | Description | Signature mechanic | Accent |
+|---|---|---|---|---|
+| Aeolus Rifle | rifle | High-velocity kinetic rounds powered by compressed wind. | Precision spine — tightens while aimed | `#4FC3FF` |
+| Vortex Carbine | carbine | Rapid-fire turbine driven projectiles. | Turbine spin-up — rate climbs as you hold | `#58B7E6` |
+| Tempest Cannon | cannon | Charges wind pressure for devastating explosive bursts. | Charge & release — pressure decides the blast | `#E3A23C` |
+| Gust Blade | blade | Wind-channeled blade that cuts with compressed force. | Dash-strike — momentum feeds the edge | `#EDEAE3` |
+
+Each also carries design-target `stats` (power/rate/range/mobility, 0–1 scale) described in code as *"presentation now; the future combat implementation derives real numbers from these ratios."* These are marketing-card values, not balance data — treat them as directional, not final, when v2 combat implementation actually begins.
+
+**Naming collision to be aware of:** v1's real weapon roster (`/weapons` page) already includes a weapon called "Vortex" (the Vortex SMG) — distinct from v2's "Vortex Carbine" above. When v2 combat implementation starts and this data becomes real weapon balance, resolve this collision explicitly (rename one, or confirm the v1 weapon is being retired) rather than letting two different "Vortex" weapons coexist silently. Log the resolution in [decisions.md](../decisions.md).
+
+Aeolus Rifle and Vortex Carbine are also the signature weapons of operators Kael Aurin and Veyra Solace, respectively — see [operators.md](operators.md).

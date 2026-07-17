@@ -1,0 +1,14 @@
+export { default as OperatorModel } from './OperatorModel';
+export type { OperatorModelHandle, OperatorModelProps } from './OperatorModel';
+export { default as OperatorSilhouette } from './OperatorSilhouette';
+export { default as OperatorSocketAnchor } from './OperatorSocketAnchor';
+export { default as FirstPersonOperatorRig } from './FirstPersonOperatorRig';
+export type { FirstPersonBodyMode, FirstPersonOperatorRigHandle, FirstPersonOperatorRigProps } from './FirstPersonOperatorRig';
+export { default as OperatorPawn, PAWN_CONTEXT_PRESETS } from './OperatorPawn';
+export type { OperatorPawnContext, OperatorPawnProps } from './OperatorPawn';
+export { applyOperatorRenderMode, FP_ARMS_NAME_HINTS } from './renderModes';
+export type { OperatorRenderMode } from './renderModes';
+export { useOperatorAnimations } from './hooks/useOperatorAnimations';
+export type { OperatorAnimator } from './hooks/useOperatorAnimations';
+export { useOperatorSockets } from './hooks/useOperatorSockets';
+export type { OperatorSocketLookup } from './hooks/useOperatorSockets';

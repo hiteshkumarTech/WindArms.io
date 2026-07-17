@@ -4,6 +4,23 @@ A dated, fine-grained log of actual changes — documentation and code. Newest e
 
 ---
 
+## 2026-07-17
+
+- **Vortex Rifle v0.2 source accepted** (`Hitem3d-1784224974921.glb` → `WindArms Assets/Weapons/VortexRifle/vortex_v0.2_source.glb`): ~1.99M tris / 87.5 MB high-poly, realistic carbine proportions (1.00 × 0.27 × 0.14 m), supersedes v0.1 as the bake source. Inspection report: `docs/forge/vortex-rifle-v0.2.md`; v0.1 report annotated as superseded. No modification to the asset.
+- **Phase 5 — operator architecture** (production foundation for Operator 01 — Kael Aurin; no GLB yet, no gameplay, V1 untouched). New: `src/lib/v2/operators/` (OperatorDefinition/Metadata/VisualConfig/AnimationConfig/AttachmentConfig/SkinConfig; 16 animation states; 16 typed sockets with humanoid bone fallbacks; slot naming; kael+veyra registry referencing the canon roster in `content/operators.ts`), `src/components/three/operators/` (OperatorModel + per-instance skeleton cloning, render modes full/armsOnly/bodyHidden/shadowOnly, FirstPersonOperatorRig sway/recoil pivots, OperatorPawn TP contexts, OperatorSocketAnchor, procedural OperatorSilhouette fallback, animation/socket hooks), `src/components/v2/operators/OperatorShowcase.tsx` (hero lighting + turntable + camera/background extension points), `tools/inspect-operator.mjs` (character GLB gate: skeleton/clips/sockets/LOD budgets, CI exit codes). Extended (additive): `pipeline/types.ts` SocketName/ClipName unions, `pipeline/manifest.ts` operator entries + shared `OPERATOR_BUDGET`. Report: `docs/forge/operator-pipeline.md`.
+
+## 2026-07-14
+
+- Documentation structure frozen per user instruction — further doc work is content-only, no more restructuring. Built `docs/design/art-bible.md` — a single, comprehensive, canonical Art Bible (30 sections: art direction, philosophy, color, materials, architecture, weapons, operators, UI/HUD, VFX, audio, camera/composition, quality bar, etc.) — grounded in the real concept board (`docs/images/image-1.png`, verified to match existing docs almost exactly) plus all prior findings. Flagged `docs/images/image.png` as a mismatched/inconsistent file (different aesthetic, different logo, unrelated tech stack) rather than treating it as equally canonical. Reasoning: [decisions.md](decisions.md).
+- Built out the "WindArms Studio" documentation system: added `docs/README.md` (human-facing studio front door), `docs/design-rules.md` (governance index), `docs/gameplay/maps.md`, `docs/design/audio.md` (extracted from `art-direction.md`'s "Audio Identity" section), `docs/design/vfx.md`, `docs/design/animations.md`, `docs/technical/asset-pipeline.md`, `docs/technical/naming-conventions.md`.
+- **Discovered an already-built V2 preview marketing site** (`src/lib/v2/content/*`, `src/components/landing/v2/*`) live at the site root, undocumented until now — named operators (Kael Aurin, Veyra Solace), a named world (the Skyfront), a named wind-weapon arsenal (Aeolus/Vortex/Tempest/Gust), real STORM design tokens, and a procedural-first/real-asset-optional pipeline (`assetResolver.ts`). Asked the user how to reconcile with the original text-brief docs; answer was "code is canon." Full reasoning: [decisions.md](decisions.md).
+- Rewrote `docs/gameplay/operators.md` around the real Kael Aurin/Veyra Solace roster; preserved the original four-archetype "Founding Operators" brief below a clear historical/superseded divider rather than deleting it.
+- Added a "V2 Arsenal" section to `docs/gameplay/weapons.md` reconciling `windWeapons.ts`, including a flagged v1/v2 "Vortex" naming collision.
+- Added `docs/design/skyfront.md` (the real V2 world/map concept) and a real STORM-token color table to `docs/design/art-direction.md`, alongside (not replacing) the original abstract palette.
+- Expanded `docs/design/ui.md` into a full UI/HUD hub covering v1's real HUD, the original V2 UI brief, and the V2 preview site's real (separate, marketing-only) UI system.
+- Corrected "v1 is live at windarms.com" (stated 2026-07-12) — `src/app/page.tsx` now renders the V2 preview landing page at the site root; v1's landing page still exists but isn't served. Updated `CLAUDE.md`, `versions/v1.md`, `versions/v2.md`, `project-overview.md` to say precisely: v1 the *game* is live at `/play`; the site root now shows the V2 preview.
+- Updated the root `CLAUDE.md` documentation index and folder tree to include every doc above.
+
 ## 2026-07-12
 
 - Renamed `docs/agent-rules.md` back to `docs/ai-rules.md` (see [decisions.md](decisions.md) for why); added `docs/vision.md` (mission + core pillars) and `docs/design-principles.md` (per-ability design checklist).

@@ -69,6 +69,31 @@ Crimson Warning Lights
 
 Absolutely avoid rainbow neon.
 
+## STORM Design Tokens (Implementation, Accurate)
+
+> Added 2026-07-14. The abstract palette above is the original creative brief; this is what's actually implemented. `src/lib/v2/tokens.ts` — comment: *"STORM design tokens — the concept board's palette as TypeScript constants, mirrored 1:1 by the storm.* Tailwind colors. Three.js materials import from here so canvas and DOM can never drift. When the Figma file lands, this is the single reconciliation point."* This is the single source of truth for V2 color — code and design, not just design intent.
+
+| Token | Hex | Role |
+|---|---|---|
+| `marble` | `#EDEAE3` | Primary — marble & steel |
+| `mist` | `#C7CFD6` | Primary |
+| `steel` | `#8E99A4` | Primary |
+| `slate` | `#3E4A5A` | Primary |
+| `abyss` | `#0A1522` | Secondary — storm blues |
+| `deep` | `#12263C` | Secondary |
+| `mid` | `#1E3A5C` | Secondary |
+| `blue` | `#2E6FA3` | Secondary |
+| `sky` | `#58B7E6` | Secondary |
+| `energy` | `#4FC3FF` | Secondary — this is Kael Aurin's accent, see [../gameplay/operators.md](../gameplay/operators.md) |
+| `gold` | `#E3A23C` | Accent — this is Veyra Solace's accent and the Tempest Cannon's accent |
+| `goldDeep` | `#B8860B` | Accent |
+| `crimson` | `#B02E2E` | Accent |
+| `skyZenith` | `#16283E` | Sky gradient stop (backdrop dome) |
+| `skyMid` | `#4E8DBE` | Sky gradient stop |
+| `skyHorizon` | `#D9E7F2` | Sky gradient stop |
+
+Rough mapping to the abstract palette above: `marble` ≈ Marble White, `abyss`/`deep` ≈ Deep Navy, `energy`/`sky` ≈ Electric Cyan, `gold`/`goldDeep` ≈ Amber Energy, `crimson` ≈ Crimson Warning Lights. Ash Grey, Storm Blue and Steel Silver don't have an exact 1:1 token yet (`mist`/`steel`/`slate`/`mid`/`blue` are the closest neighbors) — reconcile explicitly rather than guessing if a new token is needed.
+
 ## Lighting
 
 Never night.
@@ -161,31 +186,7 @@ The sky itself becomes part of the map.
 
 ## Audio Identity
 
-Not generic gunshots.
-
-Instead:
-
-Every weapon has
-
-deep mechanical turbine spin
-
-compressed air bursts
-
-electromagnetic crack
-
-pressure release
-
-wind resonance
-
-The environment constantly breathes.
-
-You hear distant thunder.
-
-Moving air.
-
-Storm engines.
-
-Metal cables under tension.
+See [audio.md](audio.md) — moved into its own file during the docs expansion (2026-07-14), alongside the real v1 audio implementation facts.
 
 ## UI
 

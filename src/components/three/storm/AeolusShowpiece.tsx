@@ -1,18 +1,12 @@
 'use client';
 
-import { Suspense, useEffect, useMemo, useRef } from 'react';
-import { useFrame } from '@react-three/fiber';
-import { RoundedBox, useGLTF } from '@react-three/drei';
+import { useEffect, useMemo, useRef } from 'react';
+import { useFrame, useThree } from '@react-three/fiber';
+import { RoundedBox } from '@react-three/drei';
 import * as THREE from 'three';
-import { MODEL_EXTENSIONS, useResolvedAsset } from '@/lib/v2/assetResolver';
+import WeaponShowpiece from '@/components/three/weapons/WeaponShowpiece';
 import { STORM } from '@/lib/v2/tokens';
 import { scrollState } from '@/lib/v2/scrollProgress';
-
-/** Real model variant — mounts only when public/v2-art/aeolus.glb exists. */
-function GlbRifle({ url }: { url: string }) {
-  const { scene } = useGLTF(url);
-  return <primitive object={scene} scale={1.4} />;
-}
 
 interface RifleMaterials {
   ivory: THREE.MeshStandardMaterial;
@@ -52,8 +46,14 @@ function createMaterials(): RifleMaterials {
  * muzzle brake, full scope assembly, curved magazine, trigger group —
  * and the signature side-mounted wind turbine, spinning live, feeding
  * energy conduits toward the muzzle. No naked rectangles anywhere.
+ *
+ * Serves as the procedural fallback for the `vortex` weapon slot (see the
+ * NAMING NOTE below) — kept exactly as it was, not replaced, per every
+ * instruction so far to preserve it. Exported so the first-person viewmodel
+ * (src/components/three/weapons/VortexViewmodel.tsx) can render the exact
+ * same fallback geometry instead of duplicating it.
  */
-function ProceduralAeolus() {
+export function ProceduralAeolus() {
   const materials = useMemo(createMaterials, []);
   const rotorRef = useRef<THREE.Group>(null);
 
@@ -228,30 +228,45 @@ function ProceduralAeolus() {
 
 /**
  * Hero showpiece: floats beside the title, drifts off-frame on descent.
- * Auto-upgrades to public/v2-art/aeolus.glb when the asset exists.
+ *
+ * NAMING NOTE: this component/file is still named for the Aeolus Rifle for
+ * historical reasons (see git history) — it now renders the Vortex Rifle
+ * (`WIND_WEAPONS.vortex`, resolved to `WindWeaponId` name only inside
+ * WeaponShowpiece), the project's declared flagship weapon (see
+ * docs/decisions.md, 2026-07-16). `ProceduralAeolus` above stays as the
+ * fallback exactly as it always has — kept, not replaced.
+ *
+ * 2026-07-16 (Phase 3 production pass): rim light, glow, rotation
+ * oscillation, and model loading all moved out of this file into
+ * `WeaponShowpiece` — the reusable production weapon component — so every
+ * future weapon showpiece (not just this hero scene) gets the same
+ * treatment without duplicating this logic. What's left here is genuinely
+ * specific to being staged in the scroll-choreographed hero scene: the
+ * scroll-driven exit drift, the aspect-responsive base X position (mirrors
+ * StormBackdrop's ResponsiveFov), and the vertical hover bob timing.
  */
 export default function AeolusShowpiece({ reducedMotion }: { reducedMotion: boolean }) {
   const groupRef = useRef<THREE.Group>(null);
-  const glbUrl = useResolvedAsset('aeolus', MODEL_EXTENSIONS);
+  const size = useThree((state) => state.size);
 
-  useFrame(({ clock }, delta) => {
+  useFrame(() => {
     const group = groupRef.current;
     if (!group) return;
     const exit = Math.min(scrollState.smoothed * 5, 1);
-    group.position.x = 3 + exit * 7;
-    group.position.y = 0.9 + (reducedMotion ? 0 : Math.sin(clock.elapsedTime * 0.7) * 0.12);
-    if (!reducedMotion) group.rotation.y += delta * 0.25;
+    // Pull the rifle toward center on narrow viewports — mirrors
+    // StormBackdrop's ResponsiveFov: FOV alone still pushed the rifle to the
+    // very edge of frame on mobile aspect ratios (confirmed via screenshot),
+    // so this compensates on the position side too rather than widening FOV
+    // further into fisheye distortion.
+    const aspect = size.width / size.height;
+    const baseAspect = 16 / 9;
+    const baseX = aspect < baseAspect ? Math.max(2.2, 5 * (aspect / baseAspect)) : 5;
+    group.position.x = baseX + exit * 7;
   });
 
   return (
-    <group ref={groupRef} position={[3, 0.9, 3.4]} rotation={[0.05, -0.55, 0.03]}>
-      {glbUrl ? (
-        <Suspense fallback={<ProceduralAeolus />}>
-          <GlbRifle url={glbUrl} />
-        </Suspense>
-      ) : (
-        <ProceduralAeolus />
-      )}
+    <group ref={groupRef} position={[5, 1.8, 3.4]}>
+      <WeaponShowpiece weaponId="vortex" fallback={<ProceduralAeolus />} reducedMotion={reducedMotion} />
     </group>
   );
 }

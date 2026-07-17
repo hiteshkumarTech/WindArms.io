@@ -1,7 +1,7 @@
 'use client';
 
-import { Component, Suspense, useMemo, useState, type ReactNode } from 'react';
-import { Canvas, useFrame } from '@react-three/fiber';
+import { Component, Suspense, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { PerformanceMonitor } from '@react-three/drei';
 import * as THREE from 'three';
 import { STORM } from '@/lib/v2/tokens';
@@ -22,7 +22,17 @@ import WindStreaks from './WindStreaks';
  * top-down → pillars darkening → CTA golden dive.
  */
 const CAMERA_PATH = [
-  { at: 0.0, pos: [0, 0.6, 9], look: [2.4, 3, -18], fog: '#9fc3e0' },
+  // Hero look-target raised (3 → 3.8) and pushed right (2.4 → 3.2) in the
+  // 2026-07-16 cinematic composition pass: the previous target framed the
+  // citadel's low, wide plaza — which sits directly behind the headline
+  // text — as the visual center. Raising the target brings the Aeon Ring
+  // (the temple's actual identity silhouette, see SkyCitadel.tsx) further
+  // into frame. Deliberately NOT raised further (an earlier pass tried 4.6):
+  // that pulled more of SkyArchipelago's satellites/debris into the
+  // headline's screen region than it removed — this is a balance, not a
+  // full fix; see HeroSection.tsx's added legibility scrim for the rest.
+  // Only this one keyframe changed — segments 1–5 (Arsenal onward) untouched.
+  { at: 0.0, pos: [0, 0.6, 9], look: [3.2, 3.8, -18], fog: '#9fc3e0' },
   { at: 0.2, pos: [3.4, 1.6, 7.5], look: [0.5, 1.8, -18], fog: '#8db5d8' },
   { at: 0.42, pos: [-3.2, 2.6, 7], look: [3.2, 2.4, -18], fog: '#7fa8cc' },
   { at: 0.62, pos: [0.5, 9.5, 3.5], look: [2.8, -1, -18], fog: '#6c93b8' },
@@ -83,6 +93,31 @@ function CameraDirector({ reducedMotion }: { reducedMotion: boolean }) {
   return null;
 }
 
+/**
+ * Widens vertical FOV as the viewport narrows below 16:9. Added in the
+ * 2026-07-16 cinematic composition pass: with a fixed 55° FOV, the same
+ * world-space framing that reads correctly on a wide desktop crops the
+ * rifle off-frame entirely on tablet/mobile aspect ratios (confirmed via
+ * screenshot, not assumed) — a standard "hold horizontal FOV roughly
+ * constant" compensation, only recomputed on actual resize, not per-frame.
+ */
+function ResponsiveFov() {
+  const camera = useThree((state) => state.camera);
+  const width = useThree((state) => state.size.width);
+  const height = useThree((state) => state.size.height);
+
+  useEffect(() => {
+    if (!(camera instanceof THREE.PerspectiveCamera)) return;
+    const aspect = width / height;
+    const baseAspect = 16 / 9;
+    const baseFov = 55;
+    camera.fov = aspect < baseAspect ? Math.min(88, baseFov * (baseAspect / aspect)) : baseFov;
+    camera.updateProjectionMatrix();
+  }, [camera, width, height]);
+
+  return null;
+}
+
 function StormFallback() {
   return (
     <div
@@ -124,6 +159,7 @@ export default function StormBackdrop() {
           onCreated={({ gl }) => gl.setClearColor(STORM.skyMid)}
         >
           <PerformanceMonitor onDecline={() => setDpr(1)} onIncline={() => setDpr(1.5)} />
+          <ResponsiveFov />
           <Suspense fallback={null}>
             <fog attach="fog" args={['#9fc3e0', 20, 115]} />
             <hemisphereLight args={['#dceeff', '#41556b', 0.85]} />

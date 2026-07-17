@@ -25,7 +25,20 @@ export default function HeroSection({ bootDone }: SectionRenderProps) {
 
   return (
     <div ref={rootRef} id="hero" className="relative flex min-h-[100dvh] items-center">
-      <div className="mx-auto w-full max-w-6xl px-5 pt-16 sm:px-8">
+      {/*
+        Legibility scrim, added in the 2026-07-16 cinematic composition pass:
+        local to the hero's text column only, not a page-wide overlay (see
+        LandingV2View.tsx's separate full-page "readability veil", which
+        stays untouched). The Wind Temple citadel sits close enough to the
+        headline at some viewport widths that text-only contrast wasn't
+        reliable — this is the "local backdrop separation" approach the brief
+        asked for instead of a heavier full-scene darkening.
+      */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-y-0 left-0 z-0 w-full max-w-2xl bg-gradient-to-r from-storm-abyss/55 via-storm-abyss/25 to-transparent sm:max-w-3xl"
+      />
+      <div className="relative z-10 mx-auto w-full max-w-6xl px-5 pt-16 sm:px-8">
         <div className="max-w-3xl">
           <p
             data-hero="eyebrow"

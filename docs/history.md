@@ -16,6 +16,7 @@ Every major milestone. Sourced from the actual git log and the phase narrative i
 - **Stabilization round** — fixed the shared root cause of intermittent audio loss and weather/particle stalls (raycaster `.camera` bug); fixed `AudioEngine.ensure()`'s async resume check; retuned `PerformanceMonitor` quality-tier bounds.
 - **v1 tagged and frozen** — snapshot tagged `prototype-v1` as a rollback point; README updated to mark the build as v1 and note the planned v2 rebuild.
 - **v2 planning started** — world lore, art direction, and the four Founding Operators design brief written; docs restructured (this session, 2026-07-12) into `CLAUDE.md` + `docs/` with v1/v2 separation, then into topic subfolders with AI rules, project-management docs, a documentation loading order, and v2 declared the current development target. Day-by-day detail in [changelog.md](changelog.md).
+- **V2 preview marketing site built** — a real, shipped landing-page experience (`src/lib/v2/content/*`, `src/components/landing/v2/*`) took over the site root: named operators Kael Aurin and Veyra Solace, a named wind-weapon arsenal, the Skyfront world with four points of interest, real STORM design tokens, and a procedural-first/real-asset-optional pipeline. Not reflected in the docs until discovered and reconciled on 2026-07-14 (see [decisions.md](decisions.md)) — "WindArms Studio" documentation expanded to match: maps, audio, VFX, animation, asset pipeline, and naming-convention docs added.
 
 ## Commit log
 

@@ -6,9 +6,26 @@ Project-level TODOs, not code TODOs (there are no `// TODO` comments in the code
 
 ### HIGH
 
-- Hero ability system (the four Founding Operators — [gameplay/abilities.md](gameplay/abilities.md), [gameplay/operators.md](gameplay/operators.md)) — this is the headline v2 feature.
-- v2 new UI ([design/ui.md](design/ui.md), [design/art-direction.md](design/art-direction.md))
+- **The Vortex Rifle GLB needs to be re-exported as a single assembled mesh** — corrected 2026-07-16 ([decisions.md](decisions.md), Phase 4.1; supersedes an earlier same-day entry that wrongly concluded the pipeline itself was broken). The runtime pipeline is fine — proven end-to-end with a manual loader bypass, isolated timing, and a no-Draco negative-control test; it just takes several seconds because the mesh is 111x this project's weapon triangle budget, which `useAssetPipeline.ts` now logs clearly in dev. The real, still-open blocker: rendered alone with real shading, the mesh is a grid of ~10 separate weapon-part copies, not one rifle — looks like an intermediate UV-bake/layout sheet exported by mistake. Decimating it as-is would decimate the same grid. Needs re-export at the source (Forge/asset pipeline), not a runtime fix. Currently archived at `WindArms Assets/Weapons/VortexRifle/vortex-rifle_preview-v0.1_BROKEN-multipart-needs-reexport.glb` (moved out of `public/v2-art/` so it can't silently start rendering after all — see decisions.md) — both consumers (landing-page showpiece, `/v2/range` viewmodel) correctly and permanently show `ProceduralAeolus` until a real single-mesh re-export lands at `public/v2-art/vortex-rifle.glb`.
+- Hero ability system for Kael Aurin and Veyra Solace ([gameplay/abilities.md](gameplay/abilities.md), [gameplay/operators.md](gameplay/operators.md)) — bios/roles/signature weapons exist, but passive/signature/ultimate abilities are undefined anywhere in code. This is the headline v2 feature.
+- **Reconcile the 2026-07-14 production backlog against existing code-confirmed canon** before more blueprints are built on top of it: backlog names Vortex Rifle / Stormbreaker SMG / Aeon Sniper / Tempest Shotgun / Cyclone LMG / Zephyr Pistol (weapons) and Kai / Lira / Zephyr / Orion (operators) — none of which match `shared/windWeapons.ts` (Aeolus Rifle, Vortex Carbine, Tempest Cannon, Gust Blade) or `operators.ts` (Kael Aurin, Veyra Solace). "Zephyr" also collides within the backlog itself (operator name and weapon name). Not resolved — raise with the user rather than guessing which roster wins.
+- v1's Vortex SMG vs. v2's Vortex Rifle: **partially resolved 2026-07-16** ([decisions.md](decisions.md)) — v2's `vortex` is now "Vortex Rifle" (was "Vortex Carbine"), different id namespace than v1's `smg`, no runtime collision. Still open: the marketing name "Vortex" is reused for two different weapons across v1/v2 — decide before both are ever shown together (e.g. a cross-version weapons page) — see [gameplay/weapons.md](gameplay/weapons.md#v2-arsenal-windweaponsts).
+- `docs/gameplay/operators.md` still describes Veyra Solace's signature weapon as "Vortex Carbine" — stale since the 2026-07-16 rename, not yet fixed.
+- v2 new UI ([design/ui.md](design/ui.md), [design/art-direction.md](design/art-direction.md)) — note the V2 preview site already has its own marketing UI system (STORM tokens, section shells); clarify its relationship to a future in-game UI.
 - v2 matchmaking rework (scope not yet detailed beyond v1's fill-based system — needs a design pass)
+- Answer the open questions in [design/skyfront.md](design/skyfront.md): is the Skyfront one contiguous space or per-POI arenas; how many POIs are planned; how does it relate to v1's four existing maps (or the backlog's Celestial City / Frosthaven / Verdant Ruins / Aeolus Station, which also don't match either existing map set).
+
+### Production backlog (2026-07-14, from the user)
+
+**Names only — style is NOT from this backlog's source image.** Confirmed 2026-07-14 ([decisions.md](decisions.md)): "War Above The Storm" ([design/art-bible.md](design/art-bible.md), `image-1.png`, the `STORM` tokens) stays canonical for materials/colors/silhouette/everything visual. This list's source, `docs/images/ChatGPT Image Jul 13, 2026, 11_04_24 PM.png`, is a names/composition reference only.
+
+Also note: the user's typed list doesn't exactly match that image's own labels for 3 of the 6 weapons — image says **Inferno Shotgun** (typed as "Tempest Shotgun"), **Windlance Marksman** (typed as "Cyclone LMG"), **Nova Launcher** (typed as "Zephyr Pistol"). Both variants are recorded below; confirm which is correct before more blueprints use the wrong name.
+
+- Weapons: Vortex Rifle (blueprint in progress — [design/weapons/vortex-rifle.md](design/weapons/vortex-rifle.md)), Stormbreaker SMG, Aeon Sniper, **Tempest Shotgun / Inferno Shotgun (name conflict)**, **Cyclone LMG / Windlance Marksman (name conflict)**, **Zephyr Pistol / Nova Launcher (name conflict)**
+- Operators: Kai, Lira, Zephyr, Orion (matches the image exactly)
+- Maps: Celestial City, Frosthaven (image: "Frosthaven Base"), Verdant Ruins, Aeolus Station
+- Vehicles: Wind Bike, Sky Carrier, Cargo Airship
+- UI: Main Menu, HUD, Inventory, Matchmaking, Scoreboard
 
 ### MEDIUM
 
