@@ -15,21 +15,16 @@ const def = WIND_WEAPONS.vortex;
 /**
  * Rest offset of the gun in view space, meters, and its viewmodel scale.
  *
- * KNOWN PRODUCTION BLOCKER (found while verifying this visually — see the
- * Phase 4 report): the real GLB (public/v2-art/vortex-rifle.glb) resolves
- * its URL correctly and downloads fully (confirmed via network trace), but
- * `useGLTF`'s parse never completes — `PipelineModel`'s `onReady` never
- * fires, in both dev AND a production build, so `LoadedModel` stays
- * permanently suspended on `fallback`. Reproduces on the landing page's
- * showpiece too (screenshotted and visually confirmed to be the same
- * fallback geometry, not the real asset) — this is a pre-existing pipeline
- * bug, not something introduced this session, and out of THIS task's scope
- * to root-cause (likely the Draco-compressed mesh failing to decode in this
- * sandboxed environment — the decoder WASM/JS both download successfully,
- * but that doesn't prove the decode itself succeeds). `VIEWMODEL_SCALE`
- * therefore has no visible effect right now (`PipelineModel`'s `scale` prop
- * only ever applies to the real model, never `fallback`, by design) — the
- * fallback's own framing is tuned separately below via `FALLBACK_SCALE`.
+ * RESOLVED (v0.2 runtime integration, 2026-07-17 — see docs/decisions.md):
+ * the real GLB now loads and renders correctly in both this viewmodel and
+ * the landing showpiece — the earlier "never completes" finding was a v0.1
+ * source-asset problem (a multi-part bake sheet, not a loader bug),
+ * confirmed dead once the v0.2 source re-export landed. This viewmodel
+ * requests the lighter LOD1 tier specifically (`requestedLod={1}` below,
+ * ~56k triangles) — independent of the landing showpiece, which keeps
+ * requesting the quality-driven default (LOD0, ~140k triangles) for its
+ * higher-fidelity hero shot. Same slot, two tiers, no duplicated asset
+ * entry — see `PipelineModel`'s `requestedLod` prop.
  */
 const REST = { x: 0.28, y: -0.24, z: -0.62 };
 const ADS_REST = { x: 0.02, y: -0.15, z: -0.36 };
@@ -186,6 +181,7 @@ export default function VortexViewmodel() {
         }
         scale={VIEWMODEL_SCALE}
         accentTint={def.accent}
+        requestedLod={1}
       />
       <mesh ref={flashRef} position={[0, 0.02, -0.9]} visible={false}>
         <planeGeometry args={[0.14, 0.14]} />

@@ -34,6 +34,15 @@ export interface PipelineModelProps {
   scale?: number | [number, number, number];
   /** Fired once, after the real model loads and sockets/clips/validation are available. Not called at all if the slot has no GLB (fallback stays procedural forever). */
   onReady?: (result: PipelineAssetResult) => void;
+  /**
+   * Force a specific LOD tier for this call site, overriding the
+   * quality-driven default — e.g. a first-person viewmodel that always
+   * wants the lighter tier regardless of the global render-quality
+   * setting, independent of another consumer (a hero showpiece, say)
+   * using the same `slot` at a heavier tier. See `useResolveModelSlot`'s
+   * `ResolveModelSlotOptions`.
+   */
+  requestedLod?: LodLevel;
 }
 
 function LoadedModel({
@@ -75,8 +84,8 @@ function LoadedModel({
   );
 }
 
-export default function PipelineModel({ slot, fallback, accentTint, scale, onReady }: PipelineModelProps) {
-  const { url, lod, resolving } = useResolveModelSlot(slot);
+export default function PipelineModel({ slot, fallback, accentTint, scale, onReady, requestedLod }: PipelineModelProps) {
+  const { url, lod, resolving } = useResolveModelSlot(slot, { requestedLod });
 
   if (resolving || !url || lod === null) {
     return <>{fallback}</>;

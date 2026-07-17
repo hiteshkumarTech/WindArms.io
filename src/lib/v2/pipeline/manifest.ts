@@ -29,67 +29,64 @@ export const ASSET_MANIFEST: Record<string, AssetManifestEntry> = {
     budget: { maxTriangles: 18000, maxMaterials: 6, maxTextureSize: 2048 },
   },
   /**
-   * First real entry. Source: WindArms Assets/Weapons/VortexRifle/vortex_v0.1_source.glb
-   * (archived, read-only). Optimized preview: public/v2-art/vortex.glb, currently
-   * mounted only in the V2 showpiece (AeolusShowpiece.tsx) — not gameplay.
+   * First real entry. Two runtime derivatives ship today, both from the
+   * same accepted v0.2 source (WindArms Assets/Weapons/VortexRifle/
+   * vortex_v0.2_source.glb, archived read-only) via `tools/make-vortex-runtime.mjs`:
+   *   LOD0 public/v2-art/vortex-rifle.glb      — 139,598 tris, 0.84 MB — landing showpiece
+   *   LOD1 public/v2-art/vortex-rifle.lod1.glb —  55,834 tris, 0.57 MB — /v2/range FP viewmodel
+   * One slot serves both; `budgetByLod` below gates each tier separately,
+   * and each consumer requests its own tier via `PipelineModel`'s
+   * `requestedLod` (see `WeaponShowpiece.tsx` — no override, quality-driven
+   * default — vs `VortexViewmodel.tsx` — `requestedLod={1}`). Full
+   * derivation/verification trail: docs/forge/vortex-rifle-v0.2.md,
+   * docs/decisions.md (2026-07-17 entries).
    *
-   * Sockets/clips below are the real target for a shippable weapon, matching
-   * __template — NOT a claim the current v0.1 preview has them. It doesn't.
-   * Inspected 2026-07-16 with both `scripts/inspect-glb.mjs` and the repo's
-   * own `tools/inspect-glb.mjs --target showpiece` (the latter is more
-   * complete — walks the node hierarchy and reports real world-space bounds,
-   * catch this manifest's own scale bug in AeolusShowpiece.tsx's first pass):
-   * 0 socket_* nodes, 0 animation clips, no normal map, 1,993,858 triangles
-   * (111x this weapon budget, also over the showpiece tool's more permissive
-   * 150k budget), file size 5.30 MB (just over that tool's 5 MB showpiece
-   * budget too). Validation will correctly report the budget/socket/clip gaps
-   * — that's the point of listing the real target here rather than leaving it
-   * empty.
+   * `budget` below was `{ maxTriangles: 18000, ... }` until 2026-07-17 —
+   * copy-pasted from `__template` back when this entry was created (before
+   * any real asset existed) and never revisited once real numbers were
+   * known, so every load logged a false "exceeds budget of 18000" error
+   * despite the asset correctly passing its actual (showpiece/viewmodel)
+   * gate in `tools/inspect-glb.mjs`. Fixed to the same 150k/60k numbers
+   * that tool already used.
    *
-   * PHASE 4.1 FINDING (2026-07-16, see docs/decisions.md): this is NOT a
-   * loader/pipeline bug — PipelineModel/useGLTF/DRACOLoader/EXT_texture_webp
-   * all load and parse this exact file correctly (proven with a manual
-   * GLTFLoader bypass, isolated PipelineModel timing, and node-level
-   * inspection). It is genuinely slow (~2.3s best case, 10s+ competing with
-   * a live render/physics loop) purely because of the triangle count, which
-   * `useAssetPipeline.ts` now logs clearly in dev instead of looking silently
-   * broken. BUT once loaded, the mesh (single node "tmp6jvgfipsobj") is
-   * visually NOT one assembled rifle — rendered alone, fully isolated, with
-   * both the original material and a plain shaded override, it reads as a
-   * grid of roughly 10 separate weapon-part copies (consistent with an
-   * intermediate UV-bake/layout sheet exported by mistake as the final
-   * asset, not a finished prop). Decimating this file would decimate that
-   * same grid, not produce a usable single weapon. This needs correction at
-   * the export/authoring stage — re-export a single assembled mesh — before
-   * decimation is even a meaningful next step. Until then, both consumers
-   * (this showpiece and the V2 range's first-person viewmodel) correctly
-   * keep showing `ProceduralAeolus`, which is not a placeholder standing in
-   * for a bug — it is the better asset today.
+   * `requiredSockets`/`requiredClips` are empty: true today, not aspirational
+   * — no current consumer reads a socket or clip on this asset (fire/reload/
+   * muzzle-flash all use fixed offsets in `VortexFireSystem.tsx`/
+   * `VortexViewmodel.tsx`). The v0.1→v0.2 target set is preserved below as
+   * `plannedSockets`/`plannedClips` — informational, never validated — so a
+   * future Blender-authored v1.0 asset has a real checklist to promote
+   * entries from, without today's automatic-decimation output warning on
+   * every load for a gap nothing is currently blocked on.
    *
-   * Because `PipelineModel` swaps fallback → real asset automatically once
-   * loading finishes (correct, existing behavior — not touched here), and
-   * this file WAS still sitting in `public/v2-art/` and DOES successfully
-   * load given enough time (see above), leaving it in place meant any
-   * visitor patient enough (~10-12s dwell, not unusual on a hero landing
-   * page) would eventually see the broken multi-part mesh silently replace
-   * the correct-looking fallback — a live regression nobody had actually
-   * seen yet, just not waited long enough to trigger. Moved out of the
-   * served path to `WindArms Assets/Weapons/VortexRifle/
-   * vortex-rifle_preview-v0.1_BROKEN-multipart-needs-reexport.glb` (archived
-   * alongside the original source, not deleted) so `resolveAsset` correctly
-   * finds nothing and this slot permanently — not just today — resolves to
-   * the fallback, exactly like any other not-yet-built slot. Restore it to
-   * `public/v2-art/vortex-rifle.glb` once a real, single-mesh re-export
-   * exists; no other code changes will be needed when that happens.
+   * HISTORY (superseded, kept for the trail, see docs/decisions.md for full
+   * detail): the v0.1 source produced a runtime GLB that loaded successfully
+   * but turned out to be a multi-part bake-layout sheet, not one assembled
+   * rifle (Phase 4.1, 2026-07-16) — archived at `WindArms Assets/Weapons/
+   * VortexRifle/vortex-rifle_preview-v0.1_BROKEN-multipart-needs-reexport.glb`.
+   * The v0.2 source (2026-07-17) is a single correctly-assembled mesh and
+   * supersedes it; that finding no longer applies to what ships today.
    */
   'vortex-rifle': {
     slot: 'vortex-rifle',
     category: 'weapon',
     label: 'Vortex Rifle',
-    requiredSockets: ['socket_muzzle', 'socket_ejection', 'socket_magazine'],
-    requiredClips: ['idle', 'fire', 'reload', 'inspect'],
+    requiredSockets: [],
+    requiredClips: [],
+    plannedSockets: ['socket_muzzle', 'socket_ejection', 'socket_magazine'],
+    plannedClips: ['idle', 'fire', 'reload', 'inspect'],
     audioEvents: ['fire', 'reload', 'empty'],
-    budget: { maxTriangles: 18000, maxMaterials: 6, maxTextureSize: 2048 },
+    // Default/LOD0 — showpiece tier, matches tools/inspect-glb.mjs --target showpiece.
+    budget: { maxTriangles: 150_000, maxMaterials: 6, maxTextureSize: 2048 },
+    budgetByLod: {
+      // LOD1 — viewmodel tier, matches tools/inspect-glb.mjs --target viewmodel.
+      // This checks whichever tier actually resolved against ITS OWN budget —
+      // it does not by itself detect a misrouted tier (an accidental LOD0
+      // load in /v2/range would check 139,598 tris against the 150k default
+      // above, not this one, and pass). Request-vs-resolution mismatch is a
+      // separate, deliberate check in useResolveModelSlot — see its
+      // `requestedLod` comparison and docs/decisions.md 2026-07-17.
+      1: { maxTriangles: 60_000, maxMaterials: 6, maxTextureSize: 2048 },
+    },
   },
   /**
    * Operator entries (Phase 5, 2026-07-17). These describe the TARGET a

@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { auditMaterials } from './materials';
-import type { AnimationClipMap, AssetManifestEntry, SocketMap, ValidationIssue, ValidationResult } from './types';
+import type { AnimationClipMap, AssetManifestEntry, LodLevel, SocketMap, ValidationIssue, ValidationResult } from './types';
 
 /**
  * Dev-time validation: checks a loaded asset against its manifest entry
@@ -10,14 +10,21 @@ import type { AnimationClipMap, AssetManifestEntry, SocketMap, ValidationIssue, 
  * fail-soft conventions (e.g. `AudioEngine` failing silently rather than
  * breaking gameplay). Call this in development only; it walks the whole
  * scene graph and isn't free.
+ *
+ * `lod` selects which budget applies (`entry.budgetByLod?.[lod]`, falling
+ * back to `entry.budget`) — always the tier that actually resolved, not
+ * assumed to be LOD 0. See `AssetManifestEntry.budgetByLod`'s doc comment
+ * for why a single flat budget across every tier is wrong.
  */
 export function validateAsset(
   entry: AssetManifestEntry,
   scene: THREE.Object3D,
   sockets: SocketMap,
   clips: AnimationClipMap,
+  lod: LodLevel,
 ): ValidationResult {
   const issues: ValidationIssue[] = [];
+  const budget = entry.budgetByLod?.[lod] ?? entry.budget;
 
   for (const required of entry.requiredSockets) {
     if (!sockets.get(required)) {
@@ -51,19 +58,19 @@ export function validateAsset(
     for (const material of materials) materialNames.add(material.uuid);
   });
 
-  if (triangles > entry.budget.maxTriangles) {
+  if (triangles > budget.maxTriangles) {
     issues.push({
       severity: 'error',
       code: 'triangle-budget-exceeded',
-      message: `${entry.label}: ${triangles} triangles exceeds budget of ${entry.budget.maxTriangles}.`,
+      message: `${entry.label}: ${triangles} triangles exceeds budget of ${budget.maxTriangles}.`,
     });
   }
 
-  if (materialNames.size > entry.budget.maxMaterials) {
+  if (materialNames.size > budget.maxMaterials) {
     issues.push({
       severity: 'error',
       code: 'material-budget-exceeded',
-      message: `${entry.label}: ${materialNames.size} materials exceeds budget of ${entry.budget.maxMaterials}.`,
+      message: `${entry.label}: ${materialNames.size} materials exceeds budget of ${budget.maxMaterials}.`,
     });
   }
 
@@ -77,7 +84,7 @@ export function validateAsset(
         const image = map?.image as { width?: number; height?: number } | undefined;
         if (!image) continue;
         const size = Math.max(image.width ?? 0, image.height ?? 0);
-        if (size > entry.budget.maxTextureSize) oversizedTextures.add(`${material.name || material.uuid} (${size}px)`);
+        if (size > budget.maxTextureSize) oversizedTextures.add(`${material.name || material.uuid} (${size}px)`);
       }
     }
   });
@@ -85,7 +92,7 @@ export function validateAsset(
     issues.push({
       severity: 'error',
       code: 'texture-budget-exceeded',
-      message: `${entry.label}: texture(s) exceed ${entry.budget.maxTextureSize}px budget — ${Array.from(oversizedTextures).join(', ')}.`,
+      message: `${entry.label}: texture(s) exceed ${budget.maxTextureSize}px budget — ${Array.from(oversizedTextures).join(', ')}.`,
     });
   }
 

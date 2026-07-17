@@ -28,6 +28,19 @@ export interface ResolvedModelSlot {
   resolving: boolean;
 }
 
+export interface ResolveModelSlotOptions {
+  /**
+   * Force this exact LOD tier for this consumer, overriding the
+   * quality-store-driven default — e.g. a first-person viewmodel that
+   * always wants the lighter tier regardless of the player's render-quality
+   * setting, independent of a landing-page showpiece using the same slot
+   * at the heavier tier. Still goes through `resolveModel`'s normal
+   * higher/lower fallback search if this exact tier's file doesn't exist,
+   * so it degrades the same way the quality-driven path already does.
+   */
+  requestedLod?: LodLevel;
+}
+
 const isDev = process.env.NODE_ENV !== 'production';
 
 /**
@@ -43,22 +56,47 @@ const isDev = process.env.NODE_ENV !== 'production';
  */
 const loadStartedAt = new Map<string, number>();
 
-/** Step 1: resolve which LOD tier's URL exists for this slot, at the quality tier's preferred LOD. Safe to call unconditionally. */
-export function useResolveModelSlot(slot: string): ResolvedModelSlot {
+/**
+ * Step 1: resolve which LOD tier's URL exists for this slot. Defaults to
+ * the quality tier's preferred LOD; pass `requestedLod` to force a specific
+ * tier for this call site instead (see `ResolveModelSlotOptions`) — two
+ * consumers of the *same* slot can independently request different tiers
+ * without a second manifest entry or a second slot. Safe to call
+ * unconditionally.
+ */
+export function useResolveModelSlot(slot: string, options?: ResolveModelSlotOptions): ResolvedModelSlot {
   const quality = useGraphicsStore((state) => state.quality);
+  const requestedLod = options?.requestedLod;
+  const preferredLod = requestedLod ?? maxLodForQuality(quality);
   const [result, setResult] = useState<ResolvedModelSlot>({ url: null, lod: null, resolving: true });
 
   useEffect(() => {
     let cancelled = false;
     setResult((previous) => ({ ...previous, resolving: true }));
-    if (isDev) console.info(`[asset-pipeline] "${slot}": resolving (quality=${quality})...`);
-    void resolveModel(slot, maxLodForQuality(quality)).then((resolved) => {
+    if (isDev) console.info(`[asset-pipeline] "${slot}": resolving (${requestedLod !== undefined ? `requestedLod=${requestedLod}` : `quality=${quality}`})...`);
+    void resolveModel(slot, preferredLod).then((resolved) => {
       if (cancelled) return;
       if (isDev) {
         if (resolved) {
           console.info(
             `[asset-pipeline] "${slot}": real asset found at lod${resolved.lod} (${resolved.url}) — starting load. Large assets can take several seconds; the fallback renders until this resolves, not because the asset is missing or broken.`,
           );
+          // Separate from budget validation on purpose: `validateAsset` only
+          // ever checks the RESOLVED tier against its own matching budget,
+          // which it trivially passes by definition (that's what "resolved"
+          // means) — it has no visibility into what this call site actually
+          // asked for. A consumer that forced a specific tier (e.g. /v2/range
+          // requesting lod1 for its lighter budget) but silently got a
+          // different one back — most likely because the requested tier's
+          // file is missing and resolveModel's higher/lower search kicked in
+          // — needs its own signal; this is intentionally NOT a mismatch
+          // check for the normal quality-driven path (no requestedLod), only
+          // for a call site that asked for something specific and didn't get it.
+          if (requestedLod !== undefined && resolved.lod !== requestedLod) {
+            console.warn(
+              `[asset-pipeline] "${slot}": requested lod${requestedLod} but resolved lod${resolved.lod} — the requested tier's file is likely missing. resolveModel's fallback search is intentional and still renders correctly, but this consumer is now paying a different tier's cost than it asked for.`,
+            );
+          }
           loadStartedAt.set(resolved.url, performance.now());
         } else {
           console.info(`[asset-pipeline] "${slot}": no real asset for any LOD tier — rendering the fallback permanently, this is expected until one is added.`);
@@ -69,7 +107,7 @@ export function useResolveModelSlot(slot: string): ResolvedModelSlot {
     return () => {
       cancelled = true;
     };
-  }, [slot, quality]);
+  }, [slot, quality, requestedLod, preferredLod]);
 
   return result;
 }
@@ -105,10 +143,10 @@ export function useLoadedPipelineAsset(slot: string, url: string, lod: LodLevel)
       console.warn(`[asset-pipeline] "${slot}" has no manifest entry — add one to manifest.ts before shipping this asset.`);
       return null;
     }
-    const result = validateAsset(entry, gltf.scene, sockets, clips);
+    const result = validateAsset(entry, gltf.scene, sockets, clips, lod);
     logValidation(result);
     return result;
-  }, [slot, gltf.scene, sockets, clips]);
+  }, [slot, gltf.scene, sockets, clips, lod]);
 
   return {
     scene: gltf.scene,

@@ -90,13 +90,43 @@ export interface AssetManifestEntry {
   category: AssetCategory;
   /** Human label, for dev-tool / validator output only — never shown to players. */
   label: string;
-  /** Sockets this asset is expected to expose. Missing ones are a validation warning, not a hard failure. */
+  /** Sockets this asset is expected to expose RIGHT NOW. Missing ones are a validation warning, not a hard failure. Leave empty if no current consumer actually reads a socket on this asset — an empty list validates as "nothing missing," which is honest; a non-empty list you don't need yet just produces noise every load. */
   requiredSockets: SocketName[];
-  /** Animation clips this asset is expected to expose. Missing ones are a validation warning. */
+  /** Animation clips this asset is expected to expose RIGHT NOW — same "only what's actually consumed today" rule as requiredSockets. */
   requiredClips: ClipName[];
+  /**
+   * Sockets a FUTURE version of this asset is expected to add (e.g. a
+   * Blender-authored v1.0 replacing an automatic-decimation placeholder) —
+   * informational only, never validated against the currently-loaded
+   * asset, so it never produces a warning. Promote entries to
+   * `requiredSockets` once a real consumer actually reads them.
+   */
+  plannedSockets?: SocketName[];
+  /** Same promotion path as `plannedSockets`, for animation clips. */
+  plannedClips?: ClipName[];
   /** Audio events this asset may ship real audio for (see README "Audio" section). Falls back to procedural synthesis per event when absent. */
   audioEvents: string[];
+  /** Default budget, used for LOD 0 and for any LOD tier without its own entry in `budgetByLod`. */
   budget: AssetBudget;
+  /**
+   * Per-LOD budget overrides, checked against whichever tier actually
+   * resolved at runtime (not always LOD 0) — a lighter LOD tier
+   * legitimately has a lower triangle ceiling than the showpiece tier, and
+   * checking every tier against one flat budget makes a correctly-lighter
+   * asset look broken. Absence of an entry for a given LOD falls back to
+   * `budget`.
+   *
+   * NOT a mismatch detector: this always checks the tier that actually
+   * resolved against that same tier's own budget, which it passes by
+   * construction whenever the asset is correctly built — it has no
+   * visibility into what a call site originally requested, so it can never
+   * catch "asked for lod1, silently got lod0" or the reverse. That's a
+   * separate, deliberate check — see `useResolveModelSlot`'s
+   * `requestedLod`-vs-`resolved.lod` comparison and docs/decisions.md
+   * 2026-07-17 ("LOD mismatch detection is a separate check from budget
+   * validation").
+   */
+  budgetByLod?: Partial<Record<LodLevel, AssetBudget>>;
 }
 
 export interface SocketEntry {

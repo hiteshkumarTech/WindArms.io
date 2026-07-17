@@ -213,6 +213,6 @@ if (lod1) {
 console.log('\n─ Next');
 console.log('  node tools/inspect-glb.mjs "public/v2-art/vortex-rifle.glb" --target showpiece');
 if (lod1) console.log('  node tools/inspect-glb.mjs "public/v2-art/vortex-rifle.lod1.glb" --target viewmodel');
-console.log('  npm run dev  → check the landing hero + /v2/range (dev console prints [asset-pipeline] and [render-proof] lines)\n');
+console.log('  npm run dev  → check the landing hero + /v2/range (dev console prints [asset-pipeline] resolve/load/validation lines automatically)\n');
 
 process.exitCode = failed ? 1 : 0;
