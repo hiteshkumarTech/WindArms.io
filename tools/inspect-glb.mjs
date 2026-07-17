@@ -63,12 +63,66 @@ const printNode = (index, depth) => {
 };
 (json.scenes?.[json.scene ?? 0]?.nodes ?? []).forEach((root) => printNode(root, 0));
 
-// Uniform scale detection from a single root matrix chain.
-let rootScale = 1;
-const rootIndex = json.scenes?.[json.scene ?? 0]?.nodes?.[0];
-const rootNode = rootIndex !== undefined ? json.nodes[rootIndex] : undefined;
-if (rootNode?.matrix) rootScale = rootNode.matrix[0];
-if (rootNode?.scale) rootScale = rootNode.scale[0];
+// ── World transforms (FIXED 2026-07-17) ──────────────────────────────
+// Earlier versions read a single root uniform-scale value and ignored
+// rotations entirely. That broke on the vortex v0.2 runtime derivative:
+// its baked +90° Y rotation is persisted as a TRS quaternion (gltf-transform
+// decomposes setMatrix into T/R/S fields), so this tool reported the
+// PRE-rotation axes (Z-long) while the file truly renders X-long (the
+// builder's getBounds and the in-engine render proof agreed). Fix: compose
+// every node's local matrix (matrix field, or T·R·S per the glTF spec),
+// accumulate from the scene roots, and transform real bbox corners.
+const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+
+const composeLocal = (node) => {
+  if (node.matrix) return node.matrix;
+  const [tx, ty, tz] = node.translation ?? [0, 0, 0];
+  const [qx, qy, qz, qw] = node.rotation ?? [0, 0, 0, 1];
+  const [sx, sy, sz] = node.scale ?? [1, 1, 1];
+  const x2 = qx + qx, y2 = qy + qy, z2 = qz + qz;
+  const xx = qx * x2, xy = qx * y2, xz = qx * z2;
+  const yy = qy * y2, yz = qy * z2, zz = qz * z2;
+  const wx = qw * x2, wy = qw * y2, wz = qw * z2;
+  // Column-major T·R·S, matching glTF's matrix layout.
+  return [
+    (1 - (yy + zz)) * sx, (xy + wz) * sx, (xz - wy) * sx, 0,
+    (xy - wz) * sy, (1 - (xx + zz)) * sy, (yz + wx) * sy, 0,
+    (xz + wy) * sz, (yz - wx) * sz, (1 - (xx + yy)) * sz, 0,
+    tx, ty, tz, 1,
+  ];
+};
+
+const mulMat4 = (a, b) => {
+  const out = new Array(16).fill(0);
+  for (let c = 0; c < 4; c++) {
+    for (let r = 0; r < 4; r++) {
+      out[c * 4 + r] = a[r] * b[c * 4] + a[4 + r] * b[c * 4 + 1] + a[8 + r] * b[c * 4 + 2] + a[12 + r] * b[c * 4 + 3];
+    }
+  }
+  return out;
+};
+
+const applyMat4 = (m, [x, y, z]) => [
+  m[0] * x + m[4] * y + m[8] * z + m[12],
+  m[1] * x + m[5] * y + m[9] * z + m[13],
+  m[2] * x + m[6] * y + m[10] * z + m[14],
+];
+
+/** meshIndex → every world matrix that instances it. */
+const meshWorldMatrices = new Map();
+{
+  const walk = (index, parent) => {
+    const node = json.nodes[index];
+    const world = mulMat4(parent, composeLocal(node));
+    if (node.mesh !== undefined) {
+      const list = meshWorldMatrices.get(node.mesh) ?? [];
+      list.push(world);
+      meshWorldMatrices.set(node.mesh, list);
+    }
+    (node.children ?? []).forEach((child) => walk(child, world));
+  };
+  (json.scenes?.[json.scene ?? 0]?.nodes ?? []).forEach((root) => walk(root, IDENTITY));
+}
 
 // ── Geometry ─────────────────────────────────────────────────────────
 console.log('\n─ Geometry');
@@ -76,6 +130,8 @@ let totalTris = 0;
 let totalVerts = 0;
 let boundsMin = null;
 let boundsMax = null;
+let worldMin = null;
+let worldMax = null;
 for (const [meshIndex, mesh] of (json.meshes ?? []).entries()) {
   for (const [primIndex, prim] of mesh.primitives.entries()) {
     const position = json.accessors[prim.attributes.POSITION];
@@ -90,6 +146,20 @@ for (const [meshIndex, mesh] of (json.meshes ?? []).entries()) {
       boundsMax = boundsMax
         ? boundsMax.map((v, i) => Math.max(v, position.max[i]))
         : [...position.max];
+      // World AABB: transform all 8 local bbox corners by every world
+      // matrix that instances this mesh (rotation-safe, unlike the old
+      // single-root-scale shortcut).
+      for (const matrix of meshWorldMatrices.get(meshIndex) ?? [IDENTITY]) {
+        for (let corner = 0; corner < 8; corner++) {
+          const point = applyMat4(matrix, [
+            corner & 1 ? position.max[0] : position.min[0],
+            corner & 2 ? position.max[1] : position.min[1],
+            corner & 4 ? position.max[2] : position.min[2],
+          ]);
+          worldMin = worldMin ? worldMin.map((v, i) => Math.min(v, point[i])) : [...point];
+          worldMax = worldMax ? worldMax.map((v, i) => Math.max(v, point[i])) : [...point];
+        }
+      }
     }
     const attrs = Object.keys(prim.attributes).join(', ');
     console.log(
@@ -101,11 +171,14 @@ for (const [meshIndex, mesh] of (json.meshes ?? []).entries()) {
 }
 if (boundsMin && boundsMax) {
   const local = boundsMax.map((v, i) => v - boundsMin[i]);
-  const world = local.map((v) => v * rootScale);
-  const center = boundsMax.map((v, i) => ((v + boundsMin[i]) / 2) * rootScale);
-  console.log(`  local bounds:  ${local.map((v) => v.toFixed(3)).join(' × ')}`);
-  console.log(`  world size:    ${world.map((v) => v.toFixed(3)).join(' × ')} m (root scale ${rootScale.toFixed(4)})`);
-  console.log(`  bbox center:   [${center.map((v) => v.toFixed(3)).join(', ')}] (pivot offset from origin)`);
+  console.log(`  local bounds:  ${local.map((v) => v.toFixed(3)).join(' × ')} (raw vertex space, pre-transform)`);
+}
+if (worldMin && worldMax) {
+  const world = worldMax.map((v, i) => v - worldMin[i]);
+  const center = worldMax.map((v, i) => (v + worldMin[i]) / 2);
+  const axis = ['X', 'Y', 'Z'][world.indexOf(Math.max(...world))];
+  console.log(`  world size:    ${world.map((v) => v.toFixed(3)).join(' × ')} m · long axis ${axis} (full node-transform accumulation)`);
+  console.log(`  world center:  [${center.map((v) => v.toFixed(3)).join(', ')}] (pivot offset from origin)`);
 }
 
 // ── Materials & textures ─────────────────────────────────────────────

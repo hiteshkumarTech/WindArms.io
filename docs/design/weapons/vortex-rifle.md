@@ -72,6 +72,17 @@ This is deliberately **not** operator-tinted — the base Vortex Rifle uses a ne
 | Weight (unloaded) | 3.1 kg | Lighter than the visual mass suggests — a wind-tech justification (Titanium/Carbon Fiber construction, no traditional gunpowder-cartridge weight) worth stating explicitly so weapon-feel design (ADS speed, sprint-to-fire time) isn't accidentally anchored to real-world AR-pattern weights |
 | Magazine capacity (standard) | 30 rounds | Matches v1's balance philosophy of ~0.3–0.8s TTK ranges ([../../gameplay/weapons.md](../../gameplay/weapons.md)) — not a final balance number, a plausible starting point for whoever tunes it |
 
+**Three different numbers are all called "scale" for this weapon — don't conflate them:**
+
+| Term | Value | What it means | Source of truth |
+|---|---|---|---|
+| Physical dimension | 68 cm overall length | The blueprint's real-world size claim (this table, above) | This document |
+| Physical engine scale | `0.68` | A *rendering scale factor*, not a dimension — 68 cm ÷ the runtime GLB's exporter-normalized 1.000 m long axis. Used wherever the weapon needs to read at true, physically-plausible size (e.g. a future third-person/world-placed context) | `src/lib/v2/weapons/visualConfigs.ts` |
+| Hero-display scale | `2.9` | Presentation-only, landing-page hero stage — ≈85% of the `ProceduralAeolus` fallback's screenshot-approved footprint. Deliberately monumental, not physically accurate | `visualConfigs.ts` (`vortex.scale`), derivation in `docs/decisions.md` 2026-07-17 |
+| First-person viewmodel scale | `0.42` | Presentation-only, `/v2/range`'s FP camera framing — tuned independently of both numbers above | `VortexViewmodel.tsx`'s `VIEWMODEL_SCALE` |
+
+All three engine-side numbers are unrelated multipliers applied to the *same* underlying 1.000 m-normalized GLB — none of them is "more correct" than the others; each is tuned for its own context and none should be reused across contexts without re-deriving it the way `visualConfigs.ts`'s comment shows.
+
 ## 6. Attachment System
 
 Mapped against the real, shipped `WeaponModuleKind` enum (`shared/weapons.ts`) wherever a compatible module already exists — this keeps the blueprint implementable without contradicting existing code. New module kinds needed beyond the current enum are flagged explicitly.

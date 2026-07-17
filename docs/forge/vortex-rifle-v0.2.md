@@ -42,24 +42,45 @@ Valid glTF 2.0 GLB, single scene (`AuxScene`), no required extensions (no Draco/
 As a **source/high-poly asset** — accepted. Single weapon object with production-plausible proportions and full vertex data: suitable for the optimization pipeline (retopo → bake → split materials → LODs).
 As a **runtime asset** — not yet, same as v0.1: ~13× over triangle budget, bbox-center pivot, Z-forward axis, single material (no emissive slot), no separated `VortexRifle_Rotor`. Normal production flow, not a defect.
 
-## 5. Pipeline placement (no asset modification)
+## 5. Runtime derivative (2026-07-17 milestone)
+
+State when this milestone started: `public/v2-art/` held **no** vortex GLB — the v0.1-derived preview was archived as `vortex-rifle_preview-v0.1_BROKEN-multipart-needs-reexport.glb` (multipart bake-layout grid, see manifest.ts's Phase 4.1 note), so both consumers of the `vortex-rifle` slot (landing `WeaponShowpiece` @ scale 0.68, `/v2/range` `VortexViewmodel` @ scale 0.42) rendered `ProceduralAeolus`. One slot serves both contexts; no second slot required.
 
 ```powershell
-# Source of truth (versioned, never overwritten):
+# 1. Archive the source (read-only forever; .gitignore already excludes WindArms Assets/**/*.glb):
 copy "<downloads>\Hitem3d-1784224974921.glb" "WindArms Assets\Weapons\VortexRifle\vortex_v0.2_source.glb"
+node tools/inspect-glb.mjs "WindArms Assets/Weapons/VortexRifle/vortex_v0.2_source.glb" --target showpiece   # expect FAILs — it's the high-poly
 
-# Gate:
-node tools/inspect-glb.mjs "WindArms Assets\Weapons\VortexRifle\vortex_v0.2_source.glb" --target showpiece
+# 2. One-time toolchain:
+npm i -D @gltf-transform/cli@4
+
+# 3. Build the derivative (LOD0 ≈140k tris + LOD1 ≈56k, webp≤2048, draco,
+#    +90°Y bake so muzzle faces +X; backs up any existing outputs; source untouched):
+node tools/make-vortex-runtime.mjs "WindArms Assets/Weapons/VortexRifle/vortex_v0.2_source.glb"
+
+# 4. Gate the outputs:
+node tools/inspect-glb.mjs "public/v2-art/vortex-rifle.glb" --target showpiece
+node tools/inspect-glb.mjs "public/v2-art/vortex-rifle.lod1.glb" --target viewmodel
 ```
 
-Runtime slot `public/v2-art/vortex-rifle.glb` currently holds the v0.1-derived model. When a v0.2 derivative is approved, it replaces that file (source never ships):
+The builder does NOT bake scale — the 1.000 m long axis is preserved so the tuned engine-side scales (0.68 / 0.42) keep working. If the muzzle points backwards in-engine, re-run step 3 with `--muzzle -z`.
 
-```powershell
-npx @gltf-transform/cli optimize "WindArms Assets\Weapons\VortexRifle\vortex_v0.2_source.glb" "public\v2-art\vortex-rifle.glb" --compress draco --texture-compress webp --texture-size 2048 --simplify 0.04
-node tools/inspect-glb.mjs "public\v2-art\vortex-rifle.glb" --target showpiece
-```
+**Render proof (Step 8):** temporary `PipelineDebugProbe` is mounted in `AeolusShowpiece.tsx` (label `landing-showpiece`) and `RangeScene.tsx` (label `range-fp`) — dev console logs `[render-proof:*] drawCalls/renderedTris/realVortexNode` every 2s. Real mesh = `realVortexNode=VortexRifle_LOD0` + a ~140k triangle jump; fallback = `NONE` + low thousands. **Remove the probe file + both mounts after verification.**
 
-## 6. Path to v1.0
+**Known limits, reported not hidden:** simplification is automatic decimation, not retopology (real bake pass remains §4 of the v0.1 report); single material `pbr_material` carries no accent/energy/tint name → the skin/accent tint system has nothing to target (blocker until the Blender material split); no normal map exists, so decimation costs some fine detail; both contexts share LOD0 on 'high' quality — a context-driven LOD override (FP forcing LOD1) is a possible future pipeline enhancement, deliberately not added in this milestone.
+
+## 6. Shipped derivative — verified results (2026-07-17)
+
+| Output | Tris | Verts | File | Textures | Gate |
+|---|---|---|---|---|---|
+| `public/v2-art/vortex-rifle.glb` (LOD0) | **139,598** (from 1,994,356 — ratio 0.07) | 80,289 | **0.84 MB** (from 87.5 MB) | 2 × WebP, 0.35 MB | showpiece PASS |
+| `public/v2-art/vortex-rifle.lod1.glb` (LOD1) | **55,834** | 33,573 | **0.57 MB** | 2 × WebP | viewmodel PASS |
+
+Orientation: **muzzle +X, top +Y** — baked as a TRS rotation quaternion on the root node (world size 1.000 × 0.270 × 0.139 m, X-long). An apparent Z-long reading from `inspect-glb.mjs` was a bug in the *inspector* (it ignored node rotations); fixed 2026-07-17 with full transform accumulation — see decisions.md. The GLB was never re-rotated. Loaded node name in-engine: `VortexRifle_LOD0` (render-proof-confirmed on the landing hero; fallback no longer renders there).
+
+Presentation: hero stage uses **display scale 2.9** (≈85% of the approved procedural-fallback footprint; derivation in `visualConfigs.ts` and decisions.md); physical scale 0.68 remains canon for physical contexts; FP viewmodel keeps its own `VIEWMODEL_SCALE` (0.42). Method on record: **automatic meshopt decimation — not retopology**; the professional bake pass (§4, v0.1 report) is still the path to v1.0.
+
+## 7. Path to v1.0
 
 The 15-step Blender checklist in [vortex-rifle-v0.1.md](vortex-rifle-v0.1.md) §4 applies unchanged to v0.2, with two amendments:
 

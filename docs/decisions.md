@@ -177,3 +177,27 @@ Rejected: (a) declaring the runtime pipeline "fixed" and moving the real (multi-
 Chosen: keep `ProceduralAeolus` as what actually renders in both consumers — correct, not a workaround. Added permanent (not temporary-debug) dev-mode observability to `src/lib/v2/pipeline/useAssetPipeline.ts`: resolving/found/loaded-with-timing console logs, so "still loading a real, large asset" is never silently indistinguishable from "nothing exists for this slot" again — that ambiguity is what let the Phase 4 conclusion happen. Documented the multi-part-mesh finding directly in `manifest.ts`'s `vortex-rifle` entry so it isn't lost. Real next step, now correctly scoped: the source asset needs to be **re-exported as a single assembled mesh** by whoever owns the Forge/asset pipeline — decimating the current file would decimate the same 10-part grid, not produce a usable weapon. Logged as the new top `todo.md` HIGH item, replacing the old (inaccurate) "GLB never renders" one.
 
 One more real consequence, caught by thinking through what actually happens in production rather than stopping at "root cause found": `PipelineModel` swaps fallback → real asset automatically once loading finishes — correct, existing behavior, not touched — and the broken file *was* still sitting in `public/v2-art/vortex-rifle.glb`, successfully loading given enough time. Left in place, that meant any real visitor patient enough (~10-12s dwell — unremarkable on a hero landing page) would eventually watch the correct-looking fallback silently get replaced by a grid of disconnected gun parts. Nobody had seen this yet only because nobody had waited that long. Moved the file to `WindArms Assets/Weapons/VortexRifle/vortex-rifle_preview-v0.1_BROKEN-multipart-needs-reexport.glb` (archived next to the original source, not deleted) so `resolveAsset` finds nothing and this slot resolves to the fallback permanently, the same well-tested code path every not-yet-built slot already uses — not a special case. Restoring it to `public/v2-art/vortex-rifle.glb` is the only step needed once a real single-mesh re-export exists.
+
+---
+
+**2026-07-17 — Builder/inspector world-size disagreement resolved: the v0.2 runtime GLB is correct; `inspect-glb.mjs` had a transform-accumulation bug and was fixed**
+
+Decision: when `make-vortex-runtime.mjs` reported the new runtime derivative as 1.000 × 0.270 × 0.139 m (X-long) but `inspect-glb.mjs` reported 0.139 × 0.270 × 1.000 m (Z-long), the GLB was declared correct and the *inspector* was fixed — the asset was not rotated again.
+
+Reason: root-caused, not guessed. The builder bakes the +90° Y orientation via gltf-transform's `Node.setMatrix`, which persists it as decomposed TRS fields (a `rotation` quaternion + uniform `scale` 0.5249 on the root node). The old inspector read only a single root `scale[0]`/`matrix[0]` value, multiplied the raw local vertex bounds by it, and ignored rotation entirely — so it reported the pre-rotation axis frame. The builder's `getBounds` accumulates full node transforms (authoritative), and the in-engine render proof (`VortexRifle_LOD0` visible, correctly oriented in the hero scene) agreed. Blindly re-rotating the asset to satisfy a buggy measuring tool would have actually broken it.
+
+Rejected: (a) rotating/re-exporting the runtime GLB again; (b) shipping vertex-baked rotation in the builder just so naive tools read it (valid glTF carries node transforms; tools must honor them).
+
+Chosen: `inspect-glb.mjs` now composes every node's local matrix (`matrix` field, or T·R·S per the glTF spec), accumulates world matrices from the scene roots, transforms all eight bbox corners per mesh instance, and reports true world size + long axis + world center. Verified against the v0.2 source (expects Z-long ✓) and the derivative (expects X-long ✓ — same numbers as the builder).
+
+---
+
+**2026-07-17 — Hero showpiece uses a documented DISPLAY scale (2.9), split from the weapon's physical scale (0.68)**
+
+Decision: `visualConfigs.ts`'s `vortex.scale` changed 0.68 → 2.9 for the landing hero stage. Physical scale (0.68 m — blueprint §5) remains the canonical number for physical contexts; the first-person viewmodel keeps its own independent scale.
+
+Reason: the hero composition (group anchor x≈5, camera path, screenshot-approved 2026-07-16) was designed around the `ProceduralAeolus` fallback, whose real measured span is ~3.43 m (4.4 local units × 0.78 internal scale) — a deliberately monumental hero prop. The real v0.2 GLB's long axis is exactly 1.000 m, so at physical scale 0.68 it rendered ~5× smaller than the stage was composed for: tiny, adrift at the right-side anchor. 2.9 restores ≈85% of the approved footprint (2.9 m span). Rim-light/glow offsets were rescaled by the same ×4.26 factor rather than re-eyeballed.
+
+Rejected: (a) resizing the GLB itself for framing (asset modification for a presentation problem); (b) moving the shared group anchor (also repositions the fallback shown during load, and its narrow-viewport pull-in logic is screenshot-tuned); (c) leaving 0.68 and calling the composition acceptable.
+
+Chosen: display scale as a per-context presentation value with the derivation documented inline in `visualConfigs.ts`. Precedent: display/physical scale splits are standard hero-shot practice; the config layer is exactly where per-context presentation belongs (`WeaponVisualConfig`'s stated purpose: "how does it present," not "what is it").
