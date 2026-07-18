@@ -45,8 +45,17 @@ interface V2MatchStore {
   /** Only takes effect during 'ready' or 'booting' — no-op once countdown has begun, per the brief's "selection locked once countdown begins." */
   selectDifficulty: (difficulty: TrialDifficulty) => void;
   beginCountdown: () => void;
-  /** One clock, driven by MatchDirector's frame loop with real delta seconds. */
-  tick: (deltaS: number) => void;
+  /**
+   * One clock, driven by MatchDirector's frame loop with REAL elapsed
+   * seconds (`realDeltaS` — NOT a movement-simulation delta; see
+   * `src/lib/v2/play/fixedStep.ts`'s header comment for why those two are
+   * kept separate). Countdown/match/respawn timers must track real wall-
+   * clock time exactly, at any frame rate — internally caps a single call's
+   * contribution at `MAX_TICK_REAL_DELTA_S` so a tab-background wake-up
+   * can't instantly fast-forward the whole match; see that constant's doc
+   * comment for the exact policy.
+   */
+  tick: (realDeltaS: number) => void;
   damagePlayer: (amount: number, from?: [number, number, number]) => void;
   recordDroneDestroyed: () => void;
   pause: () => void;
@@ -55,6 +64,27 @@ interface V2MatchStore {
 }
 
 const isDev = process.env.NODE_ENV !== 'production';
+
+/**
+ * Ceiling on how much real time a SINGLE `tick()` call may credit to the
+ * countdown/match/respawn timers. Normal per-frame real time — even under
+ * severe stutter down to a few frames per second — is always far below
+ * this (a 5fps frame is 0.2s; this is 1s), so ordinary play is NEVER time-
+ * dilated: every real second played counts as one second off the clock,
+ * at any frame rate. This cap exists ONLY for a genuinely large single gap
+ * — a backgrounded/suspended browser tab waking up, where `rawDelta` can
+ * be tens of seconds or more. Policy (documented, deliberate, see
+ * docs/decisions.md "Skyfront Trial timing cleanup"): that gap is capped
+ * to at most 1 simulated second, not credited in full and not ignored
+ * entirely. Crediting it in full could instantly fast-forward or even
+ * skip the countdown/respawn/match-end the instant the tab regains focus
+ * (a jarring, unfair "you alt-tabbed for a minute so you lost" outcome);
+ * ignoring it entirely would let a player pause the match for free by
+ * simply backgrounding the tab. Capping at 1s is the middle ground: a
+ * background gap effectively costs the player nothing beyond that single
+ * second, regardless of how long they were actually away.
+ */
+export const MAX_TICK_REAL_DELTA_S = 1;
 
 export const useV2MatchStore = create<V2MatchStore>()((set, get) => ({
   phase: 'booting',
@@ -129,7 +159,8 @@ export const useV2MatchStore = create<V2MatchStore>()((set, get) => ({
     }
   },
 
-  tick: (deltaS) => {
+  tick: (realDeltaS) => {
+    const deltaS = Math.min(realDeltaS, MAX_TICK_REAL_DELTA_S);
     const state = get();
     switch (state.phase) {
       case 'countdown': {

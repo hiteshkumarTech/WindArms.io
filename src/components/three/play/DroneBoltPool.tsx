@@ -5,6 +5,7 @@ import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import { STORM } from '@/lib/v2/tokens';
 import { DRONE } from '@/lib/v2/play/enemyConfig';
+import { createStepAccumulator, stepFixed } from '@/lib/v2/play/fixedStep';
 import { useV2MatchStore } from '@/lib/v2/play/matchStore';
 import { pointInBox, SOLIDS } from '@/lib/v2/play/spawnConfig';
 
@@ -17,6 +18,15 @@ import { pointInBox, SOLIDS } from '@/lib/v2/play/spawnConfig';
  * and inert outside the active phase — bolts must not keep travelling after
  * pause or match end (brief requirement). Emissive cyan spheres: visible,
  * dodgeable, no graphic impact effects.
+ *
+ * Position integration runs through the same fixed-step accumulator as
+ * DroneSquad (`fixedStep.ts`) instead of a single clamped step, so a bolt's
+ * travel speed stays close to real-time even under a slow frame — a
+ * clamped single step would otherwise make bolts visibly crawl in slow
+ * motion exactly like the match timer bug this pass fixes. Collision/
+ * expiry/player-hit checks run inside every substep (not just once per
+ * rendered frame) so a bolt can't tunnel past a wall or the player during
+ * a multi-substep catch-up frame.
  */
 export interface DroneBoltHandle {
   /** `speed` and `damage` are the CALLER's difficulty-resolved values (see `resolveDroneConfig`) — captured once at spawn so a bolt's behavior can't change mid-flight even if the difficulty selection changes between shots. */
@@ -39,6 +49,7 @@ const PLAYER_RADIUS = 0.4;
 const DroneBoltPool = forwardRef<DroneBoltHandle>(function DroneBoltPool(_props, ref) {
   const camera = useThree((state) => state.camera);
   const meshRef = useRef<THREE.InstancedMesh>(null);
+  const stepAcc = useRef(createStepAccumulator());
   const dummy = useMemo(() => new THREE.Object3D(), []);
   const bolts = useMemo<Bolt[]>(
     () => Array.from({ length: DRONE.BOLT_POOL }, () => ({ active: false, position: new THREE.Vector3(), velocity: new THREE.Vector3(), expiresAt: 0, damage: 0 })),
@@ -95,58 +106,58 @@ const DroneBoltPool = forwardRef<DroneBoltHandle>(function DroneBoltPool(_props,
     // Freeze in place while paused; go inert (and clear) outside active play.
     if (match.phase === 'paused') return;
     const combatLive = match.phase === 'active';
-
-    const dt = Math.min(rawDelta, 1 / 30);
     const now = performance.now();
 
-    for (let i = 0; i < bolts.length; i++) {
-      const bolt = bolts[i];
-      if (!bolt.active) continue;
+    stepFixed(stepAcc.current, rawDelta, (simulationDeltaS) => {
+      for (let i = 0; i < bolts.length; i++) {
+        const bolt = bolts[i];
+        if (!bolt.active) continue;
 
-      if (!combatLive || now >= bolt.expiresAt) {
-        bolt.active = false;
-        dummy.position.set(0, -9999, 0);
-        dummy.updateMatrix();
-        mesh.setMatrixAt(i, dummy.matrix);
-        continue;
-      }
-
-      bolt.position.addScaledVector(bolt.velocity, dt);
-
-      // Player hit (capsule approximated as a vertical segment + radius).
-      const feetY = camera.position.y - 1.5;
-      const dx = bolt.position.x - camera.position.x;
-      const dz = bolt.position.z - camera.position.z;
-      const withinY = bolt.position.y >= feetY - PLAYER_HALF_HEIGHT && bolt.position.y <= camera.position.y + 0.2;
-      if (withinY && dx * dx + dz * dz <= (PLAYER_RADIUS + DRONE.BOLT_RADIUS) ** 2) {
-        match.damagePlayer(bolt.damage, [bolt.position.x, bolt.position.y, bolt.position.z]);
-        bolt.active = false;
-        dummy.position.set(0, -9999, 0);
-        dummy.updateMatrix();
-        mesh.setMatrixAt(i, dummy.matrix);
-        continue;
-      }
-
-      // Arena collision — despawn, no impact VFX (brief: no graphic impacts).
-      let blocked = false;
-      for (const box of SOLIDS) {
-        if (pointInBox([bolt.position.x, bolt.position.y, bolt.position.z], box, DRONE.BOLT_RADIUS)) {
-          blocked = true;
-          break;
+        if (!combatLive || now >= bolt.expiresAt) {
+          bolt.active = false;
+          dummy.position.set(0, -9999, 0);
+          dummy.updateMatrix();
+          mesh.setMatrixAt(i, dummy.matrix);
+          continue;
         }
-      }
-      if (blocked) {
-        bolt.active = false;
-        dummy.position.set(0, -9999, 0);
+
+        bolt.position.addScaledVector(bolt.velocity, simulationDeltaS);
+
+        // Player hit (capsule approximated as a vertical segment + radius).
+        const feetY = camera.position.y - 1.5;
+        const dx = bolt.position.x - camera.position.x;
+        const dz = bolt.position.z - camera.position.z;
+        const withinY = bolt.position.y >= feetY - PLAYER_HALF_HEIGHT && bolt.position.y <= camera.position.y + 0.2;
+        if (withinY && dx * dx + dz * dz <= (PLAYER_RADIUS + DRONE.BOLT_RADIUS) ** 2) {
+          match.damagePlayer(bolt.damage, [bolt.position.x, bolt.position.y, bolt.position.z]);
+          bolt.active = false;
+          dummy.position.set(0, -9999, 0);
+          dummy.updateMatrix();
+          mesh.setMatrixAt(i, dummy.matrix);
+          continue;
+        }
+
+        // Arena collision — despawn, no impact VFX (brief: no graphic impacts).
+        let blocked = false;
+        for (const box of SOLIDS) {
+          if (pointInBox([bolt.position.x, bolt.position.y, bolt.position.z], box, DRONE.BOLT_RADIUS)) {
+            blocked = true;
+            break;
+          }
+        }
+        if (blocked) {
+          bolt.active = false;
+          dummy.position.set(0, -9999, 0);
+          dummy.updateMatrix();
+          mesh.setMatrixAt(i, dummy.matrix);
+          continue;
+        }
+
+        dummy.position.copy(bolt.position);
         dummy.updateMatrix();
         mesh.setMatrixAt(i, dummy.matrix);
-        continue;
       }
-
-      dummy.position.copy(bolt.position);
-      dummy.updateMatrix();
-      mesh.setMatrixAt(i, dummy.matrix);
-    }
+    });
 
     mesh.instanceMatrix.needsUpdate = true;
   });

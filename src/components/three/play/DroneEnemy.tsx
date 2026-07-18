@@ -23,10 +23,22 @@ import type { DroneBoltHandle } from './DroneBoltPool';
  *   inactive → spawning → searching ⇄ engaging → attacking → (stunned) → destroyed
  * "engaging" = seen the player, holding the preferred range band and
  * strafing; "attacking" = winding up + firing a bolt when it has LOS.
+ *
+ * TIMING (Skyfront Trial timing cleanup, 2026-07-18): two different kinds
+ * of time flow through `update()`, and they are NOT the same thing. Every
+ * cooldown/duration below (fire interval, windup, stun, spawn scale-in,
+ * destroy shrink, strafe-flip) is measured against `now` — an absolute
+ * `performance.now()` REAL timestamp DroneSquad reads once per rendered
+ * frame and passes in unchanged — so these were already correct before
+ * this pass and needed no fix; a threshold comparison against a real
+ * timestamp can't be time-dilated by a movement delta clamp. Only
+ * `simulationDeltaS` (translation, hover phase) is frame-delta-accumulated,
+ * and DroneSquad now feeds it through a fixed-step accumulator rather than
+ * a single clamped step — see fixedStep.ts and DroneSquad.tsx.
  */
 export interface DroneHandle {
-  /** Called by DroneSquad each frame with the player position, the shared bolt pool, and the difficulty-resolved combat numbers (HP baked in at spawn/reset time; the rest read live here). Returns true once destroyed (for squad bookkeeping). */
-  update: (playerPos: THREE.Vector3, dt: number, now: number, bolts: DroneBoltHandle, config: ResolvedDroneConfig) => boolean;
+  /** Called by DroneSquad, possibly several times per rendered frame (once per fixed-step substep — see fixedStep.ts), with the player position, the shared bolt pool, and the difficulty-resolved combat numbers (HP baked in at spawn/reset time; the rest read live here). `simulationDeltaS` is always exactly one fixed substep, never a raw/variable frame delta. Returns true once destroyed (for squad bookkeeping). */
+  update: (playerPos: THREE.Vector3, simulationDeltaS: number, now: number, bolts: DroneBoltHandle, config: ResolvedDroneConfig) => boolean;
   reset: () => void;
   getState: () => DroneAiState;
 }
@@ -111,15 +123,15 @@ const DroneEnemy = forwardRef<DroneHandle, { spawn: DroneSpawnDef }>(function Dr
   };
 
   useImperativeHandle(ref, () => ({
-    update(playerPos, dt, now, bolts, config) {
+    update(playerPos, simulationDeltaS, now, bolts, config) {
       const group = groupRef.current;
       const state = ai.current;
       if (!group) return state.state === 'destroyed';
 
       // Spin rotor + bob regardless of AI state (until destroyed).
       if (state.state !== 'destroyed') {
-        if (rotorRef.current) rotorRef.current.rotation.y += dt * 6;
-        state.phase += dt * DRONE.HOVER_HZ * Math.PI * 2;
+        if (rotorRef.current) rotorRef.current.rotation.y += simulationDeltaS * 6;
+        state.phase += simulationDeltaS * DRONE.HOVER_HZ * Math.PI * 2;
       }
 
       // --- Destruction (driven by the shared userData the weapon mutates) ---
@@ -135,7 +147,7 @@ const DroneEnemy = forwardRef<DroneHandle, { spawn: DroneSpawnDef }>(function Dr
           return true;
         }
         group.scale.setScalar(Math.max(0.001, 1 - t));
-        group.rotation.y += dt * 10;
+        group.rotation.y += simulationDeltaS * 10;
         return false;
       }
 
@@ -188,7 +200,7 @@ const DroneEnemy = forwardRef<DroneHandle, { spawn: DroneSpawnDef }>(function Dr
         desired.add(strafe);
       }
 
-      state.position.addScaledVector(desired, dt);
+      state.position.addScaledVector(desired, simulationDeltaS);
       // Hover bob on top of planar movement.
       const bob = Math.sin(state.phase) * DRONE.HOVER_AMP;
       group.position.set(state.position.x, state.position.y + bob, state.position.z);

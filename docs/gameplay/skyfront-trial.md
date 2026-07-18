@@ -67,6 +67,15 @@ src/app/v2/play/page.tsx    route
 
 One authoritative `MatchPhase` (`booting · ready · countdown · active · playerDead · victory · defeat · paused · restarting`) with a legal-transition table — never scattered `isPlaying/isDead/isPaused` booleans. Phase controls input, cursor lock, enemy simulation, damage, respawn, HUD visibility and pause. The store is a module singleton, so `/v2/play` re-initializes a fresh session on every mount (a prior victory can't leak in).
 
+### Timing architecture (frame-rate independence)
+
+Two deliberately different kinds of per-frame time flow through this milestone — never one ambiguous `delta`:
+
+- **`realDeltaS`** — real elapsed wall-clock seconds, used for anything that must track real time regardless of frame rate: the pre-match countdown, match timer, respawn countdown (`matchStore.tick()`, driven by `MatchDirector`), and every drone attack cooldown/windup/stun/destruction duration (`DroneEnemy.tsx`, measured against absolute `performance.now()` timestamps, not accumulated) and every Vortex weapon timer (fire rate/RPM spin-up, reload, inspect, ADS — `vortexWeaponStore.ts`/`VortexFireSystem.tsx`, same `performance.now()` pattern). `matchStore.tick()` caps a single call at `MAX_TICK_REAL_DELTA_S` (1s, exported) — the documented tab-restoration policy: ordinary play at any frame rate is never dilated, only a genuinely large single gap (a backgrounded tab regaining focus) is capped rather than credited in full.
+- **`simulationDeltaS`** — a clamped or fixed-step delta, used only for movement/visual integration: `PlayerController`'s physics (single clamped step, unchanged — see `docs/decisions.md` for why this one deliberately does NOT use the accumulator below), and `DroneSquad`/`DroneBoltPool`'s drone/projectile translation, which run through a shared fixed-step accumulator (`src/lib/v2/play/fixedStep.ts`, `FIXED_STEP_S = 1/60`, capped at 8 substeps/frame) so movement stays close to real time under a slow frame instead of running in slow motion, while still bounding any single step (no teleport, no spiral of death). `WindLift`'s cosmetic scroll uses a simple clamp of the same name.
+
+Covered by a deterministic test suite, `src/lib/v2/play/matchTiming.test.ts` (`npm test`), simulating 60/30/10/5fps frame sequences.
+
 ### Reuse vs. new
 
 **Reused unchanged:** the Vortex weapon store/state machine and `VortexFireSystem` (the single weapon truth — magazine, fire rate, reload, recoil, ADS, spin-up, raycast all from `shared/windWeapons.ts`), `VortexViewmodel` (real Vortex Rifle **LOD1** via `requestedLod={1}`), `RangeEffectsPools` (tracers/impacts/casings), and the `lib/game` movement core (`accelerate`/`applyFriction`/`wishDirection` + `PLAYER` tuning) through a new match-aware controller.

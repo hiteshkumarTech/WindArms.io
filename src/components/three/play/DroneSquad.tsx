@@ -4,6 +4,7 @@ import { useMemo, useRef } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import { resolveDroneConfig, resolveDroneSpawns } from '@/lib/v2/play/difficulty';
+import { createStepAccumulator, stepFixed } from '@/lib/v2/play/fixedStep';
 import { useV2MatchStore } from '@/lib/v2/play/matchStore';
 import DroneEnemy, { type DroneHandle } from './DroneEnemy';
 import DroneBoltPool, { type DroneBoltHandle } from './DroneBoltPool';
@@ -15,6 +16,16 @@ import DroneBoltPool, { type DroneBoltHandle } from './DroneBoltPool';
  * no per-drone render loop, no per-frame React state). Restart is
  * nonce-driven: when matchStore.restartNonce changes, every drone resets and
  * the pool clears — no remount, no duplicated groups, no stale projectiles.
+ *
+ * MOVEMENT runs through a fixed-step accumulator (`fixedStep.ts`) instead of
+ * a single `Math.min(rawDelta, cap)` step — at a normal frame rate this
+ * costs exactly one `update()` call per drone per frame (unchanged from
+ * before), but under a slow frame it runs several fixed 1/60s substeps to
+ * catch movement back up to real elapsed time instead of letting it run in
+ * slow motion. `DroneEnemy.update()` is idempotent within a single rendered
+ * frame's substeps (cooldowns/windup/stun/destroy all key off the one
+ * `now` timestamp passed in, not off substep count — see DroneEnemy.tsx),
+ * so calling it multiple times per frame is safe and does not double-fire.
  */
 export default function DroneSquad() {
   const camera = useThree((state) => state.camera);
@@ -22,6 +33,7 @@ export default function DroneSquad() {
   const boltRef = useRef<DroneBoltHandle>(null);
   const lastRestartNonce = useRef(0);
   const playerPos = useMemo(() => new THREE.Vector3(), []);
+  const stepAcc = useRef(createStepAccumulator());
 
   // Reactive to the selected difficulty so switching Low↔Medium↔Max during
   // the pre-countdown 'ready' screen mounts/unmounts the right drone count
@@ -50,7 +62,6 @@ export default function DroneSquad() {
     // hold their spawn-in; during death/menus they're frozen but not reset.
     if (match.phase !== 'active') return;
 
-    const dt = Math.min(rawDelta, 1 / 30);
     const now = performance.now();
     playerPos.copy(camera.position);
     const bolts = boltRef.current;
@@ -59,9 +70,11 @@ export default function DroneSquad() {
     // Resolved once per frame (cheap, pure arithmetic) — same function every
     // consumer uses, so drone AI, bolts and the HUD can never disagree.
     const droneConfig = resolveDroneConfig(match.selectedDifficulty);
-    for (const drone of droneRefs.current) {
-      drone?.update(playerPos, dt, now, bolts, droneConfig);
-    }
+    stepFixed(stepAcc.current, rawDelta, (simulationDeltaS) => {
+      for (const drone of droneRefs.current) {
+        drone?.update(playerPos, simulationDeltaS, now, bolts, droneConfig);
+      }
+    });
   });
 
   return (

@@ -11,7 +11,7 @@
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test src/components/game/characters/heroAnimator.test.ts"
+    "test": "tsx --test src/components/game/characters/heroAnimator.test.ts src/lib/v2/play/matchTiming.test.ts"
   },
   "dependencies": {
     "@react-three/drei": "9.114.3",

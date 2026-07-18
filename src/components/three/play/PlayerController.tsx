@@ -30,6 +30,25 @@ import { useVortexWeaponStore } from '@/lib/v2/weapons/vortexWeaponStore';
  * Wind Lift's updraft is applied here from WIND_LIFT config (visuals live
  * in WindLift.tsx — both read the same constant, so effect and force can't
  * drift apart).
+ *
+ * TIMING (Skyfront Trial timing cleanup, 2026-07-18): movement integration
+ * below uses a single clamped `simulationDeltaS` per frame (unchanged), NOT
+ * the fixed-step accumulator used by DroneSquad/DroneBoltPool's movement.
+ * Deliberate: `lib/game/movement.ts`'s Source-style friction/accelerate
+ * formulas are not perfectly step-invariant (this is a well-known property
+ * of that style of movement — running the same formula in more, smaller
+ * steps measurably changes the result, which is part of why tick-rate
+ * matters competitively in Source/Quake-derived movement). Converting this
+ * to multiple substeps per frame would subtly change real movement
+ * feel/values, which the brief for this pass explicitly rules out ("do not
+ * redesign gameplay," "do not change balance"). A single clamped step has
+ * no such risk — it only bounds how far one step can move (no teleport, no
+ * spiral of death), matching the brief's explicitly allowed "clamped OR
+ * fixed-step" latitude for movement. Coyote-time/jump-buffer timing
+ * (`lastGroundedAt`/`input.jumpPressedAt` below) were ALREADY correct
+ * before this pass — they compare `performance.now()` timestamps directly,
+ * never accumulated delta, so they were never subject to the timer bug
+ * fixed elsewhere in this pass.
  */
 export default function PlayerController({ inputRef }: { inputRef: React.MutableRefObject<RangeInputSnapshot> }) {
   const bodyRef = useRef<RapierRigidBody>(null);
@@ -94,7 +113,7 @@ export default function PlayerController({ inputRef }: { inputRef: React.Mutable
 
     if (match.phase === 'paused') return; // frozen (Physics is also paused at the scene level)
 
-    const dt = Math.min(rawDelta, 1 / 30);
+    const simulationDeltaS = Math.min(rawDelta, 1 / 30);
     const now = performance.now();
     const input = inputRef.current;
     const vel = velocity.current;
@@ -119,14 +138,14 @@ export default function PlayerController({ inputRef }: { inputRef: React.Mutable
     const ADS_SPEED_MULTIPLIER = 0.55;
 
     if (grounded.current) {
-      applyFriction(vel, PLAYER.FRICTION_GROUND, dt);
+      applyFriction(vel, PLAYER.FRICTION_GROUND, simulationDeltaS);
       const targetSpeed = (sprintHeld ? PLAYER.SPRINT_SPEED : PLAYER.WALK_SPEED) * (ads ? ADS_SPEED_MULTIPLIER : 1);
-      accelerate(vel, wishDir.current, targetSpeed, PLAYER.ACCEL_GROUND, dt);
+      accelerate(vel, wishDir.current, targetSpeed, PLAYER.ACCEL_GROUND, simulationDeltaS);
     } else {
-      accelerate(vel, wishDir.current, PLAYER.WALK_SPEED * (ads ? ADS_SPEED_MULTIPLIER : 1), PLAYER.ACCEL_AIR, dt);
+      accelerate(vel, wishDir.current, PLAYER.WALK_SPEED * (ads ? ADS_SPEED_MULTIPLIER : 1), PLAYER.ACCEL_AIR, simulationDeltaS);
     }
 
-    vel.y = Math.max(vel.y + PLAYER.GRAVITY * dt, PLAYER.MAX_FALL);
+    vel.y = Math.max(vel.y + PLAYER.GRAVITY * simulationDeltaS, PLAYER.MAX_FALL);
 
     // Wind Lift updraft — smooth acceleration inside the column, active-phase only.
     const position = body.translation();
@@ -135,7 +154,7 @@ export default function PlayerController({ inputRef }: { inputRef: React.Mutable
       const dz = position.z - WIND_LIFT.position[2];
       const insideColumn = dx * dx + dz * dz <= WIND_LIFT.radius * WIND_LIFT.radius && position.y >= WIND_LIFT.position[1] - 0.5 && position.y <= WIND_LIFT.position[1] + WIND_LIFT.height;
       if (insideColumn) {
-        vel.y = Math.min(vel.y + WIND_LIFT.accel * dt, WIND_LIFT.maxRiseSpeed);
+        vel.y = Math.min(vel.y + WIND_LIFT.accel * simulationDeltaS, WIND_LIFT.maxRiseSpeed);
         grounded.current = false;
       }
     }
@@ -149,7 +168,7 @@ export default function PlayerController({ inputRef }: { inputRef: React.Mutable
       lastGroundedAt.current = -Infinity;
     }
 
-    const desired = { x: vel.x * dt, y: vel.y * dt, z: vel.z * dt };
+    const desired = { x: vel.x * simulationDeltaS, y: vel.y * simulationDeltaS, z: vel.z * simulationDeltaS };
     controller.computeColliderMovement(collider, desired);
     const corrected = controller.computedMovement();
     const wasRising = vel.y > 0;
@@ -187,7 +206,7 @@ export default function PlayerController({ inputRef }: { inputRef: React.Mutable
     const sprinting = sprintHeld && horizontalSpeed > PLAYER.WALK_SPEED + 0.5;
 
     const targetFov = ads ? PLAYER.FOV_BASE - 14 : sprinting ? PLAYER.FOV_SPRINT : PLAYER.FOV_BASE;
-    camera.fov = THREE.MathUtils.lerp(camera.fov, targetFov, 1 - Math.exp(-PLAYER.FOV_LERP * dt));
+    camera.fov = THREE.MathUtils.lerp(camera.fov, targetFov, 1 - Math.exp(-PLAYER.FOV_LERP * simulationDeltaS));
     camera.updateProjectionMatrix();
 
     rangeLocalPose.yaw = yaw.current;

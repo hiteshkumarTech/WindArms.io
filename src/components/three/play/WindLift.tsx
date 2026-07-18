@@ -17,6 +17,13 @@ import { useV2MatchStore } from '@/lib/v2/play/matchStore';
  *
  * Built from scrolling additive rings + a soft core + drifting motes: a
  * clear "step in here and rise" affordance, no player damage, reusable.
+ *
+ * Purely cosmetic per-frame delta (`simulationDeltaS`) — clamped like the
+ * rest of this milestone's movement/visual code (Skyfront Trial timing
+ * cleanup), NOT real elapsed time. There is no gameplay timer here; a
+ * capped step just keeps the scroll/wrap math numerically sane under an
+ * extreme frame hitch instead of jumping the modulo wrap by more than one
+ * cycle in a single step.
  */
 export default function WindLift() {
   const ringsRef = useRef<THREE.Group>(null);
@@ -63,12 +70,13 @@ export default function WindLift() {
     [ringMaterial, coreMaterial, moteGeometry, moteMaterial],
   );
 
-  useFrame((_, delta) => {
+  useFrame((_, rawDelta) => {
     if (useV2MatchStore.getState().phase === 'paused') return; // frozen with the sim
+    const simulationDeltaS = Math.min(rawDelta, 1 / 30);
 
     if (ringsRef.current) {
       for (const ring of ringsRef.current.children) {
-        ring.position.y += delta * 2.6;
+        ring.position.y += simulationDeltaS * 2.6;
         if (ring.position.y > WIND_LIFT.height) ring.position.y -= WIND_LIFT.height;
         const t = ring.position.y / WIND_LIFT.height;
         (ring as THREE.Mesh).scale.setScalar(0.7 + t * 0.5);
@@ -79,7 +87,7 @@ export default function WindLift() {
     if (motesRef.current) {
       const positions = motesRef.current.geometry.getAttribute('position') as THREE.BufferAttribute;
       for (let i = 0; i < positions.count; i++) {
-        let y = positions.getY(i) + delta * 3.2;
+        let y = positions.getY(i) + simulationDeltaS * 3.2;
         if (y > WIND_LIFT.height) y -= WIND_LIFT.height;
         positions.setY(i, y);
       }
