@@ -4,14 +4,10 @@ import { useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { STORM } from '@/lib/v2/tokens';
+import type { TargetUserData } from '@/lib/v2/combat/targets';
 
-export interface TargetUserData {
-  isTarget: boolean;
-  hp: number;
-  maxHp: number;
-  hitFlashUntil: number;
-  destroyedAt: number;
-}
+/** Re-exported for existing importers — the contract itself moved to lib/v2/combat/targets.ts (Milestone 6) so drones share it. */
+export type { TargetUserData };
 
 const TARGET_DEFS: Array<{ id: string; position: [number, number, number]; maxHp: number }> = [
   { id: 'near', position: [-3, 1.6, -12], maxHp: 30 },

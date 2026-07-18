@@ -56,7 +56,8 @@ const V2Navbar = forwardRef<HTMLElement>(function V2Navbar(_props, ref) {
           ))}
         </ul>
 
-        <V2Button href="/play" variant="gold" icon={Play}>
+        {/* Milestone 6: V2 navbar Play → the V2 vertical slice (/v2/play). */}
+        <V2Button href="/v2/play" variant="gold" icon={Play}>
           Play Now
         </V2Button>
       </nav>

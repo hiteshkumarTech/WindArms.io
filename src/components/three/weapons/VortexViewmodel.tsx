@@ -8,29 +8,24 @@ import PipelineModel from '@/components/three/pipeline/PipelineModel';
 import { ProceduralAeolus } from '@/components/three/storm/AeolusShowpiece';
 import { effectsBus, fireSignal, reloadSignal } from '@/lib/v2/range/effectsBus';
 import { rangeLocalPose } from '@/lib/v2/range/localPose';
+import { muzzleWorldPose } from '@/lib/v2/range/muzzleWorldPose';
+import { VORTEX_RUNTIME_ANCHORS } from '@/lib/v2/weapons/vortexRuntimeAnchors';
+import { VORTEX_VIEWMODEL_POSES } from '@/lib/v2/weapons/vortexViewmodelPose';
 import { useVortexWeaponStore } from '@/lib/v2/weapons/vortexWeaponStore';
 
 const def = WIND_WEAPONS.vortex;
+const { hip: HIP_POSE, ads: ADS_POSE } = VORTEX_VIEWMODEL_POSES;
+
+/** Scales just the `<ProceduralAeolus>` fallback instance passed to this viewmodel — doesn't touch the component itself or the showpiece's separate usage. */
+const FALLBACK_SCALE = 0.26;
 
 /**
- * Rest offset of the gun in view space, meters, and its viewmodel scale.
- *
- * RESOLVED (v0.2 runtime integration, 2026-07-17 — see docs/decisions.md):
- * the real GLB now loads and renders correctly in both this viewmodel and
- * the landing showpiece — the earlier "never completes" finding was a v0.1
- * source-asset problem (a multi-part bake sheet, not a loader bug),
- * confirmed dead once the v0.2 source re-export landed. This viewmodel
- * requests the lighter LOD1 tier specifically (`requestedLod={1}` below,
- * ~56k triangles) — independent of the landing showpiece, which keeps
- * requesting the quality-driven default (LOD0, ~140k triangles) for its
- * higher-fidelity hero shot. Same slot, two tiers, no duplicated asset
- * entry — see `PipelineModel`'s `requestedLod` prop.
+ * Set true only while visually re-verifying the muzzle anchor / pose against
+ * the running scene (a colored sphere at the runtime muzzle anchor). Must be
+ * false in every commit — see docs/decisions.md "Vortex Rifle FP pose
+ * correction" for the verification pass this was used for.
  */
-const REST = { x: 0.28, y: -0.24, z: -0.62 };
-const ADS_REST = { x: 0.02, y: -0.15, z: -0.36 };
-const VIEWMODEL_SCALE = 0.42;
-/** Scales just the `<ProceduralAeolus>` fallback instance passed to this viewmodel — doesn't touch the component itself or the showpiece's separate usage. Tuned visually at REST.z=-0.62; see the Phase 4 report. */
-const FALLBACK_SCALE = 0.26;
+const DEBUG_SHOW_MUZZLE_ANCHOR = false;
 
 /** Ammo-feed drop/insert/settle curve — same phased-curve idiom as v1's WeaponViewmodel.tsx `reloadFeedOffset`, not a raw lerp, so it reads as loading a magazine rather than just dipping. */
 function reloadDipOffset(t: number): number {
@@ -43,23 +38,40 @@ function reloadDipOffset(t: number): number {
 }
 
 /**
- * First-person Vortex Rifle. Real GLB (public/v2-art/vortex-rifle.glb) via
- * PipelineModel, `ProceduralAeolus` (exported from AeolusShowpiece.tsx —
- * the exact same fallback the landing-page hero showpiece uses, not a
- * duplicate) as the fallback. The GLB has no clips/sockets today (confirmed
- * via tools/inspect-glb.mjs) so every motion below is procedural, built the
- * same way v1's WeaponViewmodel.tsx animates its own procedural guns:
- * exponential lerp-toward-target for continuous motion (bob/sway/ADS),
- * linear decay for the recoil punch, a phased curve for the reload dip.
+ * First-person Vortex Rifle. Real GLB (public/v2-art/vortex-rifle.lod1.glb)
+ * via PipelineModel, `ProceduralAeolus` as the fallback. Shared, unchanged,
+ * by both `/v2/range` and `/v2/play` (same component, same mount pattern).
+ *
+ * Base pose (rest position/rotation for hip and ADS) lives in
+ * `vortexViewmodelPose.ts` — this component only owns the ADDITIVE dynamic
+ * motion (sway/bob/recoil punch/reload dip/inspect wobble) and the
+ * hip↔ADS blend, plus publishing the runtime muzzle anchor
+ * (`vortexRuntimeAnchors.ts`) to world space every frame via
+ * `muzzleWorldPose` so `VortexFireSystem` can spawn the visible tracer/
+ * muzzle-flash from the actual barrel instead of a fixed camera offset.
  */
 export default function VortexViewmodel() {
   const camera = useThree((state) => state.camera);
   const groupRef = useRef<THREE.Group>(null);
   const flashRef = useRef<THREE.Mesh>(null);
   const lightRef = useRef<THREE.PointLight>(null);
+  const debugAnchorRef = useRef<THREE.Mesh>(null);
 
   const flashMaterial = useMemo(() => new THREE.MeshBasicMaterial({ color: def.accent, transparent: true, opacity: 0, toneMapped: false }), []);
   useEffect(() => () => flashMaterial.dispose(), [flashMaterial]);
+
+  // Invalidate any stale muzzle pose from a PRIOR mounted instance the moment
+  // this one mounts (module-singleton bridge, so without this a remount would
+  // otherwise inherit `ready: true` pointing at wherever the old instance's
+  // last frame left it) — and again on unmount, so nothing downstream can
+  // ever read a frozen, no-longer-updating position. Genuinely re-validated
+  // `true` at the end of every subsequent useFrame below.
+  useEffect(() => {
+    muzzleWorldPose.ready = false;
+    return () => {
+      muzzleWorldPose.ready = false;
+    };
+  }, []);
 
   const sim = useRef({
     bobPhase: 0,
@@ -73,11 +85,10 @@ export default function VortexViewmodel() {
     raise: 1,
     lastReloadStartNonce: reloadSignal.startNonce,
     adsBlend: 0,
-    x: REST.x,
-    y: REST.y,
-    z: REST.z,
     /** Structural signature of the last raycast-disabling pass — re-patches only when the subtree actually changes (e.g. fallback→real swap), not every frame. */
     raycastPatchedChildCount: -1,
+    scratchAnchor: new THREE.Vector3(),
+    scratchQuat: new THREE.Quaternion(),
   });
 
   useFrame((_, delta) => {
@@ -87,13 +98,9 @@ export default function VortexViewmodel() {
     const store = useVortexWeaponStore.getState();
     const state = sim.current;
 
-    // The viewmodel sits ~0.6m in front of the camera, well inside every
-    // shot's raycast path — without this, VortexFireSystem's hit-test would
-    // always hit the player's own gun first and never reach a real target,
-    // regardless of aim (found while verifying this visually: 0 hits across
-    // many precisely-aimed test shots — see the Phase 4 report). v1's
-    // WeaponViewmodel avoids this the same way: viewmodel geometry is
-    // excluded from raycasting entirely, not just visually layered on top.
+    // The viewmodel sits well inside every shot's raycast path — without
+    // this, VortexFireSystem's hit-test would always hit the player's own
+    // gun first and never reach a real target, regardless of aim.
     if (group.children.length !== state.raycastPatchedChildCount) {
       group.traverse((child) => {
         if (child instanceof THREE.Mesh || child instanceof THREE.Sprite) {
@@ -157,17 +164,50 @@ export default function VortexViewmodel() {
       inspectTiltZ = Math.sin(progress * Math.PI * 2) * 0.08 * ease;
     }
 
-    // --- Compose the final local offset ------------------------------------
-    const base = { x: THREE.MathUtils.lerp(REST.x, ADS_REST.x, state.adsBlend), y: THREE.MathUtils.lerp(REST.y, ADS_REST.y, state.adsBlend), z: THREE.MathUtils.lerp(REST.z, ADS_REST.z, state.adsBlend) };
+    // --- Compose the final pose: hip↔ADS blend, then additive dynamics ----
+    const pos = {
+      x: THREE.MathUtils.lerp(HIP_POSE.position[0], ADS_POSE.position[0], state.adsBlend),
+      y: THREE.MathUtils.lerp(HIP_POSE.position[1], ADS_POSE.position[1], state.adsBlend),
+      z: THREE.MathUtils.lerp(HIP_POSE.position[2], ADS_POSE.position[2], state.adsBlend),
+    };
+    const rot = {
+      x: THREE.MathUtils.lerp(HIP_POSE.rotation[0], ADS_POSE.rotation[0], state.adsBlend),
+      y: THREE.MathUtils.lerp(HIP_POSE.rotation[1], ADS_POSE.rotation[1], state.adsBlend),
+      z: THREE.MathUtils.lerp(HIP_POSE.rotation[2], ADS_POSE.rotation[2], state.adsBlend),
+    };
+    const poseScale = THREE.MathUtils.lerp(HIP_POSE.scale, ADS_POSE.scale, state.adsBlend);
     const raiseY = -state.raise * 0.35;
 
     group.position.copy(camera.position);
     group.quaternion.copy(camera.quaternion);
-    group.translateX(base.x + state.swayX + bobX);
-    group.translateY(base.y + state.swayY + bobY + reloadY + inspectY + raiseY + state.punch * 0.06);
-    group.translateZ(base.z + state.punch * 0.08);
-    group.rotateX(state.punch * 0.06);
-    group.rotateZ(inspectTiltZ);
+    // Position first, in un-rotated view space (camera-relative, intuitive to author) — see ViewmodelPose's doc comment.
+    group.translateX(pos.x + state.swayX + bobX);
+    group.translateY(pos.y + state.swayY + bobY + reloadY + inspectY + raiseY + state.punch * 0.06);
+    group.translateZ(pos.z + state.punch * 0.08);
+    // Then rotate the model in place around its now-fixed origin — base pose (incl. the +X→-Z forward correction) plus dynamic recoil/inspect on top.
+    group.rotateX(rot.x + state.punch * 0.06);
+    group.rotateY(rot.y);
+    group.rotateZ(rot.z + inspectTiltZ);
+
+    // --- Publish the runtime muzzle anchor to world space -----------------
+    // Force the world matrix current THIS frame (it's otherwise only
+    // updated during the render pass, which would read stale data — the
+    // exact one-frame-lag pitfall documented on `muzzleWorldPose`).
+    group.updateWorldMatrix(true, false);
+    state.scratchAnchor.set(...VORTEX_RUNTIME_ANCHORS.muzzleLocal).multiplyScalar(poseScale);
+    // Debug sphere is a CHILD of this same group — position it in LOCAL
+    // space (the anchor as-is) before scratchAnchor gets converted to world
+    // space below, so it renders exactly where the anchor math says without
+    // a redundant world→local conversion back.
+    if (DEBUG_SHOW_MUZZLE_ANCHOR && debugAnchorRef.current) {
+      debugAnchorRef.current.position.copy(state.scratchAnchor);
+      debugAnchorRef.current.visible = true;
+    }
+    group.localToWorld(state.scratchAnchor);
+    muzzleWorldPose.position.copy(state.scratchAnchor);
+    group.getWorldQuaternion(state.scratchQuat);
+    muzzleWorldPose.direction.set(1, 0, 0).applyQuaternion(state.scratchQuat).normalize();
+    muzzleWorldPose.ready = true;
   });
 
   return (
@@ -179,7 +219,7 @@ export default function VortexViewmodel() {
             <ProceduralAeolus />
           </group>
         }
-        scale={VIEWMODEL_SCALE}
+        scale={HIP_POSE.scale}
         accentTint={def.accent}
         requestedLod={1}
       />
@@ -188,6 +228,12 @@ export default function VortexViewmodel() {
         <primitive object={flashMaterial} attach="material" />
       </mesh>
       <pointLight ref={lightRef} color={def.accent} position={[0, 0.02, -0.85]} intensity={0} distance={2.5} decay={2} />
+      {DEBUG_SHOW_MUZZLE_ANCHOR && (
+        <mesh ref={debugAnchorRef} visible={false} raycast={() => null}>
+          <sphereGeometry args={[0.02, 8, 8]} />
+          <meshBasicMaterial color="#ff00ff" toneMapped={false} />
+        </mesh>
+      )}
     </group>
   );
 }

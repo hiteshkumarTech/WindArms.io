@@ -5,7 +5,10 @@ export const HERO = {
   titleLines: ['THE WAR', 'ABOVE THE STORM'],
   /** Board lore, canonical. */
   lore: 'Humanity’s last civilization exists above an endless storm. Ancient wind technology and monumental architecture keep us alive. Battles are fought in the skies, on floating megacities, and between the clouds.',
-  primaryCta: { label: 'Play Free Now', href: '/play' },
+  // Milestone 6: the V2 landing's primary Play now opens the V2 vertical
+  // slice (/v2/play — Skyfront Trial), not V1's /play. V1 stays live and
+  // untouched at /play; /v2/range remains a developer route.
+  primaryCta: { label: 'Play Free Now', href: '/v2/play' },
   secondaryCta: { label: 'View the Skyfront', href: '#skyfront' },
   scrollCue: 'Descend',
 } as const;
