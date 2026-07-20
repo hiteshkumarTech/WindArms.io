@@ -4,10 +4,12 @@ import { Component, Suspense, useEffect, useMemo, useState, type ReactNode } fro
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { PerformanceMonitor } from '@react-three/drei';
 import * as THREE from 'three';
+import { responsiveFovDeg } from '@/lib/v2/responsiveCamera';
 import { STORM } from '@/lib/v2/tokens';
 import { scrollState } from '@/lib/v2/scrollProgress';
 import { usePrefersReducedMotion } from '@/hooks/usePrefersReducedMotion';
 import AeolusShowpiece from './AeolusShowpiece';
+import ArsenalShowpiece from './ArsenalShowpiece';
 import CloudLayer from './CloudLayer';
 import GodRays from './GodRays';
 import SkyArchipelago from './SkyArchipelago';
@@ -33,7 +35,28 @@ const CAMERA_PATH = [
   // full fix; see HeroSection.tsx's added legibility scrim for the rest.
   // Only this one keyframe changed — segments 1–5 (Arsenal onward) untouched.
   { at: 0.0, pos: [0, 0.6, 9], look: [3.2, 3.8, -18], fog: '#9fc3e0' },
-  { at: 0.2, pos: [3.4, 1.6, 7.5], look: [0.5, 1.8, -18], fog: '#8db5d8' },
+
+  // Arsenal beat, expanded from a single drift-through keyframe into a
+  // small reveal sequence (2026-07-20, ArsenalShowpiece milestone) so the
+  // Vortex Rifle gets an actual approach/arrival/hold/departure instead of
+  // just being passed by. approach and transition-out are interpolated
+  // partway toward the neighboring hero/operators keyframes (not
+  // eyeballed); reveal keeps the original, already-tuned 0.2 pose exactly;
+  // hold repeats it verbatim at a later `at` so the camera pauses there —
+  // two identical keyframes in a row is the existing lerp system's only
+  // way to produce a hold, no new interpolation logic added. First pass,
+  // not yet screenshot-verified — retune alongside ArsenalShowpiece's
+  // world positions once visually checked.
+  // Shifted later than a first pass (0.14/0.2/0.27/0.35) after a live
+  // screenshot check: the section heading ("Wind-Powered Weaponry") hadn't
+  // scrolled clear of the viewport yet at 0.2, so the reveal collided with
+  // it. Pushing the whole sequence out gives it room; pos/look values are
+  // still exactly the original tuned arsenal pose, untouched.
+  { at: 0.16, pos: [1.9, 1.15, 8.18], look: [1.72, 2.7, -18], fog: '#93bcdc' },
+  { at: 0.23, pos: [3.4, 1.6, 7.5], look: [0.5, 1.8, -18], fog: '#8db5d8' },
+  { at: 0.31, pos: [3.4, 1.6, 7.5], look: [0.5, 1.8, -18], fog: '#8db5d8' },
+  { at: 0.38, pos: [0.76, 2.0, 7.3], look: [1.58, 2.04, -18], fog: '#86adc9' },
+
   { at: 0.42, pos: [-3.2, 2.6, 7], look: [3.2, 2.4, -18], fog: '#7fa8cc' },
   { at: 0.62, pos: [0.5, 9.5, 3.5], look: [2.8, -1, -18], fog: '#6c93b8' },
   { at: 0.82, pos: [1.6, 3.2, 6.5], look: [2.8, 2, -18], fog: '#47596e' },
@@ -100,6 +123,9 @@ function CameraDirector({ reducedMotion }: { reducedMotion: boolean }) {
  * rifle off-frame entirely on tablet/mobile aspect ratios (confirmed via
  * screenshot, not assumed) — a standard "hold horizontal FOV roughly
  * constant" compensation, only recomputed on actual resize, not per-frame.
+ * Formula lives in lib/v2/responsiveCamera.ts (Phase A.1) — ArsenalShowpiece
+ * reads the same numbers to compensate the apparent size this widening
+ * costs it, so there's one definition instead of two drifting copies.
  */
 function ResponsiveFov() {
   const camera = useThree((state) => state.camera);
@@ -108,10 +134,7 @@ function ResponsiveFov() {
 
   useEffect(() => {
     if (!(camera instanceof THREE.PerspectiveCamera)) return;
-    const aspect = width / height;
-    const baseAspect = 16 / 9;
-    const baseFov = 55;
-    camera.fov = aspect < baseAspect ? Math.min(88, baseFov * (baseAspect / aspect)) : baseFov;
+    camera.fov = responsiveFovDeg(width / height);
     camera.updateProjectionMatrix();
   }, [camera, width, height]);
 
@@ -174,6 +197,7 @@ export default function StormBackdrop() {
             <SkyCitadel reducedMotion={reducedMotion} />
             <SkyArchipelago reducedMotion={reducedMotion} />
             <AeolusShowpiece reducedMotion={reducedMotion} />
+            <ArsenalShowpiece reducedMotion={reducedMotion} />
             <WindStreaks reducedMotion={reducedMotion} />
             <StormLightning reducedMotion={reducedMotion} />
             <CameraDirector reducedMotion={reducedMotion} />
