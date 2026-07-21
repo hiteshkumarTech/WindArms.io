@@ -32,5 +32,6 @@ yarn-error.log*
 
 # Large source 3D assets
 WindArms Assets/**/*.glb
+WindArms Assets/**/*.fbx
 
 .mcp.json

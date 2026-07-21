@@ -1,6 +1,6 @@
 # Kael Aurin v0.1 — Source Asset Brief (Milestone 7 gate)
 
-**Status: BLOCKED — no source GLB exists.** Checked 2026-07-20: `WindArms Assets/` contains no operator/character GLB (`Characters/` is empty). Per the milestone's asset gate, no fake humanoid, procedural tube arms, or mannequin stand-in was built. This brief is the production order that unblocks it.
+**Status (2026-07-21): source GLB exists — ACCEPTED WITH LIMITATIONS.** A Mixamo-rigged FBX landed, passed the automated structural/deformation gate, was normalized and exported to `kael_v0.1_source.glb`, and had its forward-axis direction empirically proven and corrected to match the WindArms `-Z` convention. Full detail: [kael-v0.1-inspection.md](kael-v0.1-inspection.md). Remaining before this is usable for FP arms/IK: no texture data exists yet (untextured, not a rig defect), and the not-yet-built `tools/make-kael-runtime.mjs` still needs to produce budget-compliant runtime derivatives from this 299,915-tri source. This brief's original production order below stays as the historical contract the delivered asset was validated against.
 
 **Deliver the file to:** `WindArms Assets/Characters/Operator01_Kael/kael_v0.1_source.glb` (the staging convention already documented in [operator-pipeline.md](operator-pipeline.md) §2; the alternate `WindArms Assets/Operators/Kael/…` is acceptable — the gate checks both). Source files stay git-ignored (`WindArms Assets/**/*.glb`).
 
