@@ -148,3 +148,7 @@ WindArms Assets/**/*.fbx
 Verified via `git check-ignore -v` on both files — neither appears in `git status --short`. Nothing was staged or committed by this pass.
 
 Stopping here per the milestone's own gate structure — Phase F (runtime derivatives, FP arm extraction, IK, `/v2/play` integration) is a separate, much larger body of work and was not started.
+
+## Addendum (2026-07-21) — Phase F progress since this gate
+
+This gate's stopping point above is now historical, not current. Since it was written: runtime body derivatives (`operator-kael.glb`/`.lod1.glb`) and a validated FP-arms extraction (`operator-kael-arms.glb`, ACCEPTED WITH LIMITATIONS — same texture-data limitation as this document, plus a low-poly unprotected arm-shaft region traded for hand/finger fidelity) have both shipped, and — separately — this same accepted source's hand-bone rest pose was measured (`tools/blender/inspect-kael-hand-basis.py`) and used to shape the Vortex Rifle's grip-anchor target basis, now finalized and visually calibrated: right hand `position: [-0.25, -0.065, 0.0]` / `rotationEuler: [0.0, 0.0, -1.1519]`, left hand `position: [0.22, -0.05, 0.0]` / `rotationEuler: [0.0, 0.0, -0.5061]` (`docs/design/weapons/vortex-rifle.md` §22a). Neither the arms GLB nor the grip targets are connected to each other yet; **IK still does not exist, and the rifle is still not held.** Full current status: `docs/forge/operator-pipeline.md` §5's "Hand IK" note and `docs/changelog.md`'s 2026-07-21 entries.

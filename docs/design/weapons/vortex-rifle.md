@@ -184,6 +184,27 @@ Windforge Armory (§1) produces the Vortex Rifle in small, decentralized worksho
 
 Viewmodel proportions should read larger/more detailed than the third-person model (standard FPS convention, matches v1's real approach — [../../gameplay/weapons.md](../../gameplay/weapons.md#client-feel)) — the Energy Core viewport, pressure gauge, and Ancient Alloy accent line (all called out above as key identity details) must be legible at first-person viewing distance, since that's where a player spends the most time looking at this weapon.
 
+## 22a. Grip-Anchor Authoring System (Milestone 7, Phase F, Step 5, 2026-07-21)
+
+Weapon-owned right-hand (primary/trigger) and left-hand (support/foregrip) target transforms — the future two-bone IK layer's authoritative targets once Kael's FP arms are mounted. **Not IK, not arm-mounting** — this step builds and validates the target system only; the rifle is not yet held. Implementation: `src/lib/v2/weapons/runtimeAnchorMath.ts` (pure transform math), `src/lib/v2/weapons/gripWorldPose.ts` (generation-safe world-pose bridge), `src/lib/v2/weapons/vortexRuntimeAnchors.ts` (`gripHandLocal`/`gripSupportLocal` constants + the full `RuntimeGripAnchor` coordinate contract, documented in that file's doc comments — read it before touching a value here).
+
+**Coordinate contract summary** (full version lives in `vortexRuntimeAnchors.ts`): position in raw-model-local meters (X-long/muzzle+X, Y-up, Z-lateral, same space as `muzzleLocal`); rotation in radians, XYZ Euler order, weapon-local; the composed quaternion's local +X/+Y/+Z represent hand-forward/thumb-side/palm-normal respectively — the same basis `tools/blender/inspect-kael-hand-basis.py` measures on Kael's actual `mixamorig:LeftHand`/`RightHand` rest-pose bones, so a future IK consumer can compare the two directly.
+
+**CANONICAL values, finalized 2026-07-21** (`vortexRuntimeAnchors.ts`, `VORTEX_RUNTIME_ANCHORS`) — visually calibrated in `/v2/range?grips=1` (`VortexGripTunerPanel`/`VortexGripAnchorDebug`) with axes, palm proxies, and Kael-hand-basis proxies enabled, against the real Vortex Rifle LOD1, checked across hip-fire, ADS, single-shot, sustained fire, recoil recovery, reload, inspect, and movement sway:
+
+| Anchor | Position (m) | Rotation (rad, XYZ) | Rotation (authoring °, Z) |
+|---|---|---|---|
+| `gripHandLocal` (right, primary) | `[-0.25, -0.065, 0.0]` | `[0.0, 0.0, -1.1519]` | -66° |
+| `gripSupportLocal` (left, support) | `[0.22, -0.05, 0.0]` | `[0.0, 0.0, -0.5061]` | -29° |
+
+`gripHandLocal` sits centered around the pistol grip with a believable wrist angle; `gripSupportLocal` sits at the forward support/handguard region, behind the muzzle (x=0.47), not overlapping the right hand. Both refine the same measured/estimated positions from the provisional pass (§ below still records that provenance) rather than targeting different geometry. **These are TEMPORARY RUNTIME PROXIES, not authored GLB sockets** — same status as `muzzleLocal`. A future Blender-authored v1.0 pass should replace them with real `socket_grip_hand`/`socket_grip_support` empties (`manifest.ts`'s `plannedSockets`). Kael's arms are still not mounted and no IK exists — **do not read this table as "the rifle is held."**
+
+Superseded provenance (kept for the record, not the current status): `gripHandLocal`'s provisional position came from a real geometric measurement (a cross-sectional scan of the decompressed LOD1 mesh found the pistol grip's Y-min dip bottoming out at x≈-0.258, y≈-0.135 against a y≈-0.060 receiver baseline); `gripSupportLocal`'s provisional position was an ergonomic estimate (the handguard there is a near-uniform cylinder with no comparable geometric signature); both provisional rotations were explicitly-flagged starting estimates, not visually verified. All four values above have since been checked against the running scene and are no longer estimates.
+
+**World-pose lifecycle.** `gripWorldPose.ts` publishes both hands' world position/quaternion atomically every frame from `VortexViewmodel.tsx` (mirrors the proven `muzzleWorldPose.ts` bridge but adds a generation counter — see `docs/decisions.md`'s "Grip world-pose generation algorithm" entry for why a plain `ready` flag wasn't enough here). Currently consumed by nothing except the dev authoring tool — publishing runs unconditionally in both `/v2/range` and `/v2/play` (same as the muzzle bridge already does), the debug UI is `/v2/range`-only.
+
+**Known limitation carried over from §22:** the rifle is still a corrected floating viewmodel, not a physically held one — this step adds trustworthy hand *targets*, it does not attach hands to them. That's the next phase (two-bone IK + Kael FP-arms mounting), explicitly out of scope here.
+
 ## 23. Third Person View
 
 Reduced-fidelity chassis reusing the same base geometry at lower draw-call cost, per v1's real established pattern for remote-player held weapons ([../../gameplay/weapons.md](../../gameplay/weapons.md#weapon-geometry-overhaul-phase-9)) — this is not a separate model, it's the same chassis at reduced fidelity, exactly matching how v1 already solved this problem for its own weapons.

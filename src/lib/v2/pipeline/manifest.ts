@@ -86,7 +86,12 @@ export const ASSET_MANIFEST: Record<string, AssetManifestEntry> = {
     label: 'Vortex Rifle',
     requiredSockets: [],
     requiredClips: [],
-    plannedSockets: ['socket_muzzle', 'socket_ejection', 'socket_magazine'],
+    // socket_grip_hand/socket_grip_support added 2026-07-21 (Milestone 7,
+    // Phase F, Step 5) — the two hand-target sockets a future Blender
+    // v1.0 pass should author to replace vortexRuntimeAnchors.ts's
+    // gripHandLocal/gripSupportLocal, same promotion path as the other
+    // three entries here.
+    plannedSockets: ['socket_muzzle', 'socket_ejection', 'socket_magazine', 'socket_grip_hand', 'socket_grip_support'],
     plannedClips: ['idle', 'fire', 'reload', 'inspect'],
     audioEvents: ['fire', 'reload', 'empty'],
     // Default/LOD0 — showpiece tier, matches tools/inspect-glb.mjs --target showpiece.

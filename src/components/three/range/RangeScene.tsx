@@ -5,13 +5,15 @@ import { Canvas } from '@react-three/fiber';
 import { Physics } from '@react-three/rapier';
 import { PLAYER } from '@/lib/game/constants';
 import { STORM } from '@/lib/v2/tokens';
+import VortexGripAnchorDebug from '@/components/three/weapons/debug/VortexGripAnchorDebug';
+import VortexViewmodel from '@/components/three/weapons/VortexViewmodel';
+import { useGripDebugEnabled } from '@/lib/v2/weapons/useGripDebugEnabled';
 import type { RangeInputSnapshot } from '@/lib/v2/range/useRangeKeyboardInput';
 import RangeController from './RangeController';
 import RangeEffectsPools from './RangeEffectsPools';
 import RangeEnvironment from './RangeEnvironment';
 import RangeTargets from './RangeTargets';
 import VortexFireSystem from './VortexFireSystem';
-import VortexViewmodel from '@/components/three/weapons/VortexViewmodel';
 
 /**
  * Canvas contents for the V2 weapon range (`/v2/range`) — the playable
@@ -20,6 +22,7 @@ import VortexViewmodel from '@/components/three/weapons/VortexViewmodel';
  * imported by, or imports from, either.
  */
 export default function RangeScene({ inputRef }: { inputRef: React.MutableRefObject<RangeInputSnapshot> }) {
+  const gripDebugEnabled = useGripDebugEnabled();
   return (
     <Canvas shadows dpr={[1, 1.75]} camera={{ fov: PLAYER.FOV_BASE, near: 0.05, far: 200, position: [0, 3 + PLAYER.EYE_STAND, 10] }}>
       <color attach="background" args={[STORM.abyss]} />
@@ -37,6 +40,7 @@ export default function RangeScene({ inputRef }: { inputRef: React.MutableRefObj
       <VortexFireSystem inputRef={inputRef} />
       <Suspense fallback={null}>
         <VortexViewmodel />
+        {gripDebugEnabled && <VortexGripAnchorDebug />}
       </Suspense>
       <RangeEffectsPools />
     </Canvas>

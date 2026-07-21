@@ -9,6 +9,10 @@ import { ProceduralAeolus } from '@/components/three/storm/AeolusShowpiece';
 import { effectsBus, fireSignal, reloadSignal } from '@/lib/v2/range/effectsBus';
 import { rangeLocalPose } from '@/lib/v2/range/localPose';
 import { muzzleWorldPose } from '@/lib/v2/range/muzzleWorldPose';
+import { checkDynamicAnchorState, checkStaticAnchorLayout } from '@/lib/v2/weapons/gripAnchorRegressionChecks';
+import { useGripTunerStore } from '@/lib/v2/weapons/gripTunerStore';
+import { beginGripGeneration, invalidateGripWorldPose, publishGripWorldPose } from '@/lib/v2/weapons/gripWorldPose';
+import { resolveRuntimeAnchorWorldPose } from '@/lib/v2/weapons/runtimeAnchorMath';
 import { VORTEX_RUNTIME_ANCHORS } from '@/lib/v2/weapons/vortexRuntimeAnchors';
 import { VORTEX_VIEWMODEL_POSES } from '@/lib/v2/weapons/vortexViewmodelPose';
 import { useVortexWeaponStore } from '@/lib/v2/weapons/vortexWeaponStore';
@@ -73,6 +77,23 @@ export default function VortexViewmodel() {
     };
   }, []);
 
+  // Grip world-pose lifecycle — same reset-on-(un)mount reasoning as the
+  // muzzle effect above, but through gripWorldPose's generation-gated API
+  // rather than a raw `ready` flag, since two hands must never disagree on
+  // which mounted instance produced them (see gripWorldPose.ts's module
+  // doc for the full generation algorithm). The generation number is
+  // stored in `sim.current` (below), not a separate ref, so the per-frame
+  // publish call always has it without a second ref indirection.
+  useEffect(() => {
+    const generation = beginGripGeneration('vortex-rifle');
+    sim.current.gripGeneration = generation;
+    checkStaticAnchorLayout();
+    return () => {
+      invalidateGripWorldPose(generation);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const sim = useRef({
     bobPhase: 0,
     punch: 0,
@@ -89,6 +110,28 @@ export default function VortexViewmodel() {
     raycastPatchedChildCount: -1,
     scratchAnchor: new THREE.Vector3(),
     scratchQuat: new THREE.Quaternion(),
+    /** Set by the mount effect above (module-singleton generation counter — see gripWorldPose.ts); 0 is never a valid published generation, so 0 here safely means "not yet mounted." */
+    gripGeneration: 0,
+    groupWorldPos: new THREE.Vector3(),
+    rightGripPos: new THREE.Vector3(),
+    rightGripQuat: new THREE.Quaternion(),
+    leftGripPos: new THREE.Vector3(),
+    leftGripQuat: new THREE.Quaternion(),
+    gripScratchPos: new THREE.Vector3(),
+    gripScratchEuler: new THREE.Euler(),
+    gripScratchLocalQuat: new THREE.Quaternion(),
+  });
+  // Preallocated wrapper objects for resolveRuntimeAnchorWorldPose's
+  // output/scratch parameters — created ONCE outside useFrame (not as
+  // fresh object literals each frame) so the hot path allocates nothing
+  // beyond what the THREE.js Vector3/Quaternion fields inside them already
+  // own. Kept outside `sim.current` only because they reference `sim.current`'s
+  // own fields and must exist after it's constructed; still one stable
+  // object per viewmodel instance, never recreated per frame.
+  const gripOutputs = useRef({
+    right: { position: sim.current.rightGripPos, quaternion: sim.current.rightGripQuat },
+    left: { position: sim.current.leftGripPos, quaternion: sim.current.leftGripQuat },
+    scratch: { pos: sim.current.gripScratchPos, euler: sim.current.gripScratchEuler, localQuat: sim.current.gripScratchLocalQuat },
   });
 
   useFrame((_, delta) => {
@@ -180,14 +223,41 @@ export default function VortexViewmodel() {
 
     group.position.copy(camera.position);
     group.quaternion.copy(camera.quaternion);
-    // Position first, in un-rotated view space (camera-relative, intuitive to author) — see ViewmodelPose's doc comment.
-    group.translateX(pos.x + state.swayX + bobX);
-    group.translateY(pos.y + state.swayY + bobY + reloadY + inspectY + raiseY + state.punch * 0.06);
-    group.translateZ(pos.z + state.punch * 0.08);
-    // Then rotate the model in place around its now-fixed origin — base pose (incl. the +X→-Z forward correction) plus dynamic recoil/inspect on top.
-    group.rotateX(rot.x + state.punch * 0.06);
-    group.rotateY(rot.y);
-    group.rotateZ(rot.z + inspectTiltZ);
+    // Grip-tuner "freeze pose" (Step 7, dev-only calibration aid): reads
+    // imperatively via getState() (not a subscribed hook) so this never
+    // triggers a re-render and, in production, `frozen` is unconditionally
+    // false (the tuner panel that could ever set it true is gated behind
+    // useGripDebugEnabled() and never mounts) — zero behavior change
+    // outside an active `?grips=1` dev session, PROVEN not assumed: the
+    // `false` branch below reproduces the pre-existing unconditional
+    // translate/rotate calls verbatim, just minus the dynamic terms, so
+    // `frozen === false` takes the exact same code path this block always
+    // took. Camera-follow above still runs every frame either way, so the
+    // weapon keeps tracking the player's view; only the sway/bob/recoil/
+    // reload/inspect DYNAMICS below are held still, which is what "freeze"
+    // is actually for (a steady pose to read exact marker numbers off of).
+    // NOTE: this also freezes the muzzle tracer/flash origin published
+    // below while active, since that reads the same group transform —
+    // correct and intended for a dev calibration session (nothing fires
+    // while tuning grips), never a concern in production since `frozen`
+    // can't be true there.
+    if (!useGripTunerStore.getState().frozen) {
+      // Position first, in un-rotated view space (camera-relative, intuitive to author) — see ViewmodelPose's doc comment.
+      group.translateX(pos.x + state.swayX + bobX);
+      group.translateY(pos.y + state.swayY + bobY + reloadY + inspectY + raiseY + state.punch * 0.06);
+      group.translateZ(pos.z + state.punch * 0.08);
+      // Then rotate the model in place around its now-fixed origin — base pose (incl. the +X→-Z forward correction) plus dynamic recoil/inspect on top.
+      group.rotateX(rot.x + state.punch * 0.06);
+      group.rotateY(rot.y);
+      group.rotateZ(rot.z + inspectTiltZ);
+    } else {
+      group.translateX(pos.x);
+      group.translateY(pos.y);
+      group.translateZ(pos.z);
+      group.rotateX(rot.x);
+      group.rotateY(rot.y);
+      group.rotateZ(rot.z);
+    }
 
     // --- Publish the runtime muzzle anchor to world space -----------------
     // Force the world matrix current THIS frame (it's otherwise only
@@ -208,6 +278,47 @@ export default function VortexViewmodel() {
     group.getWorldQuaternion(state.scratchQuat);
     muzzleWorldPose.direction.set(1, 0, 0).applyQuaternion(state.scratchQuat).normalize();
     muzzleWorldPose.ready = true;
+
+    // --- Publish the runtime grip anchors to world space ------------------
+    // Reuses this same frame's already-current world matrix (updated above
+    // for the muzzle) and `state.scratchQuat` (already holds the group's
+    // world quaternion from the `getWorldQuaternion` call above — same
+    // value, no need to recompute). Right and left are resolved into their
+    // own preallocated scratch and published together in ONE call so a
+    // consumer can never observe one hand from this frame and the other
+    // stale (see gripWorldPose.ts's "atomic publication" doc).
+    group.getWorldPosition(state.groupWorldPos);
+    const outputs = gripOutputs.current;
+    const rightOk = resolveRuntimeAnchorWorldPose(
+      VORTEX_RUNTIME_ANCHORS.gripHandLocal,
+      poseScale,
+      state.groupWorldPos,
+      state.scratchQuat,
+      outputs.right,
+      outputs.scratch,
+    );
+    const leftOk = resolveRuntimeAnchorWorldPose(
+      VORTEX_RUNTIME_ANCHORS.gripSupportLocal,
+      poseScale,
+      state.groupWorldPos,
+      state.scratchQuat,
+      outputs.left,
+      outputs.scratch,
+    );
+    if (rightOk && leftOk && state.gripGeneration !== 0) {
+      publishGripWorldPose(
+        state.gripGeneration,
+        state.rightGripPos,
+        state.rightGripQuat,
+        state.leftGripPos,
+        state.leftGripQuat,
+        state.groupWorldPos,
+        state.scratchQuat,
+      );
+    } else if (state.gripGeneration !== 0) {
+      invalidateGripWorldPose(state.gripGeneration);
+    }
+    checkDynamicAnchorState(poseScale, state.rightGripPos, state.leftGripPos, camera.position);
   });
 
   return (

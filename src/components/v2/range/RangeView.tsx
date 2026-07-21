@@ -3,9 +3,11 @@
 import dynamic from 'next/dynamic';
 import { useEffect, useRef } from 'react';
 import { usePointerLock } from '@/hooks/usePointerLock';
+import { useGripDebugEnabled } from '@/lib/v2/weapons/useGripDebugEnabled';
 import { useRangeKeyboardInput } from '@/lib/v2/range/useRangeKeyboardInput';
 import { unlockVortexAudio } from '@/lib/v2/range/vortexAudio';
 import RangeHud from './RangeHud';
+import VortexGripTunerPanel from './VortexGripTunerPanel';
 
 const RangeScene = dynamic(() => import('@/components/three/range/RangeScene'), { ssr: false });
 
@@ -19,6 +21,7 @@ export default function RangeView() {
   const { locked, request, setTarget } = usePointerLock();
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRangeKeyboardInput();
+  const gripDebugEnabled = useGripDebugEnabled();
 
   useEffect(() => {
     setTarget(containerRef.current);
@@ -33,6 +36,7 @@ export default function RangeView() {
     <div ref={containerRef} className="relative h-[100dvh] w-full overflow-hidden bg-storm-abyss">
       <RangeScene inputRef={inputRef} />
       {locked && <RangeHud />}
+      {gripDebugEnabled && <VortexGripTunerPanel />}
       {!locked && (
         <button
           type="button"
