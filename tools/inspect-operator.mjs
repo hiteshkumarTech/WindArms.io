@@ -7,6 +7,7 @@
  * budgets.
  *
  *   node tools/inspect-operator.mjs <file.glb> [--lod 0|1|2]
+ *   node tools/inspect-operator.mjs <file.glb> --mode arms
  *
  * Run on every operator model (and every LOD export) before it enters
  * public/v2-art/. Exits non-zero on budget/rigging ERRORS so it can gate CI.
@@ -14,6 +15,16 @@
  * Budgets: LOD0 mirrors src/lib/v2/pipeline/manifest.ts's OPERATOR_BUDGET
  * (45k tris / 10 materials / 2048px) — keep the two in sync by hand, this
  * file stays dependency-free and cannot import TypeScript.
+ *
+ * --mode arms is a SEPARATE validation path (Milestone 7, Phase F, Step 4)
+ * for first-person arms derivatives (operator-kael-arms.glb and future
+ * equivalents) — a partial-body mesh that is CORRECTLY missing legs, head,
+ * and torso by design. Running the normal full-body path against one would
+ * either false-fail (REQUIRED_SOCKETS expects pelvis/spine coverage a
+ * deliberately-partial mesh has no reason to carry) or false-pass (LOD
+ * budgets sized for a full body are meaningless for an arms-only mesh).
+ * This mode does not alter or weaken the default full-body path at all —
+ * it's an early, fully separate branch.
  */
 
 import { readFileSync } from 'node:fs';
@@ -22,6 +33,27 @@ const LOD_BUDGETS = {
   0: { tris: 45_000, materials: 10, texPx: 2048, fileMB: 6, textureMB: 8 },
   1: { tris: 20_000, materials: 8, texPx: 1024, fileMB: 3, textureMB: 4 },
   2: { tris: 8_000, materials: 4, texPx: 512, fileMB: 1.5, textureMB: 2 },
+};
+
+/** operator-kael-arms.glb budget (Step 4) — materially below LOD0's 45k;
+ * see tools/blender/make-kael-fp-arms.py's ARMS_BUDGET_TRIS comment for
+ * the full reasoning (measured pre-decimation size, hand/finger protection
+ * floor). Keep in sync by hand if that script's budget ever changes. */
+const ARMS_BUDGET = { tris: 21_000, materials: 4, fileMB: 3, textureMB: 1 };
+
+/** Required bone-name fragments (case-insensitive substring match against
+ * node names) for an FP-arms derivative — both arm chains, both hands, all
+ * 5 finger chains per side. Deliberately does NOT include any leg/hip/head
+ * chain — missing those is correct for this asset, not a failure. */
+const ARMS_REQUIRED_BONE_FRAGMENTS = {
+  upper_arm_left: ['leftarm'], upper_arm_right: ['rightarm'],
+  lower_arm_left: ['leftforearm'], lower_arm_right: ['rightforearm'],
+  hand_left: ['lefthand'], hand_right: ['righthand'],
+  thumb_left: ['lefthandthumb'], thumb_right: ['righthandthumb'],
+  index_left: ['lefthandindex'], index_right: ['righthandindex'],
+  middle_left: ['lefthandmiddle'], middle_right: ['righthandmiddle'],
+  ring_left: ['lefthandring'], ring_right: ['righthandring'],
+  pinky_left: ['lefthandpinky'], pinky_right: ['righthandpinky'],
 };
 
 /** Mirrors src/lib/v2/operators/types.ts OperatorSocketId (16) — socket empties are named socket_<id>. */
@@ -55,10 +87,12 @@ const EXPECTED_CLIPS = [
 // ── CLI ───────────────────────────────────────────────────────────────
 const args = process.argv.slice(2);
 const file = args.find((a) => !a.startsWith('--'));
+const mode = args.includes('--mode') ? args[args.indexOf('--mode') + 1] : 'body';
 const lod = args.includes('--lod') ? Number(args[args.indexOf('--lod') + 1] ?? 0) : 0;
 
-if (!file || !(lod in LOD_BUDGETS)) {
+if (!file || (mode === 'body' && !(lod in LOD_BUDGETS)) || (mode !== 'body' && mode !== 'arms')) {
   console.error('usage: node tools/inspect-operator.mjs <file.glb> [--lod 0|1|2]');
+  console.error('       node tools/inspect-operator.mjs <file.glb> --mode arms');
   process.exit(1);
 }
 
@@ -75,6 +109,84 @@ const mb = (bytes) => (bytes / 1024 / 1024).toFixed(2);
 const num = (n) => n.toLocaleString('en-US');
 const errors = [];
 const warnings = [];
+
+// ── Arms mode — separate, self-contained validation path ───────────────
+if (mode === 'arms') {
+  console.log(`\n═ Operator FP-Arms GLB Inspection: ${file}`);
+  console.log(`  container glTF v${buffer.readUInt32LE(4)} · file ${mb(buffer.length)} MB`);
+  console.log(`  generator: ${json.asset?.generator ?? 'unknown'}`);
+
+  const skins = json.skins ?? [];
+  console.log('\n─ Skeleton');
+  if (skins.length !== 1) {
+    errors.push(`expected exactly 1 skin, found ${skins.length}.`);
+  }
+  const jointCount = skins[0]?.joints?.length ?? 0;
+  console.log(`  skins: ${skins.length} · joints: ${jointCount}`);
+  if (jointCount === 0) errors.push('0 joints — not a rigged mesh.');
+
+  const nodeNamesLower = new Set((json.nodes ?? []).map((n) => (n.name ?? '').toLowerCase()).filter(Boolean));
+  console.log('\n─ Required arm/hand/finger bones (legs/head/torso intentionally absent — not checked)');
+  const missingBoneChains = [];
+  for (const [chain, fragments] of Object.entries(ARMS_REQUIRED_BONE_FRAGMENTS)) {
+    const found = [...nodeNamesLower].some((n) => fragments.some((f) => n.includes(f)));
+    if (!found) missingBoneChains.push(chain);
+  }
+  if (missingBoneChains.length > 0) {
+    errors.push(`missing required arm/hand/finger bone chain(s): ${missingBoneChains.join(', ')}.`);
+    console.log(`  MISSING: ${missingBoneChains.join(', ')}`);
+  } else {
+    console.log(`  all ${Object.keys(ARMS_REQUIRED_BONE_FRAGMENTS).length} required chains present.`);
+  }
+
+  console.log('\n─ Geometry');
+  let totalTris = 0;
+  let totalVerts = 0;
+  let unskinnedPrims = 0;
+  let boundsFinite = true;
+  for (const mesh of json.meshes ?? []) {
+    for (const prim of mesh.primitives) {
+      const position = json.accessors[prim.attributes.POSITION];
+      const indices = prim.indices !== undefined ? json.accessors[prim.indices] : null;
+      const tris = Math.round(indices ? indices.count / 3 : position.count / 3);
+      totalTris += tris;
+      totalVerts += position.count;
+      if (!(prim.attributes.JOINTS_0 !== undefined && prim.attributes.WEIGHTS_0 !== undefined)) unskinnedPrims += 1;
+      const allCoords = [...(position.min ?? []), ...(position.max ?? [])];
+      if (allCoords.length === 0 || allCoords.some((v) => !Number.isFinite(v))) boundsFinite = false;
+    }
+  }
+  console.log(`  verts: ${num(totalVerts)} · tris: ${num(totalTris)}`);
+  if (totalVerts === 0 || totalTris === 0) errors.push('zero vertices/triangles.');
+  if (unskinnedPrims > 0) errors.push(`${unskinnedPrims} primitive(s) missing JOINTS_0/WEIGHTS_0 — arms mesh must be fully skinned.`);
+  if (!boundsFinite) errors.push('POSITION accessor bounds are missing or non-finite.');
+
+  console.log('\n─ Materials');
+  const materials = json.materials ?? [];
+  console.log(`  materials: ${materials.length}${materials.length ? ` (${materials.map((m) => m.name ?? 'unnamed').join(', ')})` : ''}`);
+  const hasTexture = (json.images ?? []).length > 0;
+  console.log(`  embedded textures: ${(json.images ?? []).length}${hasTexture ? '' : ' (none — expected: temporary neutral dev material only)'}`);
+
+  const animations = json.animations ?? [];
+  console.log(`\n─ Animation clips: ${animations.length} (none expected for this derivative yet)`);
+
+  console.log('\n─ Budget');
+  const gateArms = (ok, label, message) => {
+    console.log(`  ${label}  ${ok ? 'PASS' : 'FAIL'}`);
+    if (!ok) errors.push(message);
+  };
+  gateArms(totalTris <= ARMS_BUDGET.tris, `triangles: ${num(totalTris)} / ${num(ARMS_BUDGET.tris)}`, `${num(totalTris)} triangles exceeds the arms budget of ${num(ARMS_BUDGET.tris)}.`);
+  gateArms(materials.length <= ARMS_BUDGET.materials, `materials: ${materials.length} / ${ARMS_BUDGET.materials}`, `${materials.length} materials exceeds the arms budget of ${ARMS_BUDGET.materials}.`);
+  gateArms(buffer.length <= ARMS_BUDGET.fileMB * 1024 * 1024, `file size: ${mb(buffer.length)} / ${ARMS_BUDGET.fileMB} MB`, `file ${mb(buffer.length)} MB exceeds the arms budget of ${ARMS_BUDGET.fileMB} MB.`);
+
+  console.log('\n─ Verdict');
+  for (const message of errors) console.log(`  ✖ ERROR   ${message}`);
+  for (const message of warnings) console.log(`  ▲ warning ${message}`);
+  if (errors.length === 0 && warnings.length === 0) console.log('  clean — ship it.');
+  console.log(`  ${errors.length} error(s), ${warnings.length} warning(s)\n`);
+  process.exitCode = errors.length > 0 ? 1 : 0;
+  process.exit(process.exitCode);
+}
 
 console.log(`\n═ Operator GLB Inspection: ${file} (target LOD${lod})`);
 console.log(`  container glTF v${buffer.readUInt32LE(4)} · file ${mb(buffer.length)} MB`);

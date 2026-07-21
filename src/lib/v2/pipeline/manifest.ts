@@ -9,6 +9,20 @@ import type { AssetBudget, AssetManifestEntry } from './types';
 const OPERATOR_BUDGET: AssetBudget = { maxTriangles: 45000, maxMaterials: 10, maxTextureSize: 2048 };
 
 /**
+ * operator-kael-arms budget (Milestone 7, Phase F, Step 4) — measured, not
+ * invented first: the extracted-and-cleaned pre-decimation candidate was
+ * ~95,700 tris, and hand/finger region-protected Collapse has a natural
+ * floor of ~19,852 tris on this specific mesh (roughly 39% of the arm
+ * selection's vertices are hand/finger geometry). 21,000/20,000 (budget/
+ * target) sits just above that floor with a real margin, materially below
+ * OPERATOR_BUDGET's 45,000 (53% below), and equal to the body's own LOD1
+ * budget — but here nearly the whole allowance goes to two hands instead
+ * of a full body. tools/inspect-operator.mjs --mode arms mirrors this
+ * number as its own gate; keep the two in sync by hand.
+ */
+const OPERATOR_ARMS_BUDGET: AssetBudget = { maxTriangles: 21_000, maxMaterials: 4, maxTextureSize: 2048 };
+
+/**
  * The asset registry — one entry per slot. This is the single source of
  * truth `validation.ts` and `useAssetPipeline.ts` both read from: add an
  * entry here *before* dropping a GLB in, not after.
@@ -149,6 +163,40 @@ export const ASSET_MANIFEST: Record<string, AssetManifestEntry> = {
     ],
     audioEvents: ['footstep', 'jump', 'land', 'death'],
     budget: OPERATOR_BUDGET,
+  },
+  /**
+   * First-person arms derivative (Milestone 7, Phase F, Step 4, 2026-07-21)
+   * — extracted via vertex-selection-by-bone-influence from the accepted
+   * source (kael_v0.1_source.glb, NOT from operator-kael's body LOD1) using
+   * a threshold chosen from the measured arm-fraction weight distribution
+   * (0.50 — "balanced": full shoulder-pauldron coverage in render, zero
+   * leg/hip contamination, every connected component dominant-bone-
+   * classified as legitimate arm/hand/shoulder geometry). See
+   * tools/blender/make-kael-fp-arms.py for the full extraction/decimation/
+   * validation pipeline and docs/forge/ for the written report.
+   *
+   * requiredSockets/requiredClips are empty — true today, not aspirational,
+   * same rule as operator-kael's identical entry above: no current
+   * consumer reads a socket or clip on this asset (it is not mounted in
+   * gameplay yet — grip anchors and IK are explicitly future work).
+   * plannedSockets lists the subset relevant to that future grip/IK pass;
+   * plannedClips is genuinely empty — this derivative is driven by IK
+   * toward the weapon's grip pose, not by its own baked animation clips,
+   * so there is nothing honest to plan there yet.
+   *
+   * Known limitation: same as operator-kael — no texture data exists yet,
+   * ships with the temporary Kael_Dev_Neutral material only.
+   */
+  'operator-kael-arms': {
+    slot: 'operator-kael-arms',
+    category: 'operator',
+    label: 'Operator 01 — Kael Aurin (FP Arms)',
+    requiredSockets: [],
+    requiredClips: [],
+    plannedSockets: ['socket_right_hand', 'socket_left_hand', 'socket_weapon_primary'],
+    plannedClips: [],
+    audioEvents: [],
+    budget: OPERATOR_ARMS_BUDGET,
   },
   'operator-veyra': {
     slot: 'operator-veyra',
