@@ -105,7 +105,22 @@ export const ASSET_MANIFEST: Record<string, AssetManifestEntry> = {
     slot: 'operator-kael',
     category: 'operator',
     label: 'Operator 01 — Kael Aurin',
-    requiredSockets: [
+    // Corrected 2026-07-21 (Phase F, gate-finalization follow-up): the
+    // accepted source (docs/forge/kael-v0.1-inspection.md) has zero
+    // authored socket_* empties and zero approved animation clips — a
+    // Mixamo autorig with valid humanoid bones, nothing more. Listing all
+    // 7/16 as `required` was false ("expected to expose RIGHT NOW" per
+    // this field's own doc comment) and just noise on every load. Bone-
+    // fallback resolution (DEFAULT_BONE_FALLBACKS) is a real runtime
+    // capability that keeps sockets working today WITHOUT authored empties
+    // — it is not proof the empties exist, and required arm/hand bone
+    // chains are validated separately by the Blender rig gate
+    // (tools/blender/inspect-kael-rig.py) and tools/inspect-operator.mjs's
+    // own bone-fallback checks, not by this list. Same treatment
+    // `vortex-rifle`'s entry above already uses for the identical situation.
+    requiredSockets: [],
+    requiredClips: [],
+    plannedSockets: [
       'socket_head',
       'socket_spine',
       'socket_pelvis',
@@ -114,7 +129,7 @@ export const ASSET_MANIFEST: Record<string, AssetManifestEntry> = {
       'socket_weapon_primary',
       'socket_camera_fp',
     ],
-    requiredClips: [
+    plannedClips: [
       'idle',
       'walk',
       'sprint',
