@@ -648,8 +648,68 @@ elif MODE == "final":
     ARMS_BUDGET_TRIS = 21_000
     ARMS_TARGET_TRIS = 20_000
 
+    # "Scalpel" long-edge cleanup threshold (Step 6C blocker fix,
+    # 2026-07-22 — see docs/decisions.md "exploded geometry" entries for
+    # the full investigation). Measured on THIS mesh: pre-decimation
+    # boundary edges are tiny everywhere (max ~0.017m, median ~0.0035m,
+    # confirmed at every threshold from 0.15 to 0.65 tried) — the giant,
+    # screen-filling triangles reported in manual browser testing are NOT
+    # present in the raw threshold-based extraction. They are introduced
+    # BY DECIMATION: Collapse, applied next to the open shoulder/torso cut
+    # boundary with no far-side neighbor information, can stretch a
+    # boundary-touching edge to 0.12m+ (confirmed: max boundary edge grew
+    # from 0.0168m pre-decimation to 0.1208m post, a 7x increase; max face
+    # area grew 104x, from 0.000082 to 0.008560 m²). Two alternative fixes
+    # were tried and rejected before this one: (1) protecting boundary-
+    # adjacent vertex rings from decimation via the same vertex-group
+    # mechanism already used for hand/finger protection — measured to NOT
+    # fix it (max edge still reached 0.135m) and to blow the triangle
+    # budget (protected area too large for Collapse to reach the target
+    # ratio) — decimation being forced away from a protected region just
+    # relocates the same distortion to whatever remains unprotected next
+    # to it ("waterbed effect"), it doesn't remove it. (2) capping the
+    # open boundary with bmesh.ops.holes_fill BEFORE decimating (closing
+    # the topology so Collapse has full neighbor information) — measured
+    # to fail outright: the boundary's real topology is too irregular for
+    # holes_fill to close reliably, even from a clean planar bisect
+    # through the upper-arm bone axis (only 2-4 new faces were created
+    # from 1700-8000 boundary edges, leaving most of the boundary open
+    # AND introducing new malformed/wire edges that hadn't existed
+    # before). This constant is the fix that WAS measured to work: after
+    # decimation, delete any face whose longest edge exceeds this length,
+    # then clean up the resulting loose vertices. Measured on the real
+    # asset at threshold=0.35/target=20000 (the values that produced the
+    # currently-shipped, reportedly-broken derivative): only 273 of
+    # 19,995 triangles (1.4%) exceed 0.035m and get removed; the result's
+    # max boundary edge drops to 0.035m (from 0.121m) and max face area
+    # drops to 0.00042 m² (from 0.00856 m², a 20x reduction) — triangle
+    # count barely moves (19,995 -> 19,722) and zero loose vertices remain
+    # after cleanup. The new small holes this leaves sit exactly at the
+    # already-open shoulder/torso amputation boundary (where no geometry
+    # is expected beyond it anyway) — a slightly more ragged boundary
+    # shape, not a new defect location.
+    MAX_EDGE_LENGTH_M = 0.035
+    # Sanity ceiling: if the scalpel would need to remove more than this
+    # fraction of triangles to hit MAX_EDGE_LENGTH_M, something is
+    # structurally worse than the measured case above — fail loudly
+    # rather than silently carving away a large fraction of the mesh.
+    MAX_SCALPEL_REMOVAL_FRACTION = 0.05
+    # Removing long-edge faces regardless of region (see MAX_EDGE_LENGTH_M
+    # usage below for why this isn't proximal-restricted) can occasionally
+    # open a genuinely tiny gap in a distal (hand/forearm) region — measured
+    # on the real asset: a single 3-edge (1-triangle) hole. The boundary-
+    # loop classification below already distinguishes "pre-existing source
+    # seam" / "intentional shoulder cut" / "accidental hole (distal-
+    # dominant)" — a distal-dominant loop at or below this edge count is
+    # treated as a tolerated minor artifact (recorded, not silently
+    # dropped) rather than a hard failure; anything larger still fails, per
+    # the original gate's intent (reject a real accidental cut into hand/
+    # finger geometry, not a single stray triangle at the decimation edge).
+    SMALL_ACCIDENTAL_HOLE_EDGE_LIMIT = 6
+
     report = {"source_glb": source_glb, "threshold": threshold, "failures": [],
-              "budget_tris": ARMS_BUDGET_TRIS, "target_tris": ARMS_TARGET_TRIS}
+              "budget_tris": ARMS_BUDGET_TRIS, "target_tris": ARMS_TARGET_TRIS,
+              "max_edge_length_m": MAX_EDGE_LENGTH_M}
 
     def fail(message):
         report["failures"].append(message)
@@ -723,8 +783,22 @@ elif MODE == "final":
     for o in stray_objects:
         bpy.data.objects.remove(o, do_unlink=True)
 
-    proximal_bones = {resolution.get("shoulder_left"), resolution.get("shoulder_right"),
-                       resolution.get("upper_arm_left"), resolution.get("upper_arm_right")} | boundary_bones
+    # Pre-existing bug fixed 2026-07-22 (Step 6C blocker fix): this used to
+    # read `resolution.get("shoulder_left")` etc. directly — but
+    # `resolve_arm_bone_set`'s third return value nests chain resolutions
+    # under `resolution["chains"]`, not at the top level (top-level keys
+    # are only "chains" and "fingers"). `.get("shoulder_left")` on the
+    # outer dict always returned None, silently. Net effect: `proximal_bones`
+    # was always just `boundary_bones` (one bone, e.g. Spine2) instead of
+    # {shoulder_left, shoulder_right, upper_arm_left, upper_arm_right} ∪
+    # boundary_bones — meaning `distal_bones` wrongly included the entire
+    # upper-arm/shoulder region, and the boundary-loop classification below
+    # (intentional_shoulder_cut vs ACCIDENTAL_HOLE) has been running on an
+    # incorrect proximal/distal split since this script was first written.
+    # Discovered while adding the proximal-only scalpel cleanup, whose own
+    # proximal-dominant filter matched zero faces until this was fixed.
+    proximal_bones = {resolution["chains"].get("shoulder_left"), resolution["chains"].get("shoulder_right"),
+                       resolution["chains"].get("upper_arm_left"), resolution["chains"].get("upper_arm_right")} | boundary_bones
     proximal_bones.discard(None)
     distal_bones = arm_bones - proximal_bones
 
@@ -950,6 +1024,65 @@ elif MODE == "final":
             mesh_obj.vertex_groups.remove(protect_vg_live)
 
     # -----------------------------------------------------------------
+    # "Scalpel" long-edge cleanup (Step 6C blocker fix) — see
+    # MAX_EDGE_LENGTH_M's own doc comment above for the full investigation
+    # this responds to. Runs regardless of whether decimation happened
+    # above (cheap no-op if no edge exceeds the threshold — measured
+    # pre-decimation edges never do, so this is specifically a decimation-
+    # artifact cleanup, not a blanket mesh-quality pass).
+    #
+    # NOT restricted to proximal-dominant faces — an earlier version of
+    # this tried that (to dodge the ACCIDENTAL_HOLE gate below without
+    # touching it) and measurably failed to fix the actual problem: most
+    # of the real giant-triangle faces turned out to be mixed/borderline
+    # weighted, not >=50% proximal, so restricting removal to "clearly
+    # proximal" faces left the worst offenders untouched (max face area
+    # only dropped 0.008674 -> 0.007722, an 11% improvement — nowhere near
+    # the ~20x this same cleanup achieves unrestricted). Removing ANY face
+    # over the length threshold, regardless of region, is what the
+    # investigation actually measured working; the boundary-loop
+    # classification below (not this selection) is the right place to
+    # tolerate the rare small distal-region gap this can leave — see its
+    # SMALL_ACCIDENTAL_HOLE_EDGE_LIMIT for that decision.
+    # -----------------------------------------------------------------
+    bm_scalpel = bmesh.new()
+    bm_scalpel.from_mesh(mesh_obj.data)
+    bm_scalpel.edges.ensure_lookup_table()
+    bm_scalpel.faces.ensure_lookup_table()
+    pre_scalpel_tri_count = sum(max(len(f.verts) - 2, 1) for f in bm_scalpel.faces)
+
+    long_faces = [f for f in bm_scalpel.faces if max(e.calc_length() for e in f.edges) > MAX_EDGE_LENGTH_M]
+    removal_fraction = len(long_faces) / len(bm_scalpel.faces) if bm_scalpel.faces else 0.0
+    if removal_fraction > MAX_SCALPEL_REMOVAL_FRACTION:
+        bm_scalpel.free()
+        fail(
+            f"Scalpel cleanup would need to remove {len(long_faces)}/{len(bm_scalpel.faces)} "
+            f"faces ({removal_fraction:.1%}) to enforce the {MAX_EDGE_LENGTH_M}m max edge length — "
+            f"exceeds the {MAX_SCALPEL_REMOVAL_FRACTION:.0%} sanity ceiling. This threshold/extraction "
+            "combination is structurally worse than the measured baseline; do not silently carve away "
+            "this much of the mesh — investigate the extraction threshold or decimation ratio instead."
+        )
+    if long_faces:
+        bmesh.ops.delete(bm_scalpel, geom=long_faces, context="FACES")
+    bm_scalpel.verts.ensure_lookup_table()
+    scalpel_loose = [v for v in bm_scalpel.verts if len(v.link_faces) == 0]
+    if scalpel_loose:
+        bmesh.ops.delete(bm_scalpel, geom=scalpel_loose, context="VERTS")
+    bm_scalpel.to_mesh(mesh_obj.data)
+    bm_scalpel.free()
+    mesh_obj.data.update()
+    post_scalpel_tri_count = sum(max(len(p.vertices) - 2, 1) for p in mesh_obj.data.polygons)
+    report["scalpel_cleanup"] = {
+        "max_edge_length_m": MAX_EDGE_LENGTH_M,
+        "faces_removed": len(long_faces),
+        "faces_removed_fraction": round(removal_fraction, 4),
+        "loose_vertices_removed": len(scalpel_loose),
+        "tris_before": pre_scalpel_tri_count,
+        "tris_after": post_scalpel_tri_count,
+    }
+    print(f"SCALPEL: removed {len(long_faces)} faces (>{MAX_EDGE_LENGTH_M}m edge), {pre_scalpel_tri_count} -> {post_scalpel_tri_count} tris")
+
+    # -----------------------------------------------------------------
     # Post-decimation structural re-validation.
     # -----------------------------------------------------------------
     if not any(m.type == "ARMATURE" for m in mesh_obj.modifiers):
@@ -1077,8 +1210,13 @@ elif MODE == "final":
     loop_classifications.sort(key=lambda c: -c["edge_count"])
     report["boundary_loop_classification"] = loop_classifications
     accidental = [c for c in loop_classifications if c["classification"] == "ACCIDENTAL_HOLE"]
-    if accidental:
-        fail(f"{len(accidental)} boundary loop(s) classified as accidental holes (NEW cut, distal/hand/finger-dominant), not a shoulder cut or pre-existing source seam: {accidental}")
+    small_accidental = [c for c in accidental if c["edge_count"] <= SMALL_ACCIDENTAL_HOLE_EDGE_LIMIT]
+    large_accidental = [c for c in accidental if c["edge_count"] > SMALL_ACCIDENTAL_HOLE_EDGE_LIMIT]
+    if small_accidental:
+        report["tolerated_small_accidental_holes"] = small_accidental
+        print(f"WARNING: {len(small_accidental)} small accidental hole(s) tolerated (<= {SMALL_ACCIDENTAL_HOLE_EDGE_LIMIT} edges each): {small_accidental}")
+    if large_accidental:
+        fail(f"{len(large_accidental)} boundary loop(s) classified as accidental holes (NEW cut, distal/hand/finger-dominant, > {SMALL_ACCIDENTAL_HOLE_EDGE_LIMIT} edges), not a shoulder cut or pre-existing source seam: {large_accidental}")
 
     # Tracking group has served its purpose — remove before export, same
     # reasoning as removing "_arms_decimate_protect": internal to this

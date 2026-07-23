@@ -161,6 +161,87 @@ if (mode === 'arms') {
   if (unskinnedPrims > 0) errors.push(`${unskinnedPrims} primitive(s) missing JOINTS_0/WEIGHTS_0 — arms mesh must be fully skinned.`);
   if (!boundsFinite) errors.push('POSITION accessor bounds are missing or non-finite.');
 
+  // Extreme edge-length check (Milestone 7, Phase F, Step 6C, 2026-07-22) —
+  // catches exactly the defect class that shipped invisibly for one full
+  // pass: a Decimate modifier applied next to this mesh's open shoulder/
+  // torso cut boundary (no protection there — only hand/finger regions are
+  // decimation-protected) can stretch individual triangles to ~0.12-0.16m
+  // edges even though the pre-decimation source mesh never exceeds ~0.02m
+  // anywhere (measured on the real asset — see docs/decisions.md's
+  // "exploded geometry" entries). At a 75° first-person FOV and the small
+  // (<1m) distances this rig renders at, a single such triangle can fill a
+  // large fraction of the screen — "clean topology, budget-compliant tri
+  // count" is not sufficient on its own to guarantee this doesn't happen;
+  // this reads the RAW GLB buffer directly (no rendering, no bmesh) so it
+  // catches the defect at import-gate time, before a human ever needs a
+  // browser to notice it.
+  const CHUNK0_START = 20 + jsonLength;
+  const chunk0Length = buffer.readUInt32LE(CHUNK0_START);
+  const binChunkStart = CHUNK0_START + 8; // skip this chunk's own 8-byte length+type header
+  const COMPONENT_BYTES = { 5120: 1, 5121: 1, 5122: 2, 5123: 2, 5125: 4, 5126: 4 };
+  const TYPE_COMPONENTS = { SCALAR: 1, VEC2: 2, VEC3: 3, VEC4: 4 };
+  function readAccessor(accessorIndex) {
+    const accessor = json.accessors[accessorIndex];
+    const bufferView = json.bufferViews[accessor.bufferView];
+    if (bufferView.buffer !== 0 || (json.buffers?.[0]?.uri !== undefined)) return null; // external/non-embedded buffer, skip (not this pipeline's convention)
+    const compBytes = COMPONENT_BYTES[accessor.componentType];
+    const numComponents = TYPE_COMPONENTS[accessor.type];
+    if (!compBytes || !numComponents) return null;
+    const stride = bufferView.byteStride ?? compBytes * numComponents;
+    const base = binChunkStart + (bufferView.byteOffset ?? 0) + (accessor.byteOffset ?? 0);
+    const out = new Array(accessor.count);
+    for (let i = 0; i < accessor.count; i++) {
+      const recordOffset = base + i * stride;
+      const values = new Array(numComponents);
+      for (let c = 0; c < numComponents; c++) {
+        const byteOffset = recordOffset + c * compBytes;
+        values[c] = accessor.componentType === 5126 ? buffer.readFloatLE(byteOffset)
+          : accessor.componentType === 5123 ? buffer.readUInt16LE(byteOffset)
+          : accessor.componentType === 5125 ? buffer.readUInt32LE(byteOffset)
+          : accessor.componentType === 5121 ? buffer.readUInt8(byteOffset)
+          : null;
+      }
+      out[i] = values;
+    }
+    return out;
+  }
+  const MAX_EDGE_LENGTH_M = 0.06; // generous margin above the 0.035m this pipeline's own scalpel cleanup targets — flags anything materially worse, not every last millimeter
+  let maxEdgeFound = 0;
+  let maxEdgeCheckSkipped = false;
+  try {
+    for (const mesh of json.meshes ?? []) {
+      for (const prim of mesh.primitives) {
+        const positions = readAccessor(prim.attributes.POSITION);
+        const indices = prim.indices !== undefined ? readAccessor(prim.indices) : null;
+        if (!positions) {
+          maxEdgeCheckSkipped = true;
+          continue;
+        }
+        const triIndices = indices ? indices.map((v) => v[0]) : positions.map((_, i) => i);
+        for (let t = 0; t + 2 < triIndices.length; t += 3) {
+          const [ax, ay, az] = positions[triIndices[t]];
+          const [bx, by, bz] = positions[triIndices[t + 1]];
+          const [cx, cy, cz] = positions[triIndices[t + 2]];
+          const d1 = Math.hypot(ax - bx, ay - by, az - bz);
+          const d2 = Math.hypot(bx - cx, by - cy, bz - cz);
+          const d3 = Math.hypot(cx - ax, cy - ay, cz - az);
+          const m = Math.max(d1, d2, d3);
+          if (m > maxEdgeFound) maxEdgeFound = m;
+        }
+      }
+    }
+  } catch {
+    maxEdgeCheckSkipped = true;
+  }
+  if (maxEdgeCheckSkipped) {
+    warnings.push('extreme-edge-length check skipped (unsupported buffer/accessor layout — e.g. Draco/external buffer) — verify manually if this asset renders unexpectedly large geometry.');
+  } else {
+    console.log(`  max triangle edge length: ${maxEdgeFound.toFixed(4)}m (budget ${MAX_EDGE_LENGTH_M}m)`);
+    if (maxEdgeFound > MAX_EDGE_LENGTH_M) {
+      errors.push(`max triangle edge length ${maxEdgeFound.toFixed(4)}m exceeds ${MAX_EDGE_LENGTH_M}m — likely a decimation artifact at an open mesh boundary (see docs/decisions.md "exploded geometry"); re-run the arms builder's scalpel cleanup or raise MAX_EDGE_LENGTH_M there.`);
+    }
+  }
+
   console.log('\n─ Materials');
   const materials = json.materials ?? [];
   console.log(`  materials: ${materials.length}${materials.length ? ` (${materials.map((m) => m.name ?? 'unnamed').join(', ')})` : ''}`);

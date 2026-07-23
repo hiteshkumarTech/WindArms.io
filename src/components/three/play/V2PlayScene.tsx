@@ -8,6 +8,7 @@ import { PLAYER } from '@/lib/game/constants';
 import { STORM } from '@/lib/v2/tokens';
 import type { RangeInputSnapshot } from '@/lib/v2/range/useRangeKeyboardInput';
 import RangeEffectsPools from '@/components/three/range/RangeEffectsPools';
+import KaelFirstPersonArms from '@/components/three/weapons/KaelFirstPersonArms';
 import VortexFireSystem from '@/components/three/weapons/VortexFireSystem';
 import VortexViewmodel from '@/components/three/weapons/VortexViewmodel';
 import { useV2MatchStore } from '@/lib/v2/play/matchStore';
@@ -23,9 +24,12 @@ import DroneSquad from './DroneSquad';
  * own scene tree, wholly separate from `/play` (v1) and `/v2/range`.
  * Reuses, unchanged: the shared VortexFireSystem + VortexViewmodel (real
  * Vortex Rifle LOD1 via the pipeline), RangeEffectsPools (tracers/impacts/
- * casings), the lib/game movement core (through PlayerController). New: the
- * match director/clock, the Skyfront arena blockout, the Wind Lift, and the
- * drone squad.
+ * casings), the lib/game movement core (through PlayerController). Also
+ * reuses, unchanged, `KaelFirstPersonArms` (Milestone 7, Phase F, Step 6) —
+ * the same standalone two-bone-IK component `/v2/range` mounts, solving
+ * toward VortexViewmodel's published grip targets; no play-specific fork
+ * exists or is needed. New: the match director/clock, the Skyfront arena
+ * blockout, the Wind Lift, and the drone squad.
  *
  * Physics is paused with the match (`paused`/menus) so drones, bolts and the
  * player all freeze together from one authority. The combat gate ref is
@@ -71,6 +75,7 @@ export default function V2PlayScene({ inputRef }: { inputRef: React.MutableRefOb
       <VortexFireSystem inputRef={inputRef} combatGateRef={combatGateRef} />
       <Suspense fallback={null}>
         <VortexViewmodel />
+        <KaelFirstPersonArms />
       </Suspense>
       <RangeEffectsPools />
     </Canvas>

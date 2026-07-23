@@ -11,7 +11,7 @@
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test src/components/game/characters/heroAnimator.test.ts src/lib/v2/play/matchTiming.test.ts src/lib/v2/weapons/runtimeAnchorMath.test.ts src/lib/v2/weapons/gripWorldPose.test.ts src/lib/v2/weapons/gripAnchorRegressionChecks.test.ts"
+    "test": "tsx --test src/components/game/characters/heroAnimator.test.ts src/lib/v2/play/matchTiming.test.ts src/lib/v2/weapons/runtimeAnchorMath.test.ts src/lib/v2/weapons/gripWorldPose.test.ts src/lib/v2/weapons/gripAnchorRegressionChecks.test.ts src/lib/v2/weapons/ikTunerStore.test.ts src/lib/v2/operators/ik/twoBoneIk.test.ts src/lib/v2/operators/kaelArmRig.test.ts src/lib/v2/operators/kaelArmSolve.test.ts"
   },
   "dependencies": {
     "@react-three/drei": "9.114.3",
