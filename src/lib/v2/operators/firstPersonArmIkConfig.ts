@@ -92,27 +92,29 @@ export interface FirstPersonArmIkConfig {
   leftShoulderAssistLocal: Vec3Tuple;
 
   /**
-   * VISUALLY APPROVED 2026-07-23 (Step 6H) — per-side hand-basis rotation
-   * adjustment, DEGREES (XYZ Euler, canonical grip-anchor frame: X=finger-
-   * forward, Y=thumb-side, Z=palm-normal — same convention
-   * `vortexRuntimeAnchors.ts` documents), composed onto the rig-measured
-   * `handBasisCorrection` per `kaelArmSolve.ts`'s `SideTuningOverrides.handBasisAdjustQuat`.
-   * Right hand approved at a +30° X (finger-forward-axis) correction; left
-   * hand needed no adjustment at this pass. Converted to radians only at
-   * the `KaelFirstPersonArms.tsx` call site, matching every other
+   * VISUALLY APPROVED 2026-07-23 — per-side hand-basis rotation adjustment,
+   * DEGREES (XYZ Euler, canonical grip-anchor frame: X=finger-forward,
+   * Y=thumb-side, Z=palm-normal — same convention `vortexRuntimeAnchors.ts`
+   * documents), composed onto the rig-measured `handBasisCorrection` per
+   * `kaelArmSolve.ts`'s `SideTuningOverrides.handBasisAdjustQuat`. Right
+   * hand: +30° X (finger-forward-axis) correction, approved Step 6H.
+   * Left hand: extended in the same-day follow-up pass to `[30, 30, -10]`
+   * (finger-forward +30°, thumb-side +30°, palm-normal -10°) — supersedes
+   * Step 6H's `[0, 0, 0]` ("no adjustment needed") once left-hand basis
+   * tuning was actually reached. Converted to radians only at the
+   * `KaelFirstPersonArms.tsx` call site, matching every other
    * degrees-in-config/radians-at-callsite value in this codebase.
    */
   rightHandBasisAdjustDeg: Vec3Tuple;
   leftHandBasisAdjustDeg: Vec3Tuple;
 
   /**
-   * VISUALLY APPROVED 2026-07-23 (Step 6H) — per-side multiplier (0..1) on
-   * the authored finger-curl strength (`RIGHT_HAND_FINGER_POSE`/
+   * VISUALLY APPROVED 2026-07-23 — per-side multiplier (0..1) on the
+   * authored finger-curl strength (`RIGHT_HAND_FINGER_POSE`/
    * `LEFT_HAND_FINGER_POSE`), see `SideTuningOverrides.fingerCurlScale`.
-   * Both approved at 0 (no curl) for this pass — finger curl calibration
-   * had not yet been reached in the approved session's stage order (basis
-   * → poles → curls → ADS/recoil), so 0 here reflects "not yet tuned,"
-   * not "curl confirmed off." Revisit once Stage F (finger curls) runs.
+   * Right hand: 0 (finger-curl stage not yet reached for that side at this
+   * pass). Left hand: 0.30 — the first real (non-zero) finger-curl value
+   * approved in this milestone, supersedes Step 6H's `0` placeholder.
    */
   rightFingerCurlScale: number;
   leftFingerCurlScale: number;
@@ -142,9 +144,9 @@ export const FIRST_PERSON_ARM_IK_CONFIG: FirstPersonArmIkConfig = {
   rightShoulderAssistLocal: [0.0, 0.0, 0.0],
   leftShoulderAssistLocal: [0.06, -0.009, -0.05],
   rightHandBasisAdjustDeg: [30, 0, 0],
-  leftHandBasisAdjustDeg: [0, 0, 0],
+  leftHandBasisAdjustDeg: [30, 30, -10],
   rightFingerCurlScale: 0.0,
-  leftFingerCurlScale: 0.0,
+  leftFingerCurlScale: 0.3,
 };
 
 /**

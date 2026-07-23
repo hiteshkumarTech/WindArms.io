@@ -17,12 +17,12 @@ describe('ikTunerStore — formatIkConfigAsCode (Step 6G shoulder-assist / Step 
     assert.match(code, /leftShoulderAssistLocal:\s*\[0\.0600, -0\.0090, -0\.0500\]/, `expected the Step 6H approved left assist in the output, got:\n${code}`);
   });
 
-  it('includes the Step 6H approved per-side hand-basis-adjust and finger-curl-scale values, falling back to shipped config when untouched', () => {
+  it('includes the approved per-side hand-basis-adjust and finger-curl-scale values, falling back to shipped config when untouched', () => {
     const code = formatIkConfigAsCode(useIkTunerStore.getState());
     assert.match(code, /rightHandBasisAdjustDeg:\s*\[30\.00, 0\.00, 0\.00\]/, `expected the approved +30deg right hand-basis adjust, got:\n${code}`);
-    assert.match(code, /leftHandBasisAdjustDeg:\s*\[0\.00, 0\.00, 0\.00\]/, `expected the (unadjusted) left hand-basis value, got:\n${code}`);
+    assert.match(code, /leftHandBasisAdjustDeg:\s*\[30\.00, 30\.00, -10\.00\]/, `expected the approved left hand-basis adjust, got:\n${code}`);
     assert.match(code, /rightFingerCurlScale:\s*0\.000/, `expected the approved right finger curl scale (0, not yet tuned), got:\n${code}`);
-    assert.match(code, /leftFingerCurlScale:\s*0\.000/, `expected the approved left finger curl scale (0, not yet tuned), got:\n${code}`);
+    assert.match(code, /leftFingerCurlScale:\s*0\.300/, `expected the approved left finger curl scale (0.30), got:\n${code}`);
   });
 
   it('reflects a live-tuned assist value once set, not the shipped default', () => {
