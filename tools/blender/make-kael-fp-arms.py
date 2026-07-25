@@ -37,6 +37,7 @@ import sys
 import os
 import math
 import json
+import struct
 
 import bpy
 import bmesh
@@ -1443,6 +1444,784 @@ elif MODE == "final":
     print(f"BUILD_TRIS:{final_tri_count}")
     print(f"BUILD_VERTS:{final_vert_count}")
     print(f"BUILD_OUTPUT:{output_glb}")
+
+elif MODE == "materials":
+    # -----------------------------------------------------------------
+    # Milestone 7, Phase F, Step 7A — realistic material pass.
+    #
+    # Deliberately a SEPARATE mode operating on the ALREADY-EXTRACTED,
+    # ALREADY-APPROVED arms GLB (public/v2-art/operator-kael-arms.glb),
+    # never re-running the extraction/decimation/scalpel logic above —
+    # same "isolate the risk" philosophy this file's own header comment
+    # already states for keeping arm extraction separate from the body
+    # builder. A bad material bake can never touch the proven geometry
+    # pipeline; a future geometry re-extraction never has to touch this.
+    #
+    # Usage:
+    #   blender --background --python make-kael-fp-arms.py -- materials
+    #       <input_glb> <output_glb> <texture_dir> <report_json>
+    # -----------------------------------------------------------------
+    input_glb, output_glb, texture_dir, report_json = MODE_ARGS
+    # bpy.types.Image.save() silently no-ops when filepath_raw is a relative
+    # path (confirmed empirically on Blender 5.2.0 LTS) -- resolve to an
+    # absolute path up front so every downstream save() call actually writes.
+    texture_dir = os.path.abspath(texture_dir)
+    output_glb = os.path.abspath(output_glb)
+    os.makedirs(texture_dir, exist_ok=True)
+    os.makedirs(os.path.dirname(output_glb), exist_ok=True)
+
+    report = {"input_glb": input_glb, "output_glb": output_glb, "failures": []}
+
+    def mat_fail(message):
+        report["failures"].append(message)
+        report["result"] = "FAILED"
+        with open(report_json, "w") as f:
+            json.dump(report, f, indent=2, default=str)
+        print(f"MATERIALS_FAILED: {message}")
+        sys.exit(1)
+
+    armature_obj, mesh_obj = import_source(input_glb)
+    mesh = mesh_obj.data
+    report["input"] = {
+        "vertex_count": len(mesh.vertices),
+        "triangle_count": sum(max(len(p.vertices) - 2, 1) for p in mesh.polygons),
+    }
+    if len(mesh.uv_layers) == 0:
+        mat_fail("Input GLB has no UV0 layer — this mode requires an existing usable UV set (see Step 7A audit).")
+    uv_layer = mesh.uv_layers[0]
+
+    # -----------------------------------------------------------------
+    # Region classification — bone-dominance for fingers/palm (reliable,
+    # per Step 7A audit: finger+hand-dominant vertices cleanly cluster),
+    # SPATIAL projection along the wrist->elbow axis for everything else
+    # (necessary because the audit found almost no vertices are actually
+    # ForeArm-weight-dominant — the rig's weight gradient blends into the
+    # Hand bone well before the wrist, so bone dominance alone cannot
+    # separate "palm/wrist" from "forearm sleeve"; a glove legitimately
+    # covers the wrist too, so this is anatomically correct either way).
+    # -----------------------------------------------------------------
+    by_norm = {normalize_bone_name(b.name): b.name for b in armature_obj.data.bones}
+    finger_bone_names = set()
+    for finger, sides in FINGER_PREFIXES.items():
+        for side, prefix in sides.items():
+            finger_bone_names.update(n for n in by_norm.values() if normalize_bone_name(n).startswith(prefix))
+    hand_bone_names = {by_norm.get("lefthand"), by_norm.get("righthand")}
+    hand_bone_names.discard(None)
+
+    bpy.context.view_layer.update()
+
+    def bone_head(name):
+        pb = armature_obj.pose.bones.get(name) if name else None
+        return armature_obj.matrix_world @ pb.head if pb else None
+
+    side_axes = {}
+    for side in ["Left", "Right"]:
+        wrist = bone_head(by_norm.get(f"{side.lower()}hand"))
+        elbow = bone_head(by_norm.get(f"{side.lower()}forearm"))
+        shoulder_tail = bone_head(by_norm.get(f"{side.lower()}arm"))  # upper-arm bone head == shoulder joint
+        if wrist is None or elbow is None:
+            mat_fail(f"Could not resolve wrist/elbow bones for {side} side.")
+        axis = (elbow - wrist)
+        axis_len = axis.length
+        side_axes[side] = {"wrist": wrist, "elbow": elbow, "shoulder": shoulder_tail, "axis": axis, "axis_len": axis_len}
+
+    vg_idx_to_name = {vg.index: vg.name for vg in mesh_obj.vertex_groups}
+    mw = mesh_obj.matrix_world
+
+    # Region weights color attribute — R=glove, G=sleeve, B=armor, per Step
+    # 7A section 6's three deliberate regions. Written as a FLOAT_COLOR
+    # attribute on POINT domain (per-vertex, matches how region logic below
+    # is computed) so it survives triangulation/export as vertex colors and
+    # can drive the procedural material's region blend during baking.
+    if "RegionMask" in mesh.color_attributes:
+        mesh.color_attributes.remove(mesh.color_attributes["RegionMask"])
+    region_attr = mesh.color_attributes.new(name="RegionMask", type="FLOAT_COLOR", domain="POINT")
+
+    # Thresholds are NEGATIVE/near-zero, not fractions toward the elbow —
+    # measured (see docs/decisions.md Step 7A entry), the extracted arms
+    # derivative has almost NO forearm-shaft surface between wrist and
+    # elbow at all: hand-dominant vertices project to t in [-0.55, 0.0]
+    # (the palm/hand extends "behind" the wrist relative to the elbow
+    # direction, not "toward" it), and the tiny proximal shoulder-cap
+    # population sits at t >= ~1.0. Nothing exists in (0, 1) to call a
+    # "sleeve" on the EXISTING geometry — the new cuff extrusion below is
+    # deliberately painted SLEEVE (not armor) specifically to give the
+    # sleeve material real visible surface area, per the brief's own "a
+    # cuff may use the sleeve or armor material" allowance.
+    GLOVE_T_MAX = -0.12   # deep hand/palm/back-of-hand surface
+    ARMOR_T_MIN = 0.5     # the small pre-existing proximal shoulder-cap sliver
+    region_counts = {"glove": 0, "sleeve": 0, "armor": 0}
+
+    for v in mesh.vertices:
+        if not v.groups:
+            region_attr.data[v.index].color = (0.0, 0.0, 0.0, 1.0)
+            continue
+        dom = max(v.groups, key=lambda g: g.weight)
+        dom_name = vg_idx_to_name.get(dom.group)
+
+        is_finger = dom_name in finger_bone_names
+        side = None
+        if dom_name:
+            if normalize_bone_name(dom_name).startswith("left"):
+                side = "Left"
+            elif normalize_bone_name(dom_name).startswith("right"):
+                side = "Right"
+        if side is None:
+            # Vertex dominated by a non-arm bone (shouldn't happen post-extraction,
+            # but fall back to whichever side's wrist is closer rather than crash).
+            wp = mw @ v.co
+            side = "Left" if (wp - side_axes["Left"]["wrist"]).length < (wp - side_axes["Right"]["wrist"]).length else "Right"
+
+        axis_info = side_axes[side]
+        wp = mw @ v.co
+        rel = wp - axis_info["wrist"]
+        t = (rel.dot(axis_info["axis"]) / (axis_info["axis_len"] ** 2)) if axis_info["axis_len"] > 1e-9 else 0.0
+
+        if is_finger:
+            glove, sleeve, armor = 1.0, 0.0, 0.0
+        elif t < GLOVE_T_MAX:
+            glove, sleeve, armor = 1.0, 0.0, 0.0
+        elif t < ARMOR_T_MIN:
+            glove, sleeve, armor = 0.0, 1.0, 0.0
+        else:
+            glove, sleeve, armor = 0.0, 0.0, 1.0
+
+        region_attr.data[v.index].color = (glove, sleeve, armor, 1.0)
+        region_counts["glove" if glove else ("sleeve" if sleeve else "armor")] += 1
+
+    report["region_counts"] = region_counts
+    report["region_thresholds"] = {"glove_t_max": GLOVE_T_MAX, "armor_t_min": ARMOR_T_MIN}
+    if region_counts["sleeve"] == 0:
+        mat_fail("Region classification produced zero sleeve vertices — thresholds need adjusting.")
+    if region_counts["armor"] == 0:
+        mat_fail("Region classification produced zero armor/cuff vertices — thresholds need adjusting.")
+
+    # -----------------------------------------------------------------
+    # Shoulder-cut concealment cuff (Step 7A section 7). Extrudes the
+    # boundary loop(s) classified as "intentional_shoulder_cut"-equivalent
+    # (proximal-dominant open edges) inward/back along the local arm axis
+    # by a small amount and caps them — a small, camera-hidden sleeve
+    # stub, not a torso reconstruction. Weighted 100% to the same bone the
+    # adjacent boundary vertices are already dominated by (Shoulder or
+    # Spine2), so it moves rigidly with the existing rig, no new bones.
+    # -----------------------------------------------------------------
+    bm_cuff = bmesh.new()
+    bm_cuff.from_mesh(mesh)
+    bm_cuff.verts.ensure_lookup_table()
+    bm_cuff.edges.ensure_lookup_table()
+    bm_cuff.faces.ensure_lookup_table()
+    deform_layer = bm_cuff.verts.layers.deform.active
+
+    proximal_bone_names = {by_norm.get("leftshoulder"), by_norm.get("rightshoulder"), by_norm.get("spine2")}
+    proximal_bone_names.discard(None)
+    proximal_vg_indices = {i for i, n in vg_idx_to_name.items() if n in proximal_bone_names}
+
+    boundary_edges = [e for e in bm_cuff.edges if len(e.link_faces) == 1]
+    cuff_added_tris = 0
+    cuff_added_verts = 0
+    CUFF_EXTRUDE_M = 0.02  # small — a concealment stub, not a reconstructed shoulder
+
+    if boundary_edges:
+        # Classify boundary edges by which side's proximal bones dominate
+        # their verts, extrude each side's loop along that side's own
+        # wrist->elbow axis direction (pointing further proximal, i.e.
+        # "away from the hand") so the cuff tucks in the correct direction
+        # regardless of the character's own world orientation.
+        for side in ["Left", "Right"]:
+            side_bones = {by_norm.get(f"{side.lower()}shoulder")}
+            side_bones.discard(None)
+            side_prox_indices = {i for i, n in vg_idx_to_name.items() if n in side_bones or n == by_norm.get("spine2")}
+            side_edges = []
+            for e in boundary_edges:
+                dominant_ok = True
+                for v in e.verts:
+                    dvert = v[deform_layer]
+                    if not dvert.keys():
+                        dominant_ok = False
+                        break
+                    dom_gi = max(dvert.keys(), key=lambda gi: dvert[gi])
+                    if dom_gi not in proximal_vg_indices:
+                        dominant_ok = False
+                        break
+                    # side check via bone name prefix
+                    dom_name = vg_idx_to_name.get(dom_gi, "")
+                    if not normalize_bone_name(dom_name).startswith(side.lower()) and normalize_bone_name(dom_name) != "spine2":
+                        dominant_ok = False
+                        break
+                if dominant_ok:
+                    side_edges.append(e)
+            if not side_edges:
+                continue
+
+            direction = -side_axes[side]["axis"].normalized() if side_axes[side]["axis_len"] > 1e-9 else mathutils.Vector((0, 0, 1))
+            extrude_geom = bmesh.ops.extrude_edge_only(bm_cuff, edges=side_edges)
+            new_verts = [g for g in extrude_geom["geom"] if isinstance(g, bmesh.types.BMVert)]
+            for nv in new_verts:
+                nv.co += direction * CUFF_EXTRUDE_M
+            try:
+                bmesh.ops.holes_fill(bm_cuff, edges=[e for e in [g for g in extrude_geom["geom"] if isinstance(g, bmesh.types.BMEdge)]], sides=64)
+            except Exception:
+                pass  # cap fill is best-effort cosmetic closure; an open small stub is still concealment-safe
+
+            # Weight the new verts 100% to this side's shoulder bone (falls
+            # back to spine2 if shoulder wasn't resolved) — rigid, no new
+            # bones, no skinning ambiguity.
+            weight_bone_name = by_norm.get(f"{side.lower()}shoulder") or by_norm.get("spine2")
+            weight_gi = next((i for i, n in vg_idx_to_name.items() if n == weight_bone_name), None)
+            if weight_gi is not None:
+                for nv in new_verts:
+                    dvert = nv[deform_layer]
+                    dvert.clear()
+                    dvert[weight_gi] = 1.0
+            cuff_added_verts += len(new_verts)
+
+    bm_cuff.faces.ensure_lookup_table()
+    cuff_total_tris = sum(max(len(f.verts) - 2, 1) for f in bm_cuff.faces)
+    pre_cuff_tris = report["input"]["triangle_count"]
+    cuff_added_tris = cuff_total_tris - pre_cuff_tris
+
+    # Extend the RegionMask attribute for any new verts (bmesh doesn't carry
+    # custom color attributes through extrude automatically at the Python
+    # API level in every Blender version — write it back explicitly).
+    bm_cuff.to_mesh(mesh)
+    bm_cuff.free()
+    mesh_obj.data.update()
+    # Re-fetch attribute reference (mesh.color_attributes may have been
+    # invalidated by to_mesh) and paint any zero-alpha (unset) verts armor-red.
+    region_attr = mesh.color_attributes.get("RegionMask")
+    if region_attr is None:
+        region_attr = mesh.color_attributes.new(name="RegionMask", type="FLOAT_COLOR", domain="POINT")
+    # New cuff verts appended past the original vertex count by the extrude
+    # above may not have inherited a RegionMask value through the bmesh
+    # round-trip — paint any zero/unset value SLEEVE (deliberately, not
+    # armor: per the Step 7A audit, the existing mesh has almost no
+    # forearm-shaft surface to give the sleeve material real visible area,
+    # so the cuff is what actually carries that region in the final asset;
+    # see GLOVE_T_MAX/ARMOR_T_MIN's doc comment above).
+    for i in range(len(mesh.vertices)):
+        c = region_attr.data[i].color
+        if tuple(c) == (0.0, 0.0, 0.0, 0.0) or (c[0] == 0 and c[1] == 0 and c[2] == 0 and i >= (len(mesh.vertices) - max(cuff_added_verts, 0))):
+            region_attr.data[i].color = (0.0, 1.0, 0.0, 1.0)  # sleeve
+
+    # UV for new cuff faces: assign a flat UV coordinate sampled from inside
+    # the existing "armor" UV footprint (nearest surviving armor-region
+    # triangle's UV centroid) so the bake still produces a sane (if
+    # low-detail) texture there rather than an unset/garbage UV — the cuff
+    # is a small concealment stub, not a region needing bespoke UV space.
+    uv_layer = mesh.uv_layers[0]
+    sleeve_uv_samples = []
+    for poly in mesh.polygons:
+        for li in poly.loop_indices:
+            vi = mesh.loops[li].vertex_index
+            col = region_attr.data[vi].color
+            if col[1] >= 0.5:
+                sleeve_uv_samples.append(uv_layer.data[li].uv)
+    fallback_uv = sleeve_uv_samples[len(sleeve_uv_samples) // 2] if sleeve_uv_samples else mathutils.Vector((0.5, 0.5))
+    for poly in mesh.polygons:
+        for li in poly.loop_indices:
+            uv = uv_layer.data[li].uv
+            if uv.x == 0.0 and uv.y == 0.0:
+                uv_layer.data[li].uv = fallback_uv
+
+    final_tri_count_with_cuff = sum(max(len(p.vertices) - 2, 1) for p in mesh.polygons)
+    report["cuff"] = {
+        "added_vertices": cuff_added_verts,
+        "triangles_before": pre_cuff_tris,
+        "triangles_after": final_tri_count_with_cuff,
+        "triangles_added": final_tri_count_with_cuff - pre_cuff_tris,
+        "extrude_distance_m": CUFF_EXTRUDE_M,
+    }
+    if final_tri_count_with_cuff - pre_cuff_tris > 1000:
+        mat_fail(f"Shoulder cuff added {final_tri_count_with_cuff - pre_cuff_tris} triangles, exceeding the 1000-triangle budget.")
+    ARMS_TOTAL_BUDGET = 21000
+    if final_tri_count_with_cuff > ARMS_TOTAL_BUDGET:
+        mat_fail(f"Total triangle count {final_tri_count_with_cuff} exceeds the {ARMS_TOTAL_BUDGET}-triangle arms budget after adding the cuff.")
+
+    # -----------------------------------------------------------------
+    # Procedural PBR material — one Principled BSDF, region-blended via
+    # the RegionMask vertex color attribute, noise-driven variation per
+    # region so surfaces read as leather/fabric/metal rather than flat
+    # color. Colors from Step 7A's approved art-direction anchors.
+    #
+    # Blender color sockets are LINEAR; the art-direction hex codes are
+    # sRGB display values. Feeding /255 values straight into a color
+    # socket skips the sRGB->linear gamma decode, so every color bakes
+    # visibly lighter/washed-out than intended (confirmed: an early bake
+    # without this conversion baked "charcoal" #15191D as a medium slate
+    # gray). Decode every hex constant through srgb_to_linear() below.
+    # -----------------------------------------------------------------
+    def srgb_to_linear(c):
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+    def hex_linear(r, g, b):
+        return tuple(srgb_to_linear(v / 255) for v in (r, g, b))
+
+    GLOVE_BASE = hex_linear(0x15, 0x19, 0x1D)
+    GLOVE_PANEL = hex_linear(0x26, 0x2C, 0x31)
+    SLEEVE_BASE = hex_linear(0xC7, 0xC9, 0xC4)
+    SLEEVE_SHADOW = hex_linear(0x77, 0x7F, 0x83)
+    ARMOR_TITANIUM = hex_linear(0x7D, 0x85, 0x89)
+    ARMOR_DARK = hex_linear(0x25, 0x2B, 0x2E)
+    GOLD_TRIM = hex_linear(0xA8, 0x89, 0x48)
+    CYAN_ACCENT = hex_linear(0x43, 0xBF, 0xE8)
+
+    mat = bpy.data.materials.new("Kael_FP_Arms_Tactical")
+    mat.use_nodes = True
+    nt = mat.node_tree
+    for n in list(nt.nodes):
+        nt.nodes.remove(n)
+
+    out = nt.nodes.new("ShaderNodeOutputMaterial")
+    bsdf = nt.nodes.new("ShaderNodeBsdfPrincipled")
+    out.location = (900, 0)
+    bsdf.location = (650, 0)
+    nt.links.new(bsdf.outputs["BSDF"], out.inputs["Surface"])
+
+    region_node = nt.nodes.new("ShaderNodeVertexColor")
+    region_node.layer_name = "RegionMask"
+    region_node.location = (-900, 300)
+    sep_region = nt.nodes.new("ShaderNodeSeparateColor")
+    sep_region.location = (-700, 300)
+    nt.links.new(region_node.outputs["Color"], sep_region.inputs["Color"])
+
+    tex_coord = nt.nodes.new("ShaderNodeTexCoord")
+    tex_coord.location = (-1400, -300)
+
+    def noise(scale, detail, location):
+        n = nt.nodes.new("ShaderNodeTexNoise")
+        n.inputs["Scale"].default_value = scale
+        n.inputs["Detail"].default_value = detail
+        n.location = location
+        nt.links.new(tex_coord.outputs["Object"], n.inputs["Vector"])
+        return n
+
+    def color_mix(a_rgb, b_rgb, fac_socket, location):
+        m = nt.nodes.new("ShaderNodeMixRGB")
+        m.inputs["Color1"].default_value = (*a_rgb, 1.0)
+        m.inputs["Color2"].default_value = (*b_rgb, 1.0)
+        m.location = location
+        nt.links.new(fac_socket, m.inputs["Fac"])
+        return m
+
+    # --- Glove: charcoal base <-> raised-panel variation via noise; palm smoother, knuckles rougher-rubberized (approximated by a second noise driving roughness). ---
+    glove_noise = noise(18.0, 4.0, (-1100, 600))
+    glove_color_mix = color_mix(GLOVE_BASE, GLOVE_PANEL, glove_noise.outputs["Fac"], (-800, 600))
+    glove_rough_noise = noise(9.0, 2.0, (-1100, 450))
+
+    # --- Sleeve: cloud-grey <-> shadow-grey weave variation. ---
+    sleeve_noise = noise(28.0, 5.0, (-1100, 150))
+    sleeve_color_mix = color_mix(SLEEVE_BASE, SLEEVE_SHADOW, sleeve_noise.outputs["Fac"], (-800, 150))
+    sleeve_rough_noise = noise(40.0, 3.0, (-1100, 0))
+
+    # --- Armor: titanium <-> dark-metal brushed variation, gold trim flecks via a sharper-threshold noise. ---
+    armor_noise = noise(12.0, 4.0, (-1100, -250))
+    armor_color_mix = color_mix(ARMOR_TITANIUM, ARMOR_DARK, armor_noise.outputs["Fac"], (-800, -250))
+    gold_noise = noise(6.0, 2.0, (-1100, -400))
+    gold_ramp = nt.nodes.new("ShaderNodeValToRGB")
+    gold_ramp.location = (-900, -400)
+    gold_ramp.color_ramp.elements[0].position = 0.72
+    gold_ramp.color_ramp.elements[1].position = 0.78
+    nt.links.new(gold_noise.outputs["Fac"], gold_ramp.inputs["Fac"])
+    armor_gold_mix = nt.nodes.new("ShaderNodeMixRGB")
+    armor_gold_mix.location = (-600, -300)
+    nt.links.new(armor_color_mix.outputs["Color"], armor_gold_mix.inputs["Color1"])
+    armor_gold_mix.inputs["Color2"].default_value = (*GOLD_TRIM, 1.0)
+    nt.links.new(gold_ramp.outputs["Color"], armor_gold_mix.inputs["Fac"])
+
+    # --- Combine the three regions' base color by RegionMask R/G/B weights. ---
+    mix_glove_sleeve = nt.nodes.new("ShaderNodeMixRGB")
+    mix_glove_sleeve.location = (-350, 300)
+    nt.links.new(sleeve_color_mix.outputs["Color"], mix_glove_sleeve.inputs["Color1"])
+    nt.links.new(glove_color_mix.outputs["Color"], mix_glove_sleeve.inputs["Color2"])
+    nt.links.new(sep_region.outputs["Red"], mix_glove_sleeve.inputs["Fac"])
+
+    mix_all = nt.nodes.new("ShaderNodeMixRGB")
+    mix_all.location = (-100, 200)
+    nt.links.new(mix_glove_sleeve.outputs["Color"], mix_all.inputs["Color1"])
+    nt.links.new(armor_gold_mix.outputs["Color"], mix_all.inputs["Color2"])
+    nt.links.new(sep_region.outputs["Blue"], mix_all.inputs["Fac"])
+
+    # --- Restrained cyan seam accent at the glove<->sleeve transition band (where neither R nor G dominates strongly) — low emissive strength, never a broad glow. ---
+    seam_min = nt.nodes.new("ShaderNodeMath")
+    seam_min.operation = "MINIMUM"
+    seam_min.location = (-700, 750)
+    nt.links.new(sep_region.outputs["Red"], seam_min.inputs[0])
+    nt.links.new(sep_region.outputs["Green"], seam_min.inputs[1])
+    seam_ramp = nt.nodes.new("ShaderNodeValToRGB")
+    seam_ramp.location = (-500, 750)
+    seam_ramp.color_ramp.elements[0].position = 0.28
+    seam_ramp.color_ramp.elements[1].position = 0.42
+    nt.links.new(seam_min.outputs["Value"], seam_ramp.inputs["Fac"])
+    seam_noise = noise(60.0, 2.0, (-700, 900))
+    seam_noise_ramp = nt.nodes.new("ShaderNodeValToRGB")
+    seam_noise_ramp.location = (-500, 900)
+    seam_noise_ramp.color_ramp.elements[0].position = 0.45
+    seam_noise_ramp.color_ramp.elements[1].position = 0.55
+    nt.links.new(seam_noise.outputs["Fac"], seam_noise_ramp.inputs["Fac"])
+    seam_combine = nt.nodes.new("ShaderNodeMath")
+    seam_combine.operation = "MULTIPLY"
+    seam_combine.location = (-300, 800)
+    nt.links.new(seam_ramp.outputs["Color"], seam_combine.inputs[0])
+    nt.links.new(seam_noise_ramp.outputs["Color"], seam_combine.inputs[1])
+
+    final_basecolor_mix = nt.nodes.new("ShaderNodeMixRGB")
+    final_basecolor_mix.location = (150, 300)
+    nt.links.new(mix_all.outputs["Color"], final_basecolor_mix.inputs["Color1"])
+    final_basecolor_mix.inputs["Color2"].default_value = (*CYAN_ACCENT, 1.0)
+    nt.links.new(seam_combine.outputs["Value"], final_basecolor_mix.inputs["Fac"])
+    # Restrain the accent's contribution to Base Color itself (subtle seam tint, not full-strength paint).
+    final_basecolor_mix.inputs["Fac"].default_value = 0.0  # overridden by link above; link carries the actual (already-thin) mask
+    nt.links.new(final_basecolor_mix.outputs["Color"], bsdf.inputs["Base Color"])
+
+    emission_mix = nt.nodes.new("ShaderNodeMixRGB")
+    emission_mix.location = (150, 550)
+    emission_mix.inputs["Color1"].default_value = (0, 0, 0, 1)
+    emission_mix.inputs["Color2"].default_value = (*CYAN_ACCENT, 1.0)
+    nt.links.new(seam_combine.outputs["Value"], emission_mix.inputs["Fac"])
+    if "Emission Color" in bsdf.inputs:
+        nt.links.new(emission_mix.outputs["Color"], bsdf.inputs["Emission Color"])
+        bsdf.inputs["Emission Strength"].default_value = 0.35  # low — readable in the dark, never a broad glow
+    elif "Emission" in bsdf.inputs:
+        nt.links.new(emission_mix.outputs["Color"], bsdf.inputs["Emission"])
+
+    # --- Roughness: per-region base value + noise variation, blended by the same RegionMask. ---
+    rough_mix1 = nt.nodes.new("ShaderNodeMixRGB")
+    rough_mix1.location = (-350, 450)
+    rough_mix1.inputs["Color1"].default_value = (0.62, 0.62, 0.62, 1)  # sleeve base roughness
+    rough_mix1.inputs["Color2"].default_value = (0.42, 0.42, 0.42, 1)  # glove base roughness
+    nt.links.new(sep_region.outputs["Red"], rough_mix1.inputs["Fac"])
+    rough_mix2 = nt.nodes.new("ShaderNodeMixRGB")
+    rough_mix2.location = (-100, 500)
+    nt.links.new(rough_mix1.outputs["Color"], rough_mix2.inputs["Color1"])
+    rough_mix2.inputs["Color2"].default_value = (0.32, 0.32, 0.32, 1)  # armor base roughness (brushed metal, not mirror)
+    nt.links.new(sep_region.outputs["Blue"], rough_mix2.inputs["Fac"])
+    rough_noise_mix = nt.nodes.new("ShaderNodeMixRGB")
+    rough_noise_mix.location = (150, 480)
+    rough_noise_mix.blend_type = "ADD"
+    rough_noise_mix.inputs["Fac"].default_value = 0.08
+    nt.links.new(rough_mix2.outputs["Color"], rough_noise_mix.inputs["Color1"])
+    nt.links.new(glove_rough_noise.outputs["Fac"], rough_noise_mix.inputs["Color2"])
+    nt.links.new(rough_noise_mix.outputs["Color"], bsdf.inputs["Roughness"])
+
+    # --- Metallic: 0 for glove/sleeve, high for armor (RegionMask blue channel directly). ---
+    metal_scale = nt.nodes.new("ShaderNodeMath")
+    metal_scale.operation = "MULTIPLY"
+    metal_scale.location = (150, 350)
+    metal_scale.inputs[1].default_value = 0.85
+    nt.links.new(sep_region.outputs["Blue"], metal_scale.inputs[0])
+    nt.links.new(metal_scale.outputs["Value"], bsdf.inputs["Metallic"])
+
+    # --- Bump/Normal: per-region noise-driven micro-surface (leather grain / fabric weave / brushed metal), same region blend. ---
+    bump_mix = nt.nodes.new("ShaderNodeMixRGB")
+    bump_mix.location = (150, -50)
+    nt.links.new(sleeve_rough_noise.outputs["Fac"], bump_mix.inputs["Color1"])
+    nt.links.new(glove_noise.outputs["Fac"], bump_mix.inputs["Color2"])
+    nt.links.new(sep_region.outputs["Red"], bump_mix.inputs["Fac"])
+    bump_mix2 = nt.nodes.new("ShaderNodeMixRGB")
+    bump_mix2.location = (350, -80)
+    nt.links.new(bump_mix.outputs["Color"], bump_mix2.inputs["Color1"])
+    nt.links.new(armor_noise.outputs["Fac"], bump_mix2.inputs["Color2"])
+    nt.links.new(sep_region.outputs["Blue"], bump_mix2.inputs["Fac"])
+    bump_node = nt.nodes.new("ShaderNodeBump")
+    bump_node.location = (500, -100)
+    bump_node.inputs["Strength"].default_value = 0.25
+    nt.links.new(bump_mix2.outputs["Color"], bump_node.inputs["Height"])
+    nt.links.new(bump_node.outputs["Normal"], bsdf.inputs["Normal"])
+
+    mesh_obj.data.materials.clear()
+    mesh_obj.data.materials.append(mat)
+    report["material"] = {"name": mat.name, "regions": ["glove", "sleeve", "armor"], "cyan_accent": "restrained seam emission, strength 0.35"}
+
+    # -----------------------------------------------------------------
+    # Bake to textures using the EXISTING (preserved) UV0 layout — Base
+    # Color (sRGB), Normal (tangent space, Non-Color), and a packed ORM
+    # (R=AO, G=Roughness, B=Metallic — standard glTF metallicRoughness +
+    # occlusion channel packing) built from three separate grayscale bakes.
+    # -----------------------------------------------------------------
+    TEX_SIZE = 1024
+    scene = bpy.context.scene
+    scene.render.engine = "CYCLES"
+    try:
+        scene.cycles.device = "GPU"
+    except Exception:
+        pass
+    scene.cycles.samples = 32
+
+    bpy.ops.object.select_all(action="DESELECT")
+    mesh_obj.select_set(True)
+    bpy.context.view_layer.objects.active = mesh_obj
+
+    def make_bake_image(name, size, is_data):
+        img = bpy.data.images.new(name, width=size, height=size, alpha=False)
+        img.colorspace_settings.name = "Non-Color" if is_data else "sRGB"
+        return img
+
+    def bake_pass(bake_type, image, extra_kwargs=None):
+        img_node = nt.nodes.new("ShaderNodeTexImage")
+        img_node.image = image
+        for n in nt.nodes:
+            n.select = False
+        img_node.select = True
+        nt.nodes.active = img_node
+        kwargs = {"type": bake_type}
+        if extra_kwargs:
+            kwargs.update(extra_kwargs)
+        bpy.ops.object.bake(**kwargs)
+        nt.nodes.remove(img_node)
+
+    basecolor_img = make_bake_image("kael_arms_basecolor", TEX_SIZE, is_data=False)
+    bake_pass("DIFFUSE", basecolor_img, {"pass_filter": {"COLOR"}})
+
+    normal_img = make_bake_image("kael_arms_normal", TEX_SIZE, is_data=True)
+    bake_pass("NORMAL", normal_img)
+
+    roughness_img = make_bake_image("kael_arms_roughness_tmp", TEX_SIZE, is_data=True)
+    bake_pass("ROUGHNESS", roughness_img)
+
+    ao_img = make_bake_image("kael_arms_ao_tmp", TEX_SIZE, is_data=True)
+    ao_ok = True
+    try:
+        bake_pass("AO", ao_img)
+    except Exception as e:
+        ao_ok = False
+        report["ao_bake_fallback_reason"] = str(e)
+
+    # Metallic via the emission-rewire trick — Blender's bake `type` enum
+    # has no direct METALLIC pass, so temporarily wire the metallic value
+    # into Emission and bake EMIT, which captures the raw node output.
+    metallic_img = make_bake_image("kael_arms_metallic_tmp", TEX_SIZE, is_data=True)
+    original_emission_link = None
+    emission_socket = bsdf.inputs.get("Emission Color") or bsdf.inputs.get("Emission")
+    if emission_socket and emission_socket.is_linked:
+        original_emission_link = emission_socket.links[0].from_socket
+    original_emission_strength = bsdf.inputs["Emission Strength"].default_value if "Emission Strength" in bsdf.inputs else None
+    metal_to_rgb = nt.nodes.new("ShaderNodeCombineColor")
+    metal_to_rgb.location = (150, -600)
+    nt.links.new(metal_scale.outputs["Value"], metal_to_rgb.inputs[0])
+    nt.links.new(metal_scale.outputs["Value"], metal_to_rgb.inputs[1])
+    nt.links.new(metal_scale.outputs["Value"], metal_to_rgb.inputs[2])
+    if emission_socket:
+        nt.links.new(metal_to_rgb.outputs["Color"], emission_socket)
+    if "Emission Strength" in bsdf.inputs:
+        bsdf.inputs["Emission Strength"].default_value = 1.0
+    bake_pass("EMIT", metallic_img)
+    # restore
+    if original_emission_link and emission_socket:
+        nt.links.new(original_emission_link, emission_socket)
+    elif emission_socket:
+        nt.links.new(emission_mix.outputs["Color"], emission_socket)
+    if original_emission_strength is not None:
+        bsdf.inputs["Emission Strength"].default_value = original_emission_strength
+    nt.nodes.remove(metal_to_rgb)
+
+    # Pack R=AO, G=Roughness, B=Metallic into one image.
+    orm_img = bpy.data.images.new("kael_arms_orm", width=TEX_SIZE, height=TEX_SIZE, alpha=False)
+    orm_img.colorspace_settings.name = "Non-Color"
+    ao_px = list(ao_img.pixels) if ao_ok else [1.0] * (TEX_SIZE * TEX_SIZE * 4)
+    rough_px = list(roughness_img.pixels)
+    metal_px = list(metallic_img.pixels)
+    n_px = TEX_SIZE * TEX_SIZE
+    orm_px = [0.0] * (n_px * 4)
+    for i in range(n_px):
+        orm_px[i * 4 + 0] = ao_px[i * 4 + 0]
+        orm_px[i * 4 + 1] = rough_px[i * 4 + 0]
+        orm_px[i * 4 + 2] = metal_px[i * 4 + 0]
+        orm_px[i * 4 + 3] = 1.0
+    orm_img.pixels = orm_px
+
+    basecolor_path = os.path.join(texture_dir, "kael-arms-basecolor.png")
+    normal_path = os.path.join(texture_dir, "kael-arms-normal.png")
+    orm_path = os.path.join(texture_dir, "kael-arms-orm.png")
+    basecolor_img.filepath_raw = basecolor_path
+    basecolor_img.file_format = "PNG"
+    basecolor_img.save()
+    normal_img.filepath_raw = normal_path
+    normal_img.file_format = "PNG"
+    normal_img.save()
+    orm_img.filepath_raw = orm_path
+    orm_img.file_format = "PNG"
+    orm_img.save()
+
+    report["textures"] = {
+        "basecolor": {"path": basecolor_path, "size": TEX_SIZE},
+        "normal": {"path": normal_path, "size": TEX_SIZE},
+        "orm_packed_r_ao_g_rough_b_metal": {"path": orm_path, "size": TEX_SIZE, "ao_baked": ao_ok},
+    }
+
+    # -----------------------------------------------------------------
+    # Rebuild a CLEAN, minimal glTF-standard material graph referencing
+    # the baked textures (procedural bake-only nodes removed) — this is
+    # what actually exports and what the runtime GLTFLoader consumes.
+    # Standard metallicRoughness workflow: baseColorTexture (sRGB),
+    # normalTexture (tangent-space), occlusionTexture + metallicRoughnessTexture
+    # both pointing at the SAME packed ORM image (glTF convention: importers
+    # read R from whichever node is wired as occlusion, GB from whichever
+    # is wired as metallicRoughness — exporting the same image twice in the
+    # node graph, once per role, is the correct/expected pattern).
+    # -----------------------------------------------------------------
+    for n in list(nt.nodes):
+        nt.nodes.remove(n)
+    out2 = nt.nodes.new("ShaderNodeOutputMaterial")
+    bsdf2 = nt.nodes.new("ShaderNodeBsdfPrincipled")
+    nt.links.new(bsdf2.outputs["BSDF"], out2.inputs["Surface"])
+
+    tex_bc = nt.nodes.new("ShaderNodeTexImage")
+    tex_bc.image = basecolor_img
+    tex_bc.image.colorspace_settings.name = "sRGB"
+    nt.links.new(tex_bc.outputs["Color"], bsdf2.inputs["Base Color"])
+
+    tex_orm = nt.nodes.new("ShaderNodeTexImage")
+    tex_orm.image = orm_img
+    tex_orm.image.colorspace_settings.name = "Non-Color"
+    sep_orm = nt.nodes.new("ShaderNodeSeparateColor")
+    nt.links.new(tex_orm.outputs["Color"], sep_orm.inputs["Color"])
+    nt.links.new(sep_orm.outputs["Green"], bsdf2.inputs["Roughness"])
+    nt.links.new(sep_orm.outputs["Blue"], bsdf2.inputs["Metallic"])
+
+    tex_n = nt.nodes.new("ShaderNodeTexImage")
+    tex_n.image = normal_img
+    tex_n.image.colorspace_settings.name = "Non-Color"
+    normal_map_node = nt.nodes.new("ShaderNodeNormalMap")
+    nt.links.new(tex_n.outputs["Color"], normal_map_node.inputs["Color"])
+    nt.links.new(normal_map_node.outputs["Normal"], bsdf2.inputs["Normal"])
+
+    # Blender's glTF exporter has no reliable node-graph convention for
+    # wiring a second "occlusion" role onto a texture already used for
+    # metallicRoughness (a disconnected duplicate ShaderNodeTexImage node
+    # is NOT picked up -- confirmed empirically: the exporter only assigns
+    # a glTF material role by tracing which node feeds which BSDF socket).
+    # occlusionTexture is patched into the exported GLB's JSON chunk
+    # directly after export instead -- see patch_glb_occlusion_texture().
+
+    report["final_geometry"] = {
+        "vertex_count": len(mesh.vertices),
+        "triangle_count": sum(max(len(p.vertices) - 2, 1) for p in mesh.polygons),
+    }
+
+    # -----------------------------------------------------------------
+    # Regression checks — must remain true after adding the cuff/material:
+    # armature intact, bone names unchanged, no unweighted vertices beyond
+    # the pre-existing tolerance, no zero-area/malformed geometry introduced.
+    # -----------------------------------------------------------------
+    if not any(m.type == "ARMATURE" for m in mesh_obj.modifiers):
+        mat_fail("Armature modifier missing after materials pass.")
+    unweighted = 0
+    for v in mesh.vertices:
+        total_w = sum(g.weight for g in v.groups)
+        if total_w <= 1e-6:
+            unweighted += 1
+    report["unweighted_vertices_after_cuff"] = unweighted
+    if unweighted > 0:
+        mat_fail(f"{unweighted} unweighted vertices after adding the shoulder cuff.")
+
+    bm_check = bmesh.new()
+    bm_check.from_mesh(mesh)
+    zero_area = sum(1 for f in bm_check.faces if f.calc_area() < 1e-10)
+    malformed = sum(1 for e in bm_check.edges if len(e.link_faces) >= 3)
+    bm_check.free()
+    report["zero_area_faces_after_cuff"] = zero_area
+    report["malformed_edges_after_cuff"] = malformed
+    if zero_area > 0:
+        mat_fail(f"{zero_area} zero-area faces after adding the shoulder cuff.")
+    if malformed > 0:
+        mat_fail(f"{malformed} malformed (3+ face) edges after adding the shoulder cuff.")
+
+    # -----------------------------------------------------------------
+    # Strip all vertex color attributes before export. RegionMask is no
+    # longer needed (its data is baked into the textures) and the bmesh
+    # round-trip for the cuff extrude was observed to leave behind extra
+    # blank byte-color layers ("Color", "Color.001") under generic names
+    # -- confirmed via inspection of a test export, not part of the
+    # intended design. The final material reads only baked textures, so
+    # no color attribute is needed at runtime; removing all of them is
+    # the deterministic fix regardless of which step introduced them.
+    # -----------------------------------------------------------------
+    for ca_name in [ca.name for ca in mesh.color_attributes]:
+        mesh.color_attributes.remove(mesh.color_attributes[ca_name])
+
+    # -----------------------------------------------------------------
+    # Export — same convention as "final" mode.
+    # -----------------------------------------------------------------
+    bpy.ops.object.select_all(action="DESELECT")
+    armature_obj.select_set(True)
+    mesh_obj.select_set(True)
+    bpy.context.view_layer.objects.active = armature_obj
+    try:
+        bpy.ops.export_scene.gltf(
+            filepath=output_glb,
+            export_format="GLB",
+            use_selection=True,
+            export_yup=True,
+            export_apply=False,
+            export_skins=True,
+            export_animations=False,
+            export_morph=False,
+            export_materials="EXPORT",
+            export_texcoords=True,
+            export_normals=True,
+            export_tangents=True,
+            export_image_format="AUTO",
+        )
+    except Exception as e:
+        mat_fail(f"glTF export failed: {e}")
+
+    def patch_glb_occlusion_texture(glb_path):
+        # The R channel of the packed ORM texture holds baked AO, but
+        # Blender's glTF exporter has no reliable node-graph convention for
+        # emitting occlusionTexture onto a texture already used for
+        # metallicRoughness. Patch it into the exported GLB's JSON chunk
+        # directly: point occlusionTexture at the same texture index as
+        # metallicRoughnessTexture (the standard packed-ORM glTF pattern
+        # three.js's GLTFLoader recognizes as aoMap==roughnessMap==metalnessMap).
+        with open(glb_path, "rb") as f:
+            data = f.read()
+        magic, version, total_length = struct.unpack_from("<4sII", data, 0)
+        if magic != b"glTF":
+            mat_fail(f"Exported file is not a valid GLB: {glb_path}")
+        offset = 12
+        json_chunk_start = None
+        json_len = None
+        bin_chunk = None
+        while offset < len(data):
+            chunk_len, chunk_type = struct.unpack_from("<I4s", data, offset)
+            chunk_data_start = offset + 8
+            if chunk_type == b"JSON":
+                json_chunk_start = chunk_data_start
+                json_len = chunk_len
+            elif chunk_type == b"BIN\x00":
+                bin_chunk = data[offset:chunk_data_start + chunk_len]
+            offset = chunk_data_start + chunk_len
+        if json_chunk_start is None:
+            mat_fail(f"No JSON chunk found in exported GLB: {glb_path}")
+        gltf_json = json.loads(data[json_chunk_start:json_chunk_start + json_len].decode("utf-8"))
+        materials = gltf_json.get("materials", [])
+        if not materials:
+            mat_fail("Exported GLB has no materials to patch occlusionTexture onto.")
+        for m in materials:
+            mr_tex = m.get("pbrMetallicRoughness", {}).get("metallicRoughnessTexture")
+            if mr_tex is not None:
+                m["occlusionTexture"] = {"index": mr_tex["index"]}
+        new_json_bytes = json.dumps(gltf_json, separators=(",", ":")).encode("utf-8")
+        pad = (4 - (len(new_json_bytes) % 4)) % 4
+        new_json_bytes += b" " * pad
+        new_json_chunk = struct.pack("<I4s", len(new_json_bytes), b"JSON") + new_json_bytes
+        new_total = 12 + len(new_json_chunk) + (len(bin_chunk) if bin_chunk else 0)
+        header = struct.pack("<4sII", b"glTF", version, new_total)
+        with open(glb_path, "wb") as f:
+            f.write(header)
+            f.write(new_json_chunk)
+            if bin_chunk:
+                f.write(bin_chunk)
+
+    patch_glb_occlusion_texture(output_glb)
+
+    report["result"] = "PASSED"
+    with open(report_json, "w") as f:
+        json.dump(report, f, indent=2, default=str)
+    print("MATERIALS_OK")
+    print(f"MATERIALS_TRIS:{report['final_geometry']['triangle_count']}")
+    print(f"MATERIALS_VERTS:{report['final_geometry']['vertex_count']}")
+    print(f"MATERIALS_OUTPUT:{output_glb}")
 
 else:
     raise SystemExit(f"Mode '{MODE}' not implemented yet in this pass.")

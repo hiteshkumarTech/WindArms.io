@@ -245,8 +245,90 @@ if (mode === 'arms') {
   console.log('\n─ Materials');
   const materials = json.materials ?? [];
   console.log(`  materials: ${materials.length}${materials.length ? ` (${materials.map((m) => m.name ?? 'unnamed').join(', ')})` : ''}`);
-  const hasTexture = (json.images ?? []).length > 0;
-  console.log(`  embedded textures: ${(json.images ?? []).length}${hasTexture ? '' : ' (none — expected: temporary neutral dev material only)'}`);
+  const armsImages = json.images ?? [];
+  console.log(`  embedded textures: ${armsImages.length}`);
+
+  // Step 7A (materials pass) additions — this pipeline only ever emits a
+  // plain metallicRoughness PBR material with baseColor/normal/ORM PNGs;
+  // anything outside that shape is unexpected and worth failing loudly on.
+  const KNOWN_SAFE_MATERIAL_EXTENSIONS = [];
+  for (const material of materials) {
+    const extKeys = Object.keys(material.extensions ?? {});
+    const unsupported = extKeys.filter((k) => !KNOWN_SAFE_MATERIAL_EXTENSIONS.includes(k));
+    if (unsupported.length > 0) {
+      errors.push(`material "${material.name ?? 'unnamed'}" uses unsupported extension(s): ${unsupported.join(', ')} — the runtime GLTFLoader path is not verified for these.`);
+    }
+  }
+
+  const ARMS_MAX_TEX_DIM = 2048; // "no accidental 4K" ceiling for this budget tier
+  for (const [i, image] of armsImages.entries()) {
+    if (image.bufferView === undefined) {
+      warnings.push(`image ${i} ("${image.name ?? 'unnamed'}") has no bufferView — not embedded, breaking this pipeline's self-contained-GLB convention.`);
+      continue;
+    }
+    const bv = json.bufferViews[image.bufferView];
+    const base = binChunkStart + (bv.byteOffset ?? 0);
+    const isPng = buffer.readUInt32BE(base) === 0x89504e47;
+    if (!isPng) {
+      warnings.push(`image ${i} ("${image.name ?? 'unnamed'}") is not a PNG (mimeType=${image.mimeType}) — dimension check skipped.`);
+      continue;
+    }
+    const width = buffer.readUInt32BE(base + 16);
+    const height = buffer.readUInt32BE(base + 20);
+    console.log(`  image ${i} "${image.name ?? 'unnamed'}": ${width}x${height}px`);
+    if (width > ARMS_MAX_TEX_DIM || height > ARMS_MAX_TEX_DIM) {
+      errors.push(`image ${i} ("${image.name ?? 'unnamed'}") is ${width}x${height} — exceeds the ${ARMS_MAX_TEX_DIM}px accidental-4K ceiling.`);
+    }
+  }
+  if (materials.length > 0 && armsImages.length === 0) {
+    console.log('  (0 textures — expected only for a temporary neutral dev material)');
+  }
+
+  // UV/normal/tangent validity. glTF only requires min/max on POSITION —
+  // Blender's exporter leaves TEXCOORD_0/NORMAL/TANGENT min/max unset by
+  // design, so an earlier version of this check that read accessor.min/max
+  // for these attributes always "failed" on a perfectly valid export. Read
+  // the actual decoded values via readAccessor() instead.
+  const hasTexturedMaterial = materials.some((m) => m.pbrMetallicRoughness?.baseColorTexture || m.normalTexture || m.pbrMetallicRoughness?.metallicRoughnessTexture || m.occlusionTexture);
+  try {
+    for (const mesh of json.meshes ?? []) {
+      for (const prim of mesh.primitives) {
+        if (hasTexturedMaterial && prim.attributes.TEXCOORD_0 === undefined) {
+          errors.push('a textured material is used but a mesh primitive has no TEXCOORD_0 — UVs required.');
+        }
+        for (const attrName of ['TEXCOORD_0', 'NORMAL', 'TANGENT']) {
+          const idx = prim.attributes[attrName];
+          if (idx === undefined) continue;
+          const values = readAccessor(idx);
+          if (!values) continue;
+          const nonFinite = values.some((v) => v.some((c) => !Number.isFinite(c)));
+          if (nonFinite) errors.push(`${attrName} accessor contains non-finite (NaN/Infinity) values.`);
+        }
+      }
+    }
+  } catch {
+    warnings.push('UV/normal/tangent finite-value check skipped (unsupported buffer/accessor layout).');
+  }
+  if (materials.some((m) => m.normalTexture) && !(json.meshes ?? []).every((mesh) => mesh.primitives.every((p) => p.attributes.TANGENT !== undefined))) {
+    errors.push('a material uses a normal map but the mesh has no TANGENT attribute.');
+  }
+
+  // Unweighted vertices — every skinned vertex's WEIGHTS_0 must sum > 0.
+  try {
+    for (const mesh of json.meshes ?? []) {
+      for (const prim of mesh.primitives) {
+        if (prim.attributes.WEIGHTS_0 === undefined) continue;
+        const weights = readAccessor(prim.attributes.WEIGHTS_0);
+        if (!weights) continue;
+        const unweighted = weights.filter((w) => w.reduce((a, b) => a + b, 0) <= 1e-6).length;
+        if (unweighted > 0) {
+          errors.push(`${unweighted} vertex(es) with WEIGHTS_0 summing to ~0 — unweighted geometry will not deform with the skeleton.`);
+        }
+      }
+    }
+  } catch {
+    warnings.push('unweighted-vertex check skipped (unsupported buffer/accessor layout).');
+  }
 
   const animations = json.animations ?? [];
   console.log(`\n─ Animation clips: ${animations.length} (none expected for this derivative yet)`);
