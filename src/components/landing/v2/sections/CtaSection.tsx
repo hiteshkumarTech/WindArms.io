@@ -1,8 +1,9 @@
 'use client';
 
 import Link from 'next/link';
-import { Play, Trophy } from 'lucide-react';
+import { Trophy } from 'lucide-react';
 import { CTA, FOOTER } from '@/lib/v2/content/cta';
+import PlayCta from '../shared/PlayCta';
 import SectionShell from '../shared/SectionShell';
 import V2Button from '../shared/V2Button';
 import type { SectionRenderProps } from '../types';
@@ -25,9 +26,7 @@ export default function CtaSection(_props: SectionRenderProps) {
           {CTA.subtitle}
         </p>
         <div data-reveal className="mt-8 flex flex-wrap items-center justify-center gap-3">
-          <V2Button href={CTA.primaryCta.href} variant="gold" size="lg" icon={Play}>
-            {CTA.primaryCta.label}
-          </V2Button>
+          <PlayCta href={CTA.primaryCta.href} label={CTA.primaryCta.label} size="lg" />
           <V2Button href={CTA.secondaryCta.href} variant="glass" size="lg" icon={Trophy}>
             {CTA.secondaryCta.label}
           </V2Button>

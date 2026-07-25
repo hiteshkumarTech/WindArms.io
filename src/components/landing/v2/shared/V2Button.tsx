@@ -23,21 +23,28 @@ const spring: Transition = { type: 'spring', stiffness: 320, damping: 22 };
 
 interface V2ButtonProps {
   children: React.ReactNode;
-  href: string;
+  /** Omit and pass `onClick` instead to render an action button rather than a navigating link. */
+  href?: string;
+  /** Renders as a `<button>` (e.g. to open a modal) instead of navigating via `href`. */
+  onClick?: (event: React.MouseEvent<HTMLButtonElement>) => void;
   icon?: LucideIcon;
   variant?: Variant;
   size?: 'md' | 'lg';
   className?: string;
+  /** Passthrough for keyboard-focus management (e.g. -1 while inside a closed panel). */
+  tabIndex?: number;
 }
 
 /** Marble-era CTA: magnetic hover, gold/glass variants, Link-aware. */
 export default function V2Button({
   children,
   href,
+  onClick,
   icon: Icon,
   variant = 'glass',
   size = 'md',
   className,
+  tabIndex,
 }: V2ButtonProps) {
   const { ref, x, y, onMouseMove, onMouseLeave } = useMagnetic(0.3);
 
@@ -62,6 +69,7 @@ export default function V2Button({
     transition: spring,
     onMouseMove,
     onMouseLeave,
+    tabIndex,
   };
 
   const content = (
@@ -71,7 +79,15 @@ export default function V2Button({
     </>
   );
 
-  if (href.startsWith('/')) {
+  if (onClick) {
+    return (
+      <motion.button ref={setNode} type="button" onClick={onClick} {...shared}>
+        {content}
+      </motion.button>
+    );
+  }
+
+  if (href?.startsWith('/')) {
     return (
       <MotionLink ref={setNode} href={href} {...shared}>
         {content}

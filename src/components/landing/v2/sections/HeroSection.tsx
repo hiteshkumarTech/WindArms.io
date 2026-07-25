@@ -1,9 +1,10 @@
 'use client';
 
-import { ChevronDown, Compass, Globe, Play, Zap } from 'lucide-react';
+import { ChevronDown, Compass, Globe, Zap } from 'lucide-react';
 import { HERO } from '@/lib/v2/content/hero';
 import { useSimulatedLiveStats } from '@/hooks/useSimulatedLiveStats';
 import { useHeroAnimation } from '../hooks/useHeroAnimation';
+import PlayCta from '../shared/PlayCta';
 import V2Button from '../shared/V2Button';
 import type { SectionRenderProps } from '../types';
 
@@ -75,9 +76,7 @@ export default function HeroSection({ bootDone }: SectionRenderProps) {
           </p>
 
           <div data-hero="cta" className="mt-8 flex flex-wrap items-center gap-3">
-            <V2Button href={HERO.primaryCta.href} variant="gold" size="lg" icon={Play}>
-              {HERO.primaryCta.label}
-            </V2Button>
+            <PlayCta href={HERO.primaryCta.href} label={HERO.primaryCta.label} size="lg" />
             <V2Button href={HERO.secondaryCta.href} variant="glass" size="lg" icon={Compass}>
               {HERO.secondaryCta.label}
             </V2Button>

@@ -1,27 +1,18 @@
 'use client';
 
-import { useEffect, useState } from 'react';
 import Link from 'next/link';
+import { useRequiresDesktopControls } from '@/hooks/useRequiresDesktopControls';
 
 /**
  * Desktop-controls notice (Milestone 6). The brief explicitly scopes OUT a
  * touch-control system for this milestone — so on coarse-pointer / narrow
  * viewports we present a clean "desktop recommended" screen instead of a
- * broken half-working mouse-look experience. Detected client-side (pointer:
- * coarse OR width < 900) after mount to avoid any SSR mismatch.
+ * broken half-working mouse-look experience. Detection lives in
+ * `useRequiresDesktopControls` (shared with the marketing CTAs' "Play on
+ * Desktop" prompt) so both agree on what counts as "needs a desktop."
  */
 export default function MobileNotice() {
-  const [blocked, setBlocked] = useState(false);
-
-  useEffect(() => {
-    const check = () => {
-      const coarse = window.matchMedia('(pointer: coarse)').matches;
-      setBlocked(coarse || window.innerWidth < 900);
-    };
-    check();
-    window.addEventListener('resize', check);
-    return () => window.removeEventListener('resize', check);
-  }, []);
+  const blocked = useRequiresDesktopControls();
 
   if (!blocked) return null;
 
