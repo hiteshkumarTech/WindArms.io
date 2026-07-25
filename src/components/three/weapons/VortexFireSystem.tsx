@@ -13,6 +13,7 @@ import { playVortexDryFire, playVortexImpact, playVortexReload, playVortexShot, 
 import { viewKick } from '@/lib/v2/range/viewKick';
 import type { TargetUserData } from '@/lib/v2/combat/targets';
 import { damageAtDistance } from '@/lib/v2/weapons/vortexBallistics';
+import { resolveTriggerGate } from '@/lib/v2/weapons/triggerIntent';
 import { resolveWeaponState } from '@/lib/v2/weapons/vortexWeaponState';
 import { useVortexWeaponStore } from '@/lib/v2/weapons/vortexWeaponStore';
 
@@ -187,14 +188,19 @@ export default function VortexFireSystem({
     if (nextState !== store.animState) store.setAnimState(nextState);
 
     // --- Fire gating -------------------------------------------------------
-    if (!hasControl || equipping) return;
-    const wantsFire = triggerHeld.current || triggerQueued.current;
-    if (!wantsFire) return;
-    if (now - lastFireAt.current < fireIntervalMs) return;
-    if (store.reloadingUntil !== 0) return;
+    const gate = resolveTriggerGate(
+      { held: triggerHeld.current, queued: triggerQueued.current },
+      {
+        hasControl,
+        equipping,
+        reloading: store.reloadingUntil !== 0,
+        fireIntervalElapsed: now - lastFireAt.current >= fireIntervalMs,
+      },
+    );
+    triggerQueued.current = gate.nextQueued;
+    if (!gate.shouldAttemptFire) return;
 
     if (store.ammo <= 0) {
-      triggerQueued.current = false;
       store.startReload(now + (stats.reloadTimeS ?? 2.2) * 1000);
       reloadSignal.startNonce += 1;
       playVortexDryFire();
@@ -202,7 +208,6 @@ export default function VortexFireSystem({
       return;
     }
 
-    triggerQueued.current = false;
     lastFireAt.current = now;
     store.consumeRound();
     store.recordShot();
