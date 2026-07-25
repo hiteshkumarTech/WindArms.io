@@ -68,7 +68,7 @@ export default function WeaponCard({ card }: WeaponCardProps) {
                 aria-hidden
               />
               <span
-                className="absolute inset-x-0 bottom-2 text-center text-[10px] uppercase tracking-[0.3em] text-white/25"
+                className="absolute inset-x-0 bottom-2 text-center text-[10px] uppercase tracking-[0.3em] text-storm-mist/70"
                 aria-hidden
               >
                 Concept slot
@@ -93,7 +93,7 @@ export default function WeaponCard({ card }: WeaponCardProps) {
           <div className="mt-auto space-y-1.5 pt-4">
             {STAT_LABELS.map(({ key, label }) => (
               <div key={key} className="flex items-center gap-2">
-                <span className="w-14 text-[9px] uppercase tracking-widest text-white/40">{label}</span>
+                <span className="w-14 text-[9px] uppercase tracking-widest text-storm-mist/70">{label}</span>
                 <div className="h-1 flex-1 overflow-hidden rounded-full bg-white/10">
                   <div
                     className="h-full rounded-full"

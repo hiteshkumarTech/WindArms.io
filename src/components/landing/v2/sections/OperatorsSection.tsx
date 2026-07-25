@@ -37,7 +37,7 @@ export default function OperatorsSection(_props: SectionRenderProps) {
                     {operator.monogram}
                   </span>
                   <span
-                    className="absolute bottom-3 text-[10px] uppercase tracking-[0.3em] text-white/25"
+                    className="absolute bottom-3 text-[10px] uppercase tracking-[0.3em] text-storm-mist/70"
                     aria-hidden
                   >
                     Operator concept slot

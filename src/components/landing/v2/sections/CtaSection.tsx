@@ -39,7 +39,7 @@ export default function CtaSection(_props: SectionRenderProps) {
       >
         <div>
           <p className="text-xs font-semibold tracking-wide text-storm-marble/90">{FOOTER.tagline}</p>
-          <p className="mt-1 text-[11px] text-storm-mist/50">{FOOTER.build}</p>
+          <p className="mt-1 text-[11px] text-storm-mist/70">{FOOTER.build}</p>
         </div>
         <ul className="flex flex-wrap items-center justify-center gap-x-5 gap-y-2">
           {FOOTER.links.map((link) => (

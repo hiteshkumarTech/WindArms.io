@@ -111,7 +111,7 @@ export default function Preloader({ onComplete }: PreloaderProps) {
           />
         </div>
 
-        <p className="mt-6 text-[10px] uppercase tracking-widest text-white/25">
+        <p className="mt-6 text-[10px] uppercase tracking-widest text-storm-mist/70">
           {skipped ? 'Entering…' : 'Click to skip'}
         </p>
       </div>

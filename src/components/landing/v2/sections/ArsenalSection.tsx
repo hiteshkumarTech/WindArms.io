@@ -65,7 +65,7 @@ export default function ArsenalSection(_props: SectionRenderProps) {
           <div id={statsId} hidden={!statsOpen} className="mt-3 space-y-1.5">
             {STAT_LABELS.map(({ key, label }) => (
               <div key={key} className="flex items-center gap-2">
-                <span className="w-14 text-[9px] uppercase tracking-widest text-white/40">{label}</span>
+                <span className="w-14 text-[9px] uppercase tracking-widest text-storm-mist/70">{label}</span>
                 <div className="h-1 flex-1 overflow-hidden rounded-full bg-white/10">
                   <div
                     className="h-full rounded-full"
@@ -80,7 +80,7 @@ export default function ArsenalSection(_props: SectionRenderProps) {
 
       {/* Rest of the arsenal — named, not boxed. Minimal by design (see docs/decisions.md), not a placeholder for a card that didn't ship. */}
       <div data-reveal className="mt-8 flex flex-wrap items-center gap-x-8 gap-y-2 border-t border-white/10 pt-6">
-        <span className="text-[10px] font-bold uppercase tracking-[0.3em] text-white/35">Also in the arsenal</span>
+        <span className="text-[10px] font-bold uppercase tracking-[0.3em] text-storm-mist/70">Also in the arsenal</span>
         {SECONDARY_IDS.map((id) => (
           <span key={id} className="text-xs font-medium uppercase tracking-[0.15em] text-storm-mist/60">
             {WIND_WEAPONS[id].name}
