@@ -35,3 +35,6 @@ WindArms Assets/**/*.glb
 WindArms Assets/**/*.fbx
 
 .mcp.json
+
+# Claude Code local settings/skills
+.claude/
