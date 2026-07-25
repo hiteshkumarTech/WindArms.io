@@ -3,10 +3,12 @@
 import dynamic from 'next/dynamic';
 import { useEffect, useRef } from 'react';
 import { usePointerLock } from '@/hooks/usePointerLock';
+import { useAnimDebugEnabled } from '@/lib/v2/weapons/useAnimDebugEnabled';
 import { useGripDebugEnabled } from '@/lib/v2/weapons/useGripDebugEnabled';
 import { useIkDebugEnabled } from '@/lib/v2/weapons/useIkDebugEnabled';
 import { useRangeKeyboardInput } from '@/lib/v2/range/useRangeKeyboardInput';
 import { unlockVortexAudio } from '@/lib/v2/range/vortexAudio';
+import ArmActionDebugPanel from './ArmActionDebugPanel';
 import KaelArmIkTunerPanel from './KaelArmIkTunerPanel';
 import RangeHud from './RangeHud';
 import VortexGripTunerPanel from './VortexGripTunerPanel';
@@ -25,6 +27,7 @@ export default function RangeView() {
   const inputRef = useRangeKeyboardInput();
   const gripDebugEnabled = useGripDebugEnabled();
   const ikDebugEnabled = useIkDebugEnabled();
+  const animDebugEnabled = useAnimDebugEnabled();
 
   useEffect(() => {
     setTarget(containerRef.current);
@@ -41,6 +44,7 @@ export default function RangeView() {
       {locked && <RangeHud />}
       {gripDebugEnabled && <VortexGripTunerPanel />}
       {ikDebugEnabled && <KaelArmIkTunerPanel />}
+      {animDebugEnabled && <ArmActionDebugPanel />}
       {!locked && (
         <button
           type="button"

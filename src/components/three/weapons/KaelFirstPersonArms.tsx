@@ -9,10 +9,10 @@ import { operatorArmsSlot } from '@/lib/v2/operators';
 import { MissingCriticalBoneError, recenterArmMetrics, resolveKaelArmBones } from '@/lib/v2/operators/kaelArmRig';
 import { buildSideRuntimeState, classifyVerticesInCameraSpace, isDev, restoreRestPose, solveSide, type SideTuningOverrides, warnOnce } from '@/lib/v2/operators/kaelArmSolve';
 import { FIRST_PERSON_ARM_IK_CONFIG, LEFT_HAND_FINGER_POSE, RIGHT_HAND_FINGER_POSE } from '@/lib/v2/operators/firstPersonArmIkConfig';
-import { computeArmWeightTargets, createArmWeightSmoothState, smoothArmWeights } from '@/lib/v2/operators/firstPersonArmWeights';
+import { createArmWeightSmoothState, smoothArmWeights } from '@/lib/v2/operators/firstPersonArmWeights';
+import { actionPoseState } from '@/lib/v2/weapons/actionPoseState';
 import { getGripWorldPose } from '@/lib/v2/weapons/gripWorldPose';
 import { kaelArmDebugState } from '@/lib/v2/weapons/kaelArmDebugState';
-import { useVortexWeaponStore } from '@/lib/v2/weapons/vortexWeaponStore';
 import { useGripTunerStore } from '@/lib/v2/weapons/gripTunerStore';
 import { useIkTunerStore } from '@/lib/v2/weapons/ikTunerStore';
 
@@ -240,7 +240,13 @@ function LoadedKaelArms({ url, lod, camera }: { url: string; lod: number; camera
     }
   }, [instance]);
 
-  const smoothState = useMemo(() => ({ right: createArmWeightSmoothState(), left: createArmWeightSmoothState() }), []);
+  // One shared smoother (not two redundant ones computing the identical
+  // result and then being cherry-picked from — Step 7C simplification).
+  const armWeightSmooth = useMemo(() => createArmWeightSmoothState(), []);
+  // Step 7C — blended left-hand IK target (grip anchor <-> action target),
+  // preallocated once, mutated in place every frame.
+  const blendedLeftTargetPos = useRef(new THREE.Vector3());
+  const blendedLeftTargetQuat = useRef(new THREE.Quaternion());
 
   useEffect(() => {
     if (instance) {
@@ -272,10 +278,8 @@ function LoadedKaelArms({ url, lod, camera }: { url: string; lod: number; camera
     const container = containerRef.current;
     if (!container || !runtime || !instance) return;
 
-    const store = useVortexWeaponStore.getState();
     const gripTuner = useGripTunerStore.getState();
     const ikTuner = useIkTunerStore.getState();
-    const now = performance.now();
     const frozen = gripTuner.frozen || ikTuner.frozen;
 
     // "DIRECT CAMERA MOUNT" (Step 6E, 2026-07-22) — the hardest-possible
@@ -570,14 +574,12 @@ function LoadedKaelArms({ url, lod, camera }: { url: string; lod: number; camera
     const containerWorldQuat = containerWorldQuatRef.current;
     container.getWorldQuaternion(containerWorldQuat);
 
-    const targets = computeArmWeightTargets({
-      reloading: store.reloadingUntil !== 0,
-      inspecting: now < store.inspectingUntil,
-      frozen,
-    });
+    // Step 7C: right/left IK-weight TARGETS now come from the action pose
+    // `VortexViewmodel` already computed and published this frame (one
+    // action computation per frame, per instruction) — idle target is
+    // exactly {right:1, left:1}, unchanged from before this pass.
     if (!frozen) {
-      smoothArmWeights(smoothState.right, targets, delta);
-      smoothArmWeights(smoothState.left, targets, delta);
+      smoothArmWeights(armWeightSmooth, { right: actionPoseState.rightHandIkWeight, left: actionPoseState.leftHandIkWeight }, delta);
     }
 
     // Diagnostic-only (blocker pass, 2026-07-22; extended Step 6F): `?ik=1`'s
@@ -603,7 +605,19 @@ function LoadedKaelArms({ url, lod, camera }: { url: string; lod: number; camera
       basisEulerScratchRef.current.set(THREE.MathUtils.degToRad(rightBasisDeg[0]), THREE.MathUtils.degToRad(rightBasisDeg[1]), THREE.MathUtils.degToRad(rightBasisDeg[2]), 'XYZ'),
     );
     rightTuning.rotationWeight = ikTuner.rightWristRotationWeight ?? undefined;
-    rightTuning.fingerCurlScale = ikTuner.rightFingerCurlScale ?? FIRST_PERSON_ARM_IK_CONFIG.rightFingerCurlScale;
+    // Step 7C: once an action's finger-curl target has taken over
+    // (`leftActionTargetWeight`/right's mirror stays 0 today, but this
+    // reads generically), `actionPoseState` already carries the fully
+    // resolved curl for this frame — reading it directly here keeps the
+    // canonical<->action blend as ONE computation (VortexViewmodel's),
+    // never a second one. While idle, `actionPoseState`'s fields are
+    // byte-identical to the tuner-aware canonical below by construction
+    // (`computeActionPose`'s idle branch returns its inputs unchanged), so
+    // falling back to the tuner-aware value only outside an active action
+    // costs nothing in the idle case and preserves live tuner
+    // responsiveness for calibration sessions.
+    const tunerAwareRightCurl = ikTuner.rightFingerCurlScale ?? FIRST_PERSON_ARM_IK_CONFIG.rightFingerCurlScale;
+    rightTuning.fingerCurlScale = actionPoseState.leftActionTargetWeight > 0 ? actionPoseState.rightFingerCurlScale : tunerAwareRightCurl;
     const rightAssist = ikTuner.rightShoulderAssistLocal ?? FIRST_PERSON_ARM_IK_CONFIG.rightShoulderAssistLocal;
     rightTuning.shoulderAssistLocal!.set(rightAssist[0], rightAssist[1], rightAssist[2]);
 
@@ -613,9 +627,27 @@ function LoadedKaelArms({ url, lod, camera }: { url: string; lod: number; camera
       basisEulerScratchRef.current.set(THREE.MathUtils.degToRad(leftBasisDeg[0]), THREE.MathUtils.degToRad(leftBasisDeg[1]), THREE.MathUtils.degToRad(leftBasisDeg[2]), 'XYZ'),
     );
     leftTuning.rotationWeight = ikTuner.leftWristRotationWeight ?? undefined;
-    leftTuning.fingerCurlScale = ikTuner.leftFingerCurlScale ?? FIRST_PERSON_ARM_IK_CONFIG.leftFingerCurlScale;
+    const tunerAwareLeftCurl = ikTuner.leftFingerCurlScale ?? FIRST_PERSON_ARM_IK_CONFIG.leftFingerCurlScale;
+    leftTuning.fingerCurlScale = actionPoseState.leftActionTargetWeight > 0 ? actionPoseState.leftFingerCurlScale : tunerAwareLeftCurl;
     const leftAssist = ikTuner.leftShoulderAssistLocal ?? FIRST_PERSON_ARM_IK_CONFIG.leftShoulderAssistLocal;
     leftTuning.shoulderAssistLocal!.set(leftAssist[0], leftAssist[1], leftAssist[2]);
+
+    // Step 7C: blend the LEFT hand's IK target between the normal grip
+    // anchor and the reload/inspect action target — right hand's target is
+    // untouched, always the raw grip anchor (the right hand remains the
+    // primary weapon attachment at all times). `actionPoseState.ready`
+    // guards against blending toward a target that was never actually
+    // resolved this frame (e.g. a stale bridge right after mount).
+    let leftTargetPos = pose.leftPosition;
+    let leftTargetQuat = pose.leftQuaternion;
+    if (actionPoseState.ready && actionPoseState.leftActionTargetWeight > 0) {
+      const blendedPos = blendedLeftTargetPos.current;
+      const blendedQuat = blendedLeftTargetQuat.current;
+      blendedPos.copy(pose.leftPosition).lerp(actionPoseState.leftTargetPosition, actionPoseState.leftActionTargetWeight);
+      blendedQuat.copy(pose.leftQuaternion).slerp(actionPoseState.leftTargetQuaternion, actionPoseState.leftActionTargetWeight);
+      leftTargetPos = blendedPos;
+      leftTargetQuat = blendedQuat;
+    }
 
     const rightOk = solveSide(
       runtime.right,
@@ -624,7 +656,7 @@ function LoadedKaelArms({ url, lod, camera }: { url: string; lod: number; camera
       pose.rightPosition,
       pose.rightQuaternion,
       ikTuner.rightElbowPoleLocal ?? FIRST_PERSON_ARM_IK_CONFIG.rightElbowPoleLocal,
-      smoothState.right.right * ikWeightMultiplier,
+      armWeightSmooth.right * ikWeightMultiplier,
       RIGHT_HAND_FINGER_POSE,
       kaelArmDebugState.right,
       rightTuning,
@@ -633,10 +665,10 @@ function LoadedKaelArms({ url, lod, camera }: { url: string; lod: number; camera
       runtime.left,
       container,
       containerWorldQuat,
-      pose.leftPosition,
-      pose.leftQuaternion,
+      leftTargetPos,
+      leftTargetQuat,
       ikTuner.leftElbowPoleLocal ?? FIRST_PERSON_ARM_IK_CONFIG.leftElbowPoleLocal,
-      smoothState.left.left * ikWeightMultiplier,
+      armWeightSmooth.left * ikWeightMultiplier,
       LEFT_HAND_FINGER_POSE,
       kaelArmDebugState.left,
       leftTuning,

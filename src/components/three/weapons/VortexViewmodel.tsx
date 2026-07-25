@@ -6,9 +6,15 @@ import * as THREE from 'three';
 import { WIND_WEAPONS } from '@shared/windWeapons';
 import PipelineModel from '@/components/three/pipeline/PipelineModel';
 import { ProceduralAeolus } from '@/components/three/storm/AeolusShowpiece';
+import { FIRST_PERSON_ARM_IK_CONFIG } from '@/lib/v2/operators/firstPersonArmIkConfig';
+import { computeActionPose, createActionPose, type ActionKind } from '@/lib/v2/operators/actionPose';
+import { useV2MatchStore } from '@/lib/v2/play/matchStore';
 import { effectsBus, fireSignal, reloadSignal } from '@/lib/v2/range/effectsBus';
 import { rangeLocalPose } from '@/lib/v2/range/localPose';
 import { muzzleWorldPose } from '@/lib/v2/range/muzzleWorldPose';
+import { actionPoseState } from '@/lib/v2/weapons/actionPoseState';
+import { INSPECT_LEFT_HAND_LOCAL, RELOAD_LEFT_HAND_LOCAL } from '@/lib/v2/weapons/actionTargets';
+import { useAnimDebugStore } from '@/lib/v2/weapons/animDebugStore';
 import { checkDynamicAnchorState, checkStaticAnchorLayout } from '@/lib/v2/weapons/gripAnchorRegressionChecks';
 import { useGripTunerStore } from '@/lib/v2/weapons/gripTunerStore';
 import { beginGripGeneration, invalidateGripWorldPose, publishGripWorldPose } from '@/lib/v2/weapons/gripWorldPose';
@@ -31,16 +37,6 @@ const FALLBACK_SCALE = 0.26;
  */
 const DEBUG_SHOW_MUZZLE_ANCHOR = false;
 
-/** Ammo-feed drop/insert/settle curve — same phased-curve idiom as v1's WeaponViewmodel.tsx `reloadFeedOffset`, not a raw lerp, so it reads as loading a magazine rather than just dipping. */
-function reloadDipOffset(t: number): number {
-  const c = THREE.MathUtils.clamp(t, 0, 1);
-  if (c < 0.35) return THREE.MathUtils.lerp(0, -0.16, THREE.MathUtils.smoothstep(c, 0, 0.35));
-  if (c < 0.55) return -0.16;
-  if (c < 0.85) return THREE.MathUtils.lerp(-0.16, 0, THREE.MathUtils.smoothstep(c, 0.55, 0.85));
-  const settle = (c - 0.85) / 0.15;
-  return Math.sin(settle * Math.PI * 2) * 0.01 * (1 - settle);
-}
-
 /**
  * First-person Vortex Rifle. Real GLB (public/v2-art/vortex-rifle.lod1.glb)
  * via PipelineModel, `ProceduralAeolus` as the fallback. Shared, unchanged,
@@ -48,11 +44,20 @@ function reloadDipOffset(t: number): number {
  *
  * Base pose (rest position/rotation for hip and ADS) lives in
  * `vortexViewmodelPose.ts` — this component only owns the ADDITIVE dynamic
- * motion (sway/bob/recoil punch/reload dip/inspect wobble) and the
+ * motion (sway/bob/recoil punch/reload+inspect presentation) and the
  * hip↔ADS blend, plus publishing the runtime muzzle anchor
  * (`vortexRuntimeAnchors.ts`) to world space every frame via
  * `muzzleWorldPose` so `VortexFireSystem` can spawn the visible tracer/
  * muzzle-flash from the actual barrel instead of a fixed camera offset.
+ *
+ * Reload/inspect presentation (Step 7C) is computed ONCE per frame here via
+ * the pure `computeActionPose` (`lib/v2/operators/actionPose.ts`) — this
+ * component applies the weapon-offset half directly to its own group
+ * transform (same insertion point the old inline dip/wobble math used) and
+ * publishes the hand-relevant half (`actionPoseState.ts`) for
+ * `KaelFirstPersonArms.tsx` to read imperatively. Single source of truth:
+ * the weapon's dip/lift and the arms' target-blend/finger-curl can never
+ * numerically disagree, because both come from this one computation.
  */
 export default function VortexViewmodel() {
   const camera = useThree((state) => state.camera);
@@ -74,6 +79,16 @@ export default function VortexViewmodel() {
     muzzleWorldPose.ready = false;
     return () => {
       muzzleWorldPose.ready = false;
+    };
+  }, []);
+
+  // Same reset-on-(un)mount reasoning as the muzzle effect above — a route
+  // remount must never read a previous instance's stale action target (Step
+  // 7C requirement).
+  useEffect(() => {
+    actionPoseState.ready = false;
+    return () => {
+      actionPoseState.ready = false;
     };
   }, []);
 
@@ -120,6 +135,13 @@ export default function VortexViewmodel() {
     gripScratchPos: new THREE.Vector3(),
     gripScratchEuler: new THREE.Euler(),
     gripScratchLocalQuat: new THREE.Quaternion(),
+    /** Step 7C — persistent, mutated in place every frame by `computeActionPose` (never reassigned, matching the "no per-call allocation when outputs are supplied" requirement). */
+    actionPose: createActionPose(),
+    actionTargetPos: new THREE.Vector3(),
+    actionTargetQuat: new THREE.Quaternion(),
+    actionScratchPos: new THREE.Vector3(),
+    actionScratchEuler: new THREE.Euler(),
+    actionScratchLocalQuat: new THREE.Quaternion(),
   });
   // Preallocated wrapper objects for resolveRuntimeAnchorWorldPose's
   // output/scratch parameters — created ONCE outside useFrame (not as
@@ -132,6 +154,10 @@ export default function VortexViewmodel() {
     right: { position: sim.current.rightGripPos, quaternion: sim.current.rightGripQuat },
     left: { position: sim.current.leftGripPos, quaternion: sim.current.leftGripQuat },
     scratch: { pos: sim.current.gripScratchPos, euler: sim.current.gripScratchEuler, localQuat: sim.current.gripScratchLocalQuat },
+  });
+  const actionOutputs = useRef({
+    target: { position: sim.current.actionTargetPos, quaternion: sim.current.actionTargetQuat },
+    scratch: { pos: sim.current.actionScratchPos, euler: sim.current.actionScratchEuler, localQuat: sim.current.actionScratchLocalQuat },
   });
 
   useFrame((_, delta) => {
@@ -165,11 +191,54 @@ export default function VortexViewmodel() {
     flashMaterial.opacity = now < state.flashUntil ? 1 : 0;
     if (lightRef.current) lightRef.current.intensity = now < state.flashUntil ? 6 : 0;
 
-    // --- Reload dip --------------------------------------------------------
+    // --- Reload/inspect action pose (Step 7C) -------------------------------
+    // Frame-rate-independent progress from the SAME absolute-timestamp
+    // fields the old inline dip/wobble math already used — only the curve
+    // computation moved (into `computeActionPose`), not the timing source.
     if (reloadSignal.startNonce !== state.lastReloadStartNonce) state.lastReloadStartNonce = reloadSignal.startNonce;
     const reloadDuration = (WIND_WEAPONS.vortex.gameplayStats?.reloadTimeS ?? 2.2) * 1000;
-    const reloadT = store.reloadingUntil !== 0 ? 1 - (store.reloadingUntil - now) / reloadDuration : 0;
-    const reloadY = store.reloadingUntil !== 0 ? reloadDipOffset(reloadT) : 0;
+    const reloading = store.reloadingUntil !== 0;
+    const inspecting = !reloading && now < store.inspectingUntil;
+    const inspectDuration = 1500;
+    const reloadT = reloading ? 1 - (store.reloadingUntil - now) / reloadDuration : 0;
+    const inspectT = inspecting ? 1 - (store.inspectingUntil - now) / inspectDuration : 0;
+    let actionKind: ActionKind = reloading ? 'reload' : inspecting ? 'inspect' : 'idle';
+    let actionProgress = reloading ? reloadT : inspecting ? inspectT : 0;
+
+    // Step 7C dev-only preview (`?anim=1`): when the anim debug store is in
+    // `scrub` mode, its kind/progress REPLACE the real gameplay-driven
+    // values above for this computation only — ammo/reload/inspect
+    // gameplay state (`useVortexWeaponStore`) is never touched, so this can
+    // never affect real firing/reload logic. `mode` defaults to `'live'`
+    // and nothing outside an active `?anim=1` session can set it otherwise
+    // (see `animDebugStore.ts`'s module doc).
+    const anim = useAnimDebugStore.getState();
+    if (anim.mode === 'scrub') {
+      if (anim.playing) {
+        const durationS = anim.scrubKind === 'reload' ? reloadDuration / 1000 : anim.scrubKind === 'inspect' ? inspectDuration / 1000 : 1;
+        let next = anim.scrubProgress + delta / Math.max(durationS, 0.001);
+        if (next >= 1) {
+          next = anim.loop ? next % 1 : 1;
+          if (!anim.loop) useAnimDebugStore.setState({ playing: false });
+        }
+        useAnimDebugStore.setState({ scrubProgress: next });
+        actionKind = anim.scrubKind;
+        actionProgress = next;
+      } else {
+        actionKind = anim.scrubKind;
+        actionProgress = anim.scrubProgress;
+      }
+    }
+
+    computeActionPose(
+      {
+        kind: actionKind,
+        progress: actionProgress,
+        canonicalRightFingerCurl: FIRST_PERSON_ARM_IK_CONFIG.rightFingerCurlScale,
+        canonicalLeftFingerCurl: FIRST_PERSON_ARM_IK_CONFIG.leftFingerCurlScale,
+      },
+      state.actionPose,
+    );
 
     // --- ADS blend -----------------------------------------------------
     const adsTarget = store.ads && store.reloadingUntil === 0 ? 1 : 0;
@@ -194,18 +263,6 @@ export default function VortexViewmodel() {
     const bobAmp = Math.min(speed / 9, 1) * 0.014 * bobMul * (rangeLocalPose.grounded ? 1 : 0.3);
     const bobX = Math.cos(state.bobPhase) * bobAmp;
     const bobY = Math.abs(Math.sin(state.bobPhase)) * bobAmp * 1.4;
-
-    // --- Inspect wobble ------------------------------------------------
-    const inspecting = now < store.inspectingUntil;
-    let inspectY = 0;
-    let inspectTiltZ = 0;
-    if (inspecting) {
-      const inspectDuration = 1500;
-      const progress = 1 - (store.inspectingUntil - now) / inspectDuration;
-      const ease = Math.sin(THREE.MathUtils.clamp(progress, 0, 1) * Math.PI);
-      inspectY = ease * 0.05;
-      inspectTiltZ = Math.sin(progress * Math.PI * 2) * 0.08 * ease;
-    }
 
     // --- Compose the final pose: hip↔ADS blend, then additive dynamics ----
     const pos = {
@@ -241,15 +298,26 @@ export default function VortexViewmodel() {
     // correct and intended for a dev calibration session (nothing fires
     // while tuning grips), never a concern in production since `frozen`
     // can't be true there.
-    if (!useGripTunerStore.getState().frozen) {
+    //
+    // Step 7C: also freeze while the match is paused or the player is dead
+    // ("Pause must freeze the current action pose") — reusing this SAME
+    // freeze mechanism rather than adding a second one. `useV2MatchStore`
+    // is a plain global store safe to read from `/v2/range` too (it just
+    // never leaves its initial phase there, so this is always `false` on
+    // that route). Read imperatively via `getState()` — no subscription,
+    // no re-render, same convention as the grip-tuner check above.
+    const matchPhase = useV2MatchStore.getState().phase;
+    const freezeDynamics = useGripTunerStore.getState().frozen || matchPhase === 'paused' || matchPhase === 'playerDead';
+    if (!freezeDynamics) {
+      const actionPose = state.actionPose;
       // Position first, in un-rotated view space (camera-relative, intuitive to author) — see ViewmodelPose's doc comment.
-      group.translateX(pos.x + state.swayX + bobX);
-      group.translateY(pos.y + state.swayY + bobY + reloadY + inspectY + raiseY + state.punch * 0.06);
-      group.translateZ(pos.z + state.punch * 0.08);
+      group.translateX(pos.x + state.swayX + bobX + actionPose.weaponPositionOffset[0]);
+      group.translateY(pos.y + state.swayY + bobY + actionPose.weaponPositionOffset[1] + raiseY + state.punch * 0.06);
+      group.translateZ(pos.z + state.punch * 0.08 + actionPose.weaponPositionOffset[2]);
       // Then rotate the model in place around its now-fixed origin — base pose (incl. the +X→-Z forward correction) plus dynamic recoil/inspect on top.
-      group.rotateX(rot.x + state.punch * 0.06);
-      group.rotateY(rot.y);
-      group.rotateZ(rot.z + inspectTiltZ);
+      group.rotateX(rot.x + state.punch * 0.06 + actionPose.weaponRotationOffset[0]);
+      group.rotateY(rot.y + actionPose.weaponRotationOffset[1]);
+      group.rotateZ(rot.z + actionPose.weaponRotationOffset[2]);
     } else {
       group.translateX(pos.x);
       group.translateY(pos.y);
@@ -319,6 +387,38 @@ export default function VortexViewmodel() {
       invalidateGripWorldPose(state.gripGeneration);
     }
     checkDynamicAnchorState(poseScale, state.rightGripPos, state.leftGripPos, camera.position);
+
+    // --- Publish the action pose + resolved left-hand action target -------
+    // Reuses this frame's already-resolved `groupWorldPos`/`scratchQuat` —
+    // no duplicate weapon-transform computation. Only resolves a target
+    // anchor when an action is actually active (`leftActionTargetWeight >
+    // 0`); otherwise publishes the hand-weight/finger-curl/phase fields
+    // with `ready: false` on the target itself so a consumer never blends
+    // toward a stale, no-longer-relevant world position.
+    const ap = state.actionPose;
+    actionPoseState.rightHandIkWeight = ap.rightHandIkWeight;
+    actionPoseState.leftHandIkWeight = ap.leftHandIkWeight;
+    actionPoseState.rightFingerCurlScale = ap.rightFingerCurlScale;
+    actionPoseState.leftFingerCurlScale = ap.leftFingerCurlScale;
+    actionPoseState.leftActionTargetWeight = ap.leftActionTargetWeight;
+    actionPoseState.actionPhase = ap.actionPhase;
+    if (ap.leftActionTargetWeight > 0 && state.gripGeneration !== 0) {
+      // `state.gripGeneration !== 0` — same stale-generation guard
+      // `publishGripWorldPose` already enforces (see `gripWorldPose.ts`'s
+      // module doc: a React Strict Mode double-invoked effect's straggler
+      // frame, or a just-unmounted instance's in-flight `useFrame`, must
+      // never publish). Reuses the SAME generation counter rather than
+      // inventing a second one for this bridge.
+      const anchor = actionKind === 'reload' ? RELOAD_LEFT_HAND_LOCAL : INSPECT_LEFT_HAND_LOCAL;
+      const targetOk = resolveRuntimeAnchorWorldPose(anchor, poseScale, state.groupWorldPos, state.scratchQuat, actionOutputs.current.target, actionOutputs.current.scratch);
+      actionPoseState.ready = targetOk;
+      if (targetOk) {
+        actionPoseState.leftTargetPosition.copy(state.actionTargetPos);
+        actionPoseState.leftTargetQuaternion.copy(state.actionTargetQuat);
+      }
+    } else {
+      actionPoseState.ready = false;
+    }
   });
 
   return (

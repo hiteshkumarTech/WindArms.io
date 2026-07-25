@@ -5,10 +5,12 @@ import { Canvas } from '@react-three/fiber';
 import { Physics } from '@react-three/rapier';
 import { PLAYER } from '@/lib/game/constants';
 import { STORM } from '@/lib/v2/tokens';
+import ActionTargetDebugMarkers from '@/components/three/weapons/debug/ActionTargetDebugMarkers';
 import KaelArmIkDebug from '@/components/three/weapons/debug/KaelArmIkDebug';
 import VortexGripAnchorDebug from '@/components/three/weapons/debug/VortexGripAnchorDebug';
 import KaelFirstPersonArms from '@/components/three/weapons/KaelFirstPersonArms';
 import VortexViewmodel from '@/components/three/weapons/VortexViewmodel';
+import { useAnimDebugEnabled } from '@/lib/v2/weapons/useAnimDebugEnabled';
 import { useGripDebugEnabled } from '@/lib/v2/weapons/useGripDebugEnabled';
 import { useIkDebugEnabled } from '@/lib/v2/weapons/useIkDebugEnabled';
 import type { RangeInputSnapshot } from '@/lib/v2/range/useRangeKeyboardInput';
@@ -27,6 +29,7 @@ import VortexFireSystem from './VortexFireSystem';
 export default function RangeScene({ inputRef }: { inputRef: React.MutableRefObject<RangeInputSnapshot> }) {
   const gripDebugEnabled = useGripDebugEnabled();
   const ikDebugEnabled = useIkDebugEnabled();
+  const animDebugEnabled = useAnimDebugEnabled();
   return (
     <Canvas shadows dpr={[1, 1.75]} camera={{ fov: PLAYER.FOV_BASE, near: 0.05, far: 200, position: [0, 3 + PLAYER.EYE_STAND, 10] }}>
       <color attach="background" args={[STORM.abyss]} />
@@ -47,6 +50,7 @@ export default function RangeScene({ inputRef }: { inputRef: React.MutableRefObj
         {gripDebugEnabled && <VortexGripAnchorDebug />}
         <KaelFirstPersonArms />
         {ikDebugEnabled && <KaelArmIkDebug />}
+        {animDebugEnabled && <ActionTargetDebugMarkers />}
       </Suspense>
       <RangeEffectsPools />
     </Canvas>
