@@ -41,6 +41,35 @@ const LOD_BUDGETS = {
  * floor). Keep in sync by hand if that script's budget ever changes. */
 const ARMS_BUDGET = { tris: 21_000, materials: 4, fileMB: 3, textureMB: 1 };
 
+/** operator-kael-lowerbody.glb budget (Milestone 8, Step 8B) — raised from
+ * the brief's original 15,000/17,000 after a real, measured quality curve
+ * (four live Blender runs against the real source): 60,000 tris was the
+ * only target that rendered completely clean (zero holes); 40,000 still
+ * showed minor visible blemishes, and 26,000/15-17k were both visibly
+ * broken. Keep in sync by hand with tools/blender/make-kael-fp-lowerbody.py's
+ * own LOWERBODY_BUDGET_TRIS/LOWERBODY_TARGET_TRIS if either ever changes. */
+const LOWERBODY_BUDGET = { trisTarget: 60_000, trisCeiling: 62_000, materials: 2, fileMB: 6, textureMB: 1 };
+
+/** Required bone-name fragments for the lower-body derivative — pelvis,
+ * both upper/lower legs, both feet, both toe chains. Deliberately does NOT
+ * include any head/neck/shoulder/arm/hand chain — those must be ABSENT,
+ * checked separately by LOWERBODY_FORBIDDEN_BONE_FRAGMENTS below. */
+const LOWERBODY_REQUIRED_BONE_FRAGMENTS = {
+  pelvis: ['hips', 'pelvis'],
+  upper_leg_left: ['leftupleg', 'leftthigh'], upper_leg_right: ['rightupleg', 'rightthigh'],
+  lower_leg_left: ['leftleg', 'leftcalf'], lower_leg_right: ['rightleg', 'rightcalf'],
+  foot_left: ['leftfoot'], foot_right: ['rightfoot'],
+  toe_left: ['lefttoe'], toe_right: ['righttoe'],
+};
+
+/** Bone-name fragments that must have NO real weighted vertex influence in
+ * the lower-body derivative — head/neck/shoulder/arm/hand/finger chains.
+ * Presence of the BONE NODE itself (inherited from the full 65-bone
+ * skeleton, kept for compatibility per Step 8B section 6) is fine; real
+ * skin WEIGHT on one of these is the actual contamination signal, checked
+ * via WEIGHTS_0/JOINTS_0 below, not just node-name presence. */
+const LOWERBODY_FORBIDDEN_WEIGHT_FRAGMENTS = ['head', 'neck', 'shoulder', 'arm', 'hand', 'thumb', 'index', 'middle', 'ring', 'pinky'];
+
 /** Required bone-name fragments (case-insensitive substring match against
  * node names) for an FP-arms derivative — both arm chains, both hands, all
  * 5 finger chains per side. Deliberately does NOT include any leg/hip/head
@@ -90,9 +119,11 @@ const file = args.find((a) => !a.startsWith('--'));
 const mode = args.includes('--mode') ? args[args.indexOf('--mode') + 1] : 'body';
 const lod = args.includes('--lod') ? Number(args[args.indexOf('--lod') + 1] ?? 0) : 0;
 
-if (!file || (mode === 'body' && !(lod in LOD_BUDGETS)) || (mode !== 'body' && mode !== 'arms')) {
+const KNOWN_MODES = ['body', 'arms', 'lowerbody'];
+if (!file || (mode === 'body' && !(lod in LOD_BUDGETS)) || !KNOWN_MODES.includes(mode)) {
   console.error('usage: node tools/inspect-operator.mjs <file.glb> [--lod 0|1|2]');
   console.error('       node tools/inspect-operator.mjs <file.glb> --mode arms');
+  console.error('       node tools/inspect-operator.mjs <file.glb> --mode lowerbody');
   process.exit(1);
 }
 
@@ -341,6 +372,334 @@ if (mode === 'arms') {
   gateArms(totalTris <= ARMS_BUDGET.tris, `triangles: ${num(totalTris)} / ${num(ARMS_BUDGET.tris)}`, `${num(totalTris)} triangles exceeds the arms budget of ${num(ARMS_BUDGET.tris)}.`);
   gateArms(materials.length <= ARMS_BUDGET.materials, `materials: ${materials.length} / ${ARMS_BUDGET.materials}`, `${materials.length} materials exceeds the arms budget of ${ARMS_BUDGET.materials}.`);
   gateArms(buffer.length <= ARMS_BUDGET.fileMB * 1024 * 1024, `file size: ${mb(buffer.length)} / ${ARMS_BUDGET.fileMB} MB`, `file ${mb(buffer.length)} MB exceeds the arms budget of ${ARMS_BUDGET.fileMB} MB.`);
+
+  console.log('\n─ Verdict');
+  for (const message of errors) console.log(`  ✖ ERROR   ${message}`);
+  for (const message of warnings) console.log(`  ▲ warning ${message}`);
+  if (errors.length === 0 && warnings.length === 0) console.log('  clean — ship it.');
+  console.log(`  ${errors.length} error(s), ${warnings.length} warning(s)\n`);
+  process.exitCode = errors.length > 0 ? 1 : 0;
+  process.exit(process.exitCode);
+}
+
+// ── Lower-body mode — separate, self-contained validation path (Milestone
+// 8, Step 8B) ─────────────────────────────────────────────────────────────
+// Mirrors --mode arms's structure exactly (same container/skeleton/geometry/
+// materials/budget/verdict shape), with two lower-body-specific additions:
+// a required-bone check for pelvis/leg/foot/toe chains (inverse of the arms
+// check), and a WEIGHT-based (not name-based) contamination check that the
+// derivative carries no real head/neck/shoulder/arm/hand influence — the
+// exact failure mode Step 8B's brief calls out as the one that must never
+// happen ("no weighted head/arm/finger contamination").
+if (mode === 'lowerbody') {
+  console.log(`\n═ Operator FP-LowerBody GLB Inspection: ${file}`);
+  console.log(`  container glTF v${buffer.readUInt32LE(4)} · file ${mb(buffer.length)} MB`);
+  console.log(`  generator: ${json.asset?.generator ?? 'unknown'}`);
+
+  const skins = json.skins ?? [];
+  console.log('\n─ Skeleton');
+  if (skins.length !== 1) {
+    errors.push(`expected exactly 1 skin, found ${skins.length}.`);
+  }
+  const skinJoints = skins[0]?.joints ?? [];
+  const jointCount = skinJoints.length;
+  console.log(`  skins: ${skins.length} · joints: ${jointCount}`);
+  if (jointCount === 0) errors.push('0 joints — not a rigged mesh.');
+  // Resolves a JOINTS_0 index (an index INTO skin.joints[]) to the actual node name.
+  const jointIndexToNodeName = skinJoints.map((nodeIdx) => (json.nodes[nodeIdx]?.name ?? '').toLowerCase());
+
+  const nodeNamesLower = new Set((json.nodes ?? []).map((n) => (n.name ?? '').toLowerCase()).filter(Boolean));
+  console.log('\n─ Required pelvis/leg/foot/toe bones (head/arms/hands intentionally absent — not checked for presence)');
+  const missingBoneChains = [];
+  for (const [chain, fragments] of Object.entries(LOWERBODY_REQUIRED_BONE_FRAGMENTS)) {
+    const found = [...nodeNamesLower].some((n) => fragments.some((f) => n.includes(f)));
+    if (!found) missingBoneChains.push(chain);
+  }
+  if (missingBoneChains.length > 0) {
+    errors.push(`missing required pelvis/leg/foot/toe bone chain(s): ${missingBoneChains.join(', ')}.`);
+    console.log(`  MISSING: ${missingBoneChains.join(', ')}`);
+  } else {
+    console.log(`  all ${Object.keys(LOWERBODY_REQUIRED_BONE_FRAGMENTS).length} required chains present.`);
+  }
+
+  console.log('\n─ Geometry');
+  let totalTris = 0;
+  let totalVerts = 0;
+  let unskinnedPrims = 0;
+  let boundsFinite = true;
+  for (const mesh of json.meshes ?? []) {
+    for (const prim of mesh.primitives) {
+      const position = json.accessors[prim.attributes.POSITION];
+      const indices = prim.indices !== undefined ? json.accessors[prim.indices] : null;
+      const tris = Math.round(indices ? indices.count / 3 : position.count / 3);
+      totalTris += tris;
+      totalVerts += position.count;
+      if (!(prim.attributes.JOINTS_0 !== undefined && prim.attributes.WEIGHTS_0 !== undefined)) unskinnedPrims += 1;
+      const allCoords = [...(position.min ?? []), ...(position.max ?? [])];
+      if (allCoords.length === 0 || allCoords.some((v) => !Number.isFinite(v))) boundsFinite = false;
+    }
+  }
+  console.log(`  verts: ${num(totalVerts)} · tris: ${num(totalTris)}`);
+  if (totalVerts === 0 || totalTris === 0) errors.push('zero vertices/triangles.');
+  if (unskinnedPrims > 0) errors.push(`${unskinnedPrims} primitive(s) missing JOINTS_0/WEIGHTS_0 — lower-body mesh must be fully skinned.`);
+  if (!boundsFinite) errors.push('POSITION accessor bounds are missing or non-finite.');
+  if (json.meshes?.length !== 1 || json.meshes?.[0]?.primitives?.length !== 1) {
+    errors.push(`expected exactly 1 mesh with 1 primitive (1 skinned mesh, 1 draw call per Step 8B section 5), found ${json.meshes?.length ?? 0} mesh(es).`);
+  }
+
+  // Raw-buffer accessor reader — identical mechanism to --mode arms's
+  // readAccessor (see that block's comments for the embedded-buffer-only
+  // caveat) — duplicated rather than factored out, since this file is
+  // intentionally kept dependency-free/single-file per its own header.
+  const CHUNK0_START = 20 + jsonLength;
+  const chunk0Length = buffer.readUInt32LE(CHUNK0_START);
+  const binChunkStart = CHUNK0_START + 8;
+  const COMPONENT_BYTES = { 5120: 1, 5121: 1, 5122: 2, 5123: 2, 5125: 4, 5126: 4 };
+  const TYPE_COMPONENTS = { SCALAR: 1, VEC2: 2, VEC3: 3, VEC4: 4 };
+  function readAccessorLowerBody(accessorIndex) {
+    const accessor = json.accessors[accessorIndex];
+    const bufferView = json.bufferViews[accessor.bufferView];
+    if (bufferView.buffer !== 0 || (json.buffers?.[0]?.uri !== undefined)) return null;
+    const compBytes = COMPONENT_BYTES[accessor.componentType];
+    const numComponents = TYPE_COMPONENTS[accessor.type];
+    if (!compBytes || !numComponents) return null;
+    const stride = bufferView.byteStride ?? compBytes * numComponents;
+    const base = binChunkStart + (bufferView.byteOffset ?? 0) + (accessor.byteOffset ?? 0);
+    const out = new Array(accessor.count);
+    for (let i = 0; i < accessor.count; i++) {
+      const recordOffset = base + i * stride;
+      const values = new Array(numComponents);
+      for (let c = 0; c < numComponents; c++) {
+        const byteOffset = recordOffset + c * compBytes;
+        values[c] = accessor.componentType === 5126 ? buffer.readFloatLE(byteOffset)
+          : accessor.componentType === 5123 ? buffer.readUInt16LE(byteOffset)
+          : accessor.componentType === 5125 ? buffer.readUInt32LE(byteOffset)
+          : accessor.componentType === 5121 ? buffer.readUInt8(byteOffset)
+          : accessor.componentType === 5122 ? buffer.readInt16LE(byteOffset)
+          : accessor.componentType === 5120 ? buffer.readInt8(byteOffset)
+          : null;
+      }
+      out[i] = values;
+    }
+    return out;
+  }
+
+  // ── Weight-based upper-body contamination check ──────────────────────
+  // The actual "no weighted head/arm/finger contamination" gate — reads
+  // real JOINTS_0/WEIGHTS_0 data, resolves each joint index to its bone
+  // name, and sums how much weight lands on a forbidden bone per vertex.
+  // Node-name presence (checked above via nodeNamesLower) is expected and
+  // fine — the full 65-bone skeleton is kept per Step 8B section 6; only
+  // real WEIGHT on those bones is contamination.
+  let contaminatedVertexCount = 0;
+  let maxContaminationFraction = 0;
+  let contaminationCheckSkipped = false;
+  let unweightedVertexCount = 0;
+  let nonFiniteWeights = false;
+  try {
+    for (const mesh of json.meshes ?? []) {
+      for (const prim of mesh.primitives) {
+        if (prim.attributes.JOINTS_0 === undefined || prim.attributes.WEIGHTS_0 === undefined) continue;
+        const joints = readAccessorLowerBody(prim.attributes.JOINTS_0);
+        const weights = readAccessorLowerBody(prim.attributes.WEIGHTS_0);
+        if (!joints || !weights) {
+          contaminationCheckSkipped = true;
+          continue;
+        }
+        for (let i = 0; i < weights.length; i++) {
+          const w = weights[i];
+          const j = joints[i];
+          if (w.some((x) => !Number.isFinite(x))) {
+            nonFiniteWeights = true;
+            continue;
+          }
+          const total = w.reduce((a, b) => a + b, 0);
+          if (total <= 1e-6) {
+            unweightedVertexCount += 1;
+            continue;
+          }
+          let forbiddenWeight = 0;
+          for (let c = 0; c < 4; c++) {
+            const jointName = jointIndexToNodeName[j[c]] ?? '';
+            if (LOWERBODY_FORBIDDEN_WEIGHT_FRAGMENTS.some((frag) => jointName.includes(frag))) {
+              forbiddenWeight += w[c];
+            }
+          }
+          const fraction = forbiddenWeight / total;
+          if (fraction > 0.01) contaminatedVertexCount += 1;
+          if (fraction > maxContaminationFraction) maxContaminationFraction = fraction;
+        }
+      }
+    }
+  } catch {
+    contaminationCheckSkipped = true;
+  }
+  console.log('\n─ Upper-body (head/neck/shoulder/arm/hand/finger) weight contamination check');
+  if (contaminationCheckSkipped) {
+    warnings.push('upper-body contamination check skipped (unsupported buffer/accessor layout, e.g. Draco/external buffer) — verify manually.');
+  } else {
+    console.log(`  contaminated vertices (>1% forbidden-bone weight): ${num(contaminatedVertexCount)} · max fraction: ${maxContaminationFraction.toFixed(4)}`);
+    if (contaminatedVertexCount > 0) {
+      errors.push(`${contaminatedVertexCount} vertex(es) carry real weighted influence from a head/neck/shoulder/arm/hand/finger bone (max fraction ${maxContaminationFraction.toFixed(4)}) — this derivative must contain zero upper-body weight influence.`);
+    }
+  }
+  if (nonFiniteWeights) errors.push('WEIGHTS_0 accessor contains non-finite (NaN/Infinity) values.');
+  console.log(`  unweighted vertices (WEIGHTS_0 sums to ~0): ${num(unweightedVertexCount)}`);
+  if (unweightedVertexCount > 0) errors.push(`${unweightedVertexCount} vertex(es) with WEIGHTS_0 summing to ~0 — lower-body mesh must be 100% weighted (Step 8B section 5: 0 unweighted vertices).`);
+
+  // ── Dangerous edge-length / face-area check ───────────────────────────
+  // Same MAX_EDGE_LENGTH_M mechanism as --mode arms (see that block's
+  // comment for the full "exploded geometry" investigation this guards
+  // against), PLUS an explicit max-face-area companion check (Step 8B
+  // section 4's own explicit ask, beyond what the arms gate checks).
+  const MAX_EDGE_LENGTH_M = 0.06;
+  const MAX_FACE_AREA_M2 = 0.001; // ~a 3cm x 3cm triangle -- generous margin above the arms pipeline's measured healthy range (max ~0.00042 m² post-scalpel-cleanup), flags anything materially worse
+  let maxEdgeFound = 0;
+  let maxFaceAreaFound = 0;
+  let edgeFaceCheckSkipped = false;
+  try {
+    for (const mesh of json.meshes ?? []) {
+      for (const prim of mesh.primitives) {
+        const positions = readAccessorLowerBody(prim.attributes.POSITION);
+        const indices = prim.indices !== undefined ? readAccessorLowerBody(prim.indices) : null;
+        if (!positions) {
+          edgeFaceCheckSkipped = true;
+          continue;
+        }
+        const triIndices = indices ? indices.map((v) => v[0]) : positions.map((_, i) => i);
+        for (let t = 0; t + 2 < triIndices.length; t += 3) {
+          const [ax, ay, az] = positions[triIndices[t]];
+          const [bx, by, bz] = positions[triIndices[t + 1]];
+          const [cx, cy, cz] = positions[triIndices[t + 2]];
+          const d1 = Math.hypot(ax - bx, ay - by, az - bz);
+          const d2 = Math.hypot(bx - cx, by - cy, bz - cz);
+          const d3 = Math.hypot(cx - ax, cy - ay, cz - az);
+          const m = Math.max(d1, d2, d3);
+          if (m > maxEdgeFound) maxEdgeFound = m;
+          // Heron's formula for triangle area from three edge lengths.
+          const s = (d1 + d2 + d3) / 2;
+          const areaSq = s * (s - d1) * (s - d2) * (s - d3);
+          const area = areaSq > 0 ? Math.sqrt(areaSq) : 0;
+          if (area > maxFaceAreaFound) maxFaceAreaFound = area;
+        }
+      }
+    }
+  } catch {
+    edgeFaceCheckSkipped = true;
+  }
+  if (edgeFaceCheckSkipped) {
+    warnings.push('extreme-edge-length/face-area check skipped (unsupported buffer/accessor layout) — verify manually if this asset renders unexpectedly large geometry.');
+  } else {
+    console.log(`\n─ Topology safety`);
+    console.log(`  max triangle edge length: ${maxEdgeFound.toFixed(4)}m (budget ${MAX_EDGE_LENGTH_M}m)`);
+    console.log(`  max triangle area: ${maxFaceAreaFound.toFixed(6)}m² (budget ${MAX_FACE_AREA_M2}m²)`);
+    if (maxEdgeFound > MAX_EDGE_LENGTH_M) {
+      errors.push(`max triangle edge length ${maxEdgeFound.toFixed(4)}m exceeds ${MAX_EDGE_LENGTH_M}m — likely a decimation artifact at the open waist boundary; re-run the lower-body builder's scalpel cleanup.`);
+    }
+    if (maxFaceAreaFound > MAX_FACE_AREA_M2) {
+      errors.push(`max triangle area ${maxFaceAreaFound.toFixed(6)}m² exceeds ${MAX_FACE_AREA_M2}m² — likely the same decimation-artifact class as the edge-length check.`);
+    }
+  }
+
+  console.log('\n─ Materials');
+  const materials = json.materials ?? [];
+  console.log(`  materials: ${materials.length}${materials.length ? ` (${materials.map((m) => m.name ?? 'unnamed').join(', ')})` : ''}`);
+  const lowerBodyImages = json.images ?? [];
+  console.log(`  embedded textures: ${lowerBodyImages.length}`);
+
+  const KNOWN_SAFE_MATERIAL_EXTENSIONS = [];
+  for (const material of materials) {
+    const extKeys = Object.keys(material.extensions ?? {});
+    const unsupported = extKeys.filter((k) => !KNOWN_SAFE_MATERIAL_EXTENSIONS.includes(k));
+    if (unsupported.length > 0) {
+      errors.push(`material "${material.name ?? 'unnamed'}" uses unsupported extension(s): ${unsupported.join(', ')} — the runtime GLTFLoader path is not verified for these.`);
+    }
+  }
+
+  const LOWERBODY_MAX_TEX_DIM = 2048;
+  const foundMapNames = new Set();
+  for (const material of materials) {
+    const pbr = material.pbrMetallicRoughness ?? {};
+    if (pbr.baseColorTexture) foundMapNames.add('baseColor');
+    if (material.normalTexture) foundMapNames.add('normal');
+    if (pbr.metallicRoughnessTexture) foundMapNames.add('metallicRoughness');
+    if (material.occlusionTexture) foundMapNames.add('occlusion');
+  }
+  console.log(`  maps present: ${[...foundMapNames].join(', ') || 'none'}`);
+  if (!foundMapNames.has('baseColor')) errors.push('no BaseColor (pbrMetallicRoughness.baseColorTexture) map found — Step 8B section 7 requires real PBR textures, not a neutral-grey material.');
+  if (!foundMapNames.has('normal')) errors.push('no Normal map found — Step 8B section 7 requires a Normal map.');
+  if (!foundMapNames.has('metallicRoughness') && !foundMapNames.has('occlusion')) errors.push('no packed ORM (metallicRoughness/occlusion) map found — Step 8B section 7 requires a packed ORM map.');
+
+  for (const [i, image] of lowerBodyImages.entries()) {
+    if (image.bufferView === undefined) {
+      warnings.push(`image ${i} ("${image.name ?? 'unnamed'}") has no bufferView — not embedded, breaking this pipeline's self-contained-GLB convention.`);
+      continue;
+    }
+    const bv = json.bufferViews[image.bufferView];
+    const base = binChunkStart + (bv.byteOffset ?? 0);
+    const isPng = buffer.readUInt32BE(base) === 0x89504e47;
+    if (!isPng) {
+      warnings.push(`image ${i} ("${image.name ?? 'unnamed'}") is not a PNG (mimeType=${image.mimeType}) — dimension check skipped.`);
+      continue;
+    }
+    const width = buffer.readUInt32BE(base + 16);
+    const height = buffer.readUInt32BE(base + 20);
+    console.log(`  image ${i} "${image.name ?? 'unnamed'}": ${width}x${height}px`);
+    if (width > LOWERBODY_MAX_TEX_DIM || height > LOWERBODY_MAX_TEX_DIM) {
+      errors.push(`image ${i} ("${image.name ?? 'unnamed'}") is ${width}x${height} — exceeds the ${LOWERBODY_MAX_TEX_DIM}px ceiling.`);
+    }
+  }
+
+  console.log('\n─ UV0');
+  const hasUv0 = (json.meshes ?? []).every((mesh) => mesh.primitives.every((p) => p.attributes.TEXCOORD_0 !== undefined));
+  console.log(`  TEXCOORD_0 present on every primitive: ${hasUv0 ? 'yes' : 'NO'}`);
+  if (!hasUv0) errors.push('a primitive has no TEXCOORD_0 — UV0 is required (Step 8B section 7).');
+
+  try {
+    for (const mesh of json.meshes ?? []) {
+      for (const prim of mesh.primitives) {
+        for (const attrName of ['TEXCOORD_0', 'NORMAL', 'TANGENT']) {
+          const idx = prim.attributes[attrName];
+          if (idx === undefined) continue;
+          const values = readAccessorLowerBody(idx);
+          if (!values) continue;
+          const nonFinite = values.some((v) => v.some((c) => !Number.isFinite(c)));
+          if (nonFinite) errors.push(`${attrName} accessor contains non-finite (NaN/Infinity) values.`);
+        }
+      }
+    }
+  } catch {
+    warnings.push('UV/normal/tangent finite-value check skipped (unsupported buffer/accessor layout).');
+  }
+  if (materials.some((m) => m.normalTexture) && !(json.meshes ?? []).every((mesh) => mesh.primitives.every((p) => p.attributes.TANGENT !== undefined))) {
+    errors.push('a material uses a normal map but the mesh has no TANGENT attribute.');
+  }
+
+  console.log('\n─ Bounds');
+  for (const mesh of json.meshes ?? []) {
+    for (const prim of mesh.primitives) {
+      const position = json.accessors[prim.attributes.POSITION];
+      if (position?.min && position?.max) {
+        console.log(`  min: [${position.min.map((v) => v.toFixed(3)).join(', ')}]  max: [${position.max.map((v) => v.toFixed(3)).join(', ')}]`);
+      }
+    }
+  }
+
+  const animations = json.animations ?? [];
+  console.log(`\n─ Animation clips: ${animations.length} (none expected for this derivative — flag if any exist unexpectedly)`);
+  if (animations.length > 0) warnings.push(`${animations.length} animation clip(s) present — Step 8B did not intend to add clips; verify this is deliberate.`);
+
+  console.log('\n─ Budget');
+  const gateLowerBody = (ok, label, message) => {
+    console.log(`  ${label}  ${ok ? 'PASS' : 'FAIL'}`);
+    if (!ok) errors.push(message);
+  };
+  gateLowerBody(totalTris <= LOWERBODY_BUDGET.trisCeiling, `triangles: ${num(totalTris)} / ${num(LOWERBODY_BUDGET.trisCeiling)} ceiling (${num(LOWERBODY_BUDGET.trisTarget)} preferred)`, `${num(totalTris)} triangles exceeds the lower-body hard ceiling of ${num(LOWERBODY_BUDGET.trisCeiling)}.`);
+  if (totalTris > LOWERBODY_BUDGET.trisTarget && totalTris <= LOWERBODY_BUDGET.trisCeiling) {
+    warnings.push(`${num(totalTris)} triangles exceeds the preferred target of ${num(LOWERBODY_BUDGET.trisTarget)} (still within the ${num(LOWERBODY_BUDGET.trisCeiling)} hard ceiling).`);
+  }
+  gateLowerBody(materials.length <= LOWERBODY_BUDGET.materials, `materials: ${materials.length} / ${LOWERBODY_BUDGET.materials}`, `${materials.length} materials exceeds the lower-body budget of ${LOWERBODY_BUDGET.materials}.`);
+  gateLowerBody(buffer.length <= LOWERBODY_BUDGET.fileMB * 1024 * 1024, `file size: ${mb(buffer.length)} / ${LOWERBODY_BUDGET.fileMB} MB`, `file ${mb(buffer.length)} MB exceeds the lower-body budget of ${LOWERBODY_BUDGET.fileMB} MB.`);
 
   console.log('\n─ Verdict');
   for (const message of errors) console.log(`  ✖ ERROR   ${message}`);

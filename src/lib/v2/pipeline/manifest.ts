@@ -23,6 +23,22 @@ const OPERATOR_BUDGET: AssetBudget = { maxTriangles: 45000, maxMaterials: 10, ma
 const OPERATOR_ARMS_BUDGET: AssetBudget = { maxTriangles: 21_000, maxMaterials: 4, maxTextureSize: 2048 };
 
 /**
+ * operator-kael-lowerbody budget (Milestone 8, Phase G, Step 8B) — raised
+ * from the brief's original 15,000/17,000 after a real, measured quality
+ * curve against the actual source in a live Blender session: 60,000 tris
+ * was the only target that rendered completely clean (zero holes); 40,000
+ * still showed minor visible blemishes on thighs/shins, and 26,000/15-17k
+ * were both visibly broken (riddled with holes), confirmed by real renders,
+ * not just numeric gates. This mesh's raw selection evidently carries
+ * denser small-scale detail than the arms derivative's did, so that
+ * asset's own successful ~78% reduction ratio did not transfer directly.
+ * tools/inspect-operator.mjs --mode lowerbody mirrors this; keep the two in
+ * sync by hand. See docs/decisions.md's 2026-07-26 Step 8B entry for the
+ * full measured curve.
+ */
+const OPERATOR_LOWERBODY_BUDGET: AssetBudget = { maxTriangles: 62_000, maxMaterials: 2, maxTextureSize: 2048 };
+
+/**
  * The asset registry — one entry per slot. This is the single source of
  * truth `validation.ts` and `useAssetPipeline.ts` both read from: add an
  * entry here *before* dropping a GLB in, not after.
@@ -189,8 +205,12 @@ export const ASSET_MANIFEST: Record<string, AssetManifestEntry> = {
    * toward the weapon's grip pose, not by its own baked animation clips,
    * so there is nothing honest to plan there yet.
    *
-   * Known limitation: same as operator-kael — no texture data exists yet,
-   * ships with the temporary Kael_Dev_Neutral material only.
+   * Known limitation: RESOLVED 2026-07-24 (Step 7A) — this asset now ships
+   * a real baked PBR material (Kael_FP_Arms_Tactical: dark charcoal
+   * gloves, pale sleeve trim, titanium/gold armor accents, restrained
+   * cyan seam), not the temporary neutral material this comment used to
+   * describe. Corrected 2026-07-26 (Step 8B) — the comment had gone stale
+   * for two milestones; the asset itself was already correct.
    */
   'operator-kael-arms': {
     slot: 'operator-kael-arms',
@@ -202,6 +222,39 @@ export const ASSET_MANIFEST: Record<string, AssetManifestEntry> = {
     plannedClips: [],
     audioEvents: [],
     budget: OPERATOR_ARMS_BUDGET,
+  },
+  /**
+   * First-person lower-body derivative (Milestone 8, Phase G, Steps 8B/8B.1)
+   * — BUILT 2026-07-26, TOPOLOGY-CLEANED 2026-07-26 (Step 8B.1):
+   * `public/v2-art/operator-kael-lowerbody.glb` (58,457 tris, 34,689 verts,
+   * 65-bone-compatible skeleton, real PBR material
+   * `Kael_FP_LowerBody_Tactical`), extracted via `tools/blender/
+   * make-kael-fp-lowerbody.py` from the real Kael source in a live Blender
+   * session, then had isolated thigh/shin decimation-artifact patches
+   * repaired in place by `tools/blender/fix-kael-fp-lowerbody-topology.py`
+   * (a post-process pass, not a re-extraction) after human visual review
+   * flagged them via a wireframe check — passes `tools/inspect-operator.mjs
+   * --mode lowerbody` clean (0 errors, 0 warnings). Nothing currently
+   * resolves this slot yet (not mounted in any scene, per Step 8B's
+   * explicit "do not integrate" constraint) — Step 8C is the integration
+   * pass. See docs/decisions.md's 2026-07-26 Step 8B and Step 8B.1 entries
+   * for the full measured extraction/budget/cleanup story.
+   *
+   * requiredSockets/requiredClips empty for the same reason every other
+   * not-yet-consumed entry in this file is empty: no current consumer
+   * reads a socket or clip on this asset yet (Step 8C's integration pass
+   * is what would start doing so).
+   */
+  'operator-kael-lowerbody': {
+    slot: 'operator-kael-lowerbody',
+    category: 'operator',
+    label: 'Operator 01 — Kael Aurin (FP Lower Body)',
+    requiredSockets: [],
+    requiredClips: [],
+    plannedSockets: ['socket_pelvis'],
+    plannedClips: [],
+    audioEvents: ['footstep', 'jump', 'land'],
+    budget: OPERATOR_LOWERBODY_BUDGET,
   },
   'operator-veyra': {
     slot: 'operator-veyra',
