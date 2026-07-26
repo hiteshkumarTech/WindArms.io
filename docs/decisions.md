@@ -657,3 +657,39 @@ Rejected: generating and committing placeholder WAV/MP3 files to make the probe 
 Chosen: remove the file-probing call sites from `vortexAudio.ts` entirely; call the synth directly. Added, in the same pass: live integration with the existing `useSettingsStore().masterVolume` (previously hardcoded to 0.5, never reading the real player-facing volume slider — matches v1's `audioEngine.ts` pattern exactly, no competing settings store introduced), and a small pure `VoiceBudget`/`SingleVoiceGuard` (`src/lib/v2/weapons/audioVoiceBudget.ts`) bounding concurrent shot voices and preventing the reload jingle from ever overlapping itself — both directly requested by the Step 7F brief and cheap, low-risk additions given the rewrite was already touching this file. The generic real-file pipeline primitive (`src/lib/v2/pipeline/audio.ts`/`modelResolver.ts`) is untouched — it remains valid for any future v2 slot whose own docs actually call for real-file-first resolution; this decision is scoped to Vortex fire/reload audio specifically, not a statement that the primitive itself is wrong.
 
 ---
+
+**2026-07-26 — Step 7G: the sustained-fire turbine layer reuses `VortexFireSystem.tsx`'s existing `spinUpT` signal rather than inventing a parallel shot-streak tracker**
+
+Decision: `computeVortexTurbineTarget`/the persistent turbine node chain in `vortexAudio.ts` are driven entirely by the `spinUp` parameter already passed into `playVortexShot(spinUpT)` — no new state, ref, or counter was added to `VortexFireSystem.tsx`, and no new call site was introduced there.
+
+Reason: `VortexFireSystem.tsx` already computes `spinUpT` (0..1, ramping over `rpmSpinUpTimeS` ≈0.7s of continuously-held-and-firing trigger, reset on release/reload via `store.triggerHeldSince`) to drive the turbine's RPM ramp and recoil feel — this is EXACTLY "how far into sustained fire" the brief's `VortexShotContext.sustainedFireAmount` asks for. Building a second, independent tracker in the audio layer would either drift from the real gameplay signal (two sources of truth for the same concept) or require a NEW call site/prop threading into `VortexFireSystem.tsx`, directly risking the brief's hard constraint against touching gameplay/IK/animation files. Reusing the existing parameter keeps audio a strictly passive consumer of an already-exposed signal.
+
+Rejected: a shot-counter/streak tracker owned by `vortexAudio.ts` itself, incremented on each `shot()` call and decayed on a timer. This would have been a plausible-looking alternative, but it can't naturally distinguish "held through an RPM-gate-blocked frame" from "genuinely stopped firing" the way the existing `triggerHeldSince`-derived `spinUpT` already does correctly, and building it would duplicate logic `VortexFireSystem.tsx` has already solved.
+
+Chosen: `shot(spinUp: number)` (unchanged public signature) both drives per-shot layer pitch variation AND calls a new private `driveTurbine(spinUp)`. The turbine's own RELEASE (when to ramp back to silence) does NOT rely solely on gameplay calling `playVortexSpinDown()` correctly in every scenario — a 220ms self-release timeout, rearmed on every `shot()` call, provides a passive fallback that self-heals from death/pause/route-unmount without any of those needing a dedicated audio hook. `spinDown()` and `reload()` additionally trigger an immediate release for snappier response than waiting the full timeout.
+
+---
+
+**2026-07-26 — Step 7G: caught and fixed a real double-volume-scaling bug in `computeVortexTurbineTarget` before it shipped**
+
+Decision: `computeVortexTurbineTarget` takes only `sustainedFireAmount` — an earlier draft also accepted `masterVolume` and scaled the returned gain by it directly (`0.4 + 0.6*volume`).
+
+Reason: the turbine's gain node connects through the SAME shared `master` GainNode every other layer (shot, reload, dry-fire) connects through, and `master.gain.value` is already set from `useSettingsStore().masterVolume` in `ensure()`. Baking a SECOND volume multiplication into the turbine's own target gain meant the turbine specifically would end up quieter than intended at any volume below 1.0, non-linearly (e.g. at masterVolume=0.5, effective gain would be `target*0.7*0.5` instead of the intended `target*0.5`) — an inconsistency that would have been very hard to notice by ear (it doesn't clip or silence anything, just subtly under-mixes the turbine layer at partial volume) but would show up immediately in a careful gain-staging review or an offline measurement comparing turbine output across volume settings.
+
+Rejected: leaving the parameter in "for future flexibility." An unused-but-present volume parameter that LOOKS like it should matter is worse than not having it — the double-scaling bug existed specifically because the parameter's presence suggested it needed to be applied, and it was, incorrectly. Muting is already fully guaranteed by the shared master node alone (multiplying by 0 zeroes everything downstream regardless of any per-layer factor).
+
+Chosen: removed the parameter entirely; `computeVortexTurbineTarget(sustainedFireAmount)` now has a single responsibility (map sustain 0..1 to gain/filter/pitch targets), and volume scaling happens exactly once, at the shared master gain node, for every layer uniformly. Caught during self-review while writing this decision entry, not by a test failure — a reminder that "does this parameter's effect compose correctly with the rest of the graph" is worth checking explicitly for any new AudioParam-driving function, not just whether its own output is clamped/finite.
+
+---
+
+**2026-07-26 — Step 7G: `OfflineAudioContext`-based peak/RMS measurement lives in the browser-only path, not `node:test`**
+
+Decision: `renderVortexShotOffline`/`renderVortexBurstOffline`/`renderVortexReloadOffline`/`renderVortexDryFireOffline` (in `vortexAudio.ts`) are exercised by the `?audio=1` debug panel and by Playwright browser validation — not by an automated `node:test` suite.
+
+Reason: `OfflineAudioContext` (like `AudioContext`) is a browser Web Audio API with no Node.js equivalent; installing a native/WASM polyfill (e.g. `node-web-audio-api`) to make it available under `node:test` would be a new devDependency with real platform-build risk (native addon on Windows) for a "focused on audio content, not infrastructure" milestone that explicitly asked to keep the patch scoped. The brief's own wording — "Use OfflineAudioContext where practical" — is satisfied by using it where it actually exists.
+
+Rejected: adding a Web Audio Node polyfill devDependency. Rejected: skipping offline measurement entirely and only sanity-checking via ear — the brief explicitly wants peak/RMS/crest-factor numbers, not just a subjective judgment call, and those numbers ARE obtainable, just not from `node:test`.
+
+Chosen: the pure PARAMETER layer (`vortexSoundRecipe.ts` — gains, frequencies, envelope durations, hierarchy relationships like "shot louder than reload louder than dry-fire") is fully covered by deterministic `node:test` cases (25 of them). The actual RENDERED-AUDIO measurement (peak amplitude, RMS, worst-case burst-overlap accumulation) is real, but lives in the browser-only validation path and is recorded as point-in-time measured results in `changelog.md`/this file rather than as an automated regression gate — a future pass could add browser-based (Playwright) measurement assertions as a proper CI gate if that becomes valuable.
+
+---

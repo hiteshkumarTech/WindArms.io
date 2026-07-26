@@ -36,6 +36,11 @@ export class VoiceBudget {
   get capacity(): number {
     return this.max;
   }
+
+  /** Forces the active count back to zero regardless of outstanding acquires — for a dev-only "reset audio state" control, never called from a normal playback path. */
+  reset(): void {
+    this.active = 0;
+  }
 }
 
 /**
@@ -63,5 +68,10 @@ export class SingleVoiceGuard {
 
   get isActive(): boolean {
     return this.activeToken !== 0;
+  }
+
+  /** Forces the guard clear regardless of which run (if any) is active — for a dev-only "reset audio state" control, never called from a normal playback path. */
+  forceRelease(): void {
+    this.activeToken = 0;
   }
 }

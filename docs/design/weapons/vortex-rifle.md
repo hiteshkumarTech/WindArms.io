@@ -156,7 +156,18 @@ Built on the Art Bible's five confirmed audio categories ([../art-bible.md](../a
 
 Following v1's proven technical approach (100% procedural Web Audio synthesis, [../audio.md](../audio.md)) is the recommended implementation path, not sourced/recorded audio.
 
-**Implementation status (2026-07-26, Step 7F):** the technical approach above is now confirmed and implemented — `src/lib/v2/range/vortexAudio.ts` synthesizes fire/reload/dry-fire/impact/spin-down entirely on Web Audio, with no file-probing path (a prior real-audio-file-first probe was removed; it was the direct cause of "missing audio" 404s, since no manifest/files for this weapon were ever meant to exist per this section). The *content* is still a functional first pass, not the full sonic identity described above — today's shot is a simple filtered-noise-burst + pitched-sawtooth crack, not yet built around a distinct turbine-whine layer, a compressed *chuff* character, or the secondary electromagnetic-crack texture. A future pass authoring recipes matching this section's five categories remains open work, tracked in [../../todo.md](../../todo.md).
+**Implementation status (2026-07-26, Step 7F):** the technical approach above is now confirmed and implemented — `src/lib/v2/range/vortexAudio.ts` synthesizes fire/reload/dry-fire/impact/spin-down entirely on Web Audio, with no file-probing path (a prior real-audio-file-first probe was removed; it was the direct cause of "missing audio" 404s, since no manifest/files for this weapon were ever meant to exist per this section).
+
+**Content status (2026-07-26, Step 7G):** the signature shot is now a genuine four-layer recipe (`src/lib/v2/weapons/vortexSoundRecipe.ts`), mapped directly against the categories above:
+- **Pressure Release** → the shot's primary body: a filtered-noise "chuff" (`pressureGain`/`pressureCutoffHz`), no gunpowder crack.
+- **Turbine Spin** → a persistent, single-node-chain layer that builds gain/pitch/filter-brightness with sustained fire (driven by the same spin-up ramp the recoil/RPM system already uses) and releases smoothly when firing stops — the closest current implementation to "the weapon's most distinctive sound," though still simpler than a true rising *whine* character.
+- **Electromagnetic Crack** → a brief downward-sweeping snap layer, deliberately kept subtle (lowest gain of the four layers), not yet a genuinely distinct texture separate from the pressure body.
+- **Wind Resonance** → a short, quiet, lowpass-filtered tail on each shot ("pressure escaping through engineered vents"); the *ambient, idle-hum* form of wind resonance described above is still unimplemented.
+- **Storm Ambience** → still out of scope (environmental, not weapon-specific).
+
+Also added: burst-to-burst variation (restrained, deterministic, seeded — no cartoon pitch jumps), a refined reload sequence (internal-servicing/pressure-cycling feel, explicitly not a magazine-drop sound this mesh can't visually support), and a dry-fire clearly and measurably weaker than a real shot (real offline-measured peaks: shot 0.210, reload 0.133, dry-fire 0.085 — see `../../changelog.md`).
+
+**Still not done**: a true rising turbine *whine* timbre (current turbine layer is closer to a filtered airflow rumble than a whine), a genuinely separate EM-crack texture, ambient idle wind resonance, and all environmental/Storm-ambience content. **Not yet human-approved** — technically stable, exposed at `/v2/range?audio=1` for listening, but no one has confirmed by ear that it reads as "heavy, engineered wind-pressure weapon." See `../../decisions.md`/`../audio.md` for the acceptance checklist and `../../todo.md` for tracking.
 
 ## 16. Particle Effects
 

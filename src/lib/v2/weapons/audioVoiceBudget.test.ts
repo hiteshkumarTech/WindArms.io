@@ -59,6 +59,16 @@ describe('VoiceBudget (Step 7F — bounded concurrent weapon-SFX voices)', () =>
     // With releases happening roughly every 3rd iteration against acquires every iteration, the budget should saturate and start rejecting at some point.
     assert.ok(rejections > 0, 'a sustained acquire-heavy loop against a small budget should hit the cap at least once');
   });
+
+  it('reset() forces the count back to zero regardless of outstanding acquires -- dev-only reset path', () => {
+    const budget = new VoiceBudget(2);
+    budget.tryAcquire();
+    budget.tryAcquire();
+    assert.equal(budget.count, 2);
+    budget.reset();
+    assert.equal(budget.count, 0);
+    assert.equal(budget.tryAcquire(), true);
+  });
 });
 
 describe('SingleVoiceGuard (Step 7F — reload jingle must never overlap itself)', () => {
@@ -104,5 +114,14 @@ describe('SingleVoiceGuard (Step 7F — reload jingle must never overlap itself)
     guard.stop(t1 as number);
     const t2 = guard.start();
     assert.notEqual(t1, t2);
+  });
+
+  it('forceRelease() clears an active run regardless of token, allowing an immediate new start() -- dev-only reset path', () => {
+    const guard = new SingleVoiceGuard();
+    guard.start();
+    assert.equal(guard.isActive, true);
+    guard.forceRelease();
+    assert.equal(guard.isActive, false);
+    assert.notEqual(guard.start(), null);
   });
 });

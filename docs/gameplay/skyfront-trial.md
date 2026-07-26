@@ -106,4 +106,4 @@ WASD move · Shift sprint · Space jump · Mouse look · LMB fire · RMB ADS · 
 
 ## Deliberately excluded
 
-Multiplayer, networking, accounts, progression, additional operators/weapons/maps, touch controls, final art. Drone and arena are temporary blockout assets. Audio uses the existing procedural Vortex hooks; no new audio was fabricated.
+Multiplayer, networking, accounts, progression, additional operators/weapons/maps, touch controls, final art. Drone and arena are temporary blockout assets. Audio uses the existing procedural Vortex hooks (fire/reload/dry-fire/impact/spin-down) — no audio assets were fabricated or added. Step 7G (2026-07-26) gave those hooks a genuine layered signature identity (see [design/audio.md](../design/audio.md), [design/weapons/vortex-rifle.md](../design/weapons/vortex-rifle.md) §15) with no change to `/v2/play`'s match timing, fire rate, reload/inspect duration, or any other gameplay behavior — audio remains a passive consumer of accepted weapon events here exactly as before.
