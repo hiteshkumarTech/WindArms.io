@@ -156,6 +156,8 @@ Built on the Art Bible's five confirmed audio categories ([../art-bible.md](../a
 
 Following v1's proven technical approach (100% procedural Web Audio synthesis, [../audio.md](../audio.md)) is the recommended implementation path, not sourced/recorded audio.
 
+**Implementation status (2026-07-26, Step 7F):** the technical approach above is now confirmed and implemented — `src/lib/v2/range/vortexAudio.ts` synthesizes fire/reload/dry-fire/impact/spin-down entirely on Web Audio, with no file-probing path (a prior real-audio-file-first probe was removed; it was the direct cause of "missing audio" 404s, since no manifest/files for this weapon were ever meant to exist per this section). The *content* is still a functional first pass, not the full sonic identity described above — today's shot is a simple filtered-noise-burst + pitched-sawtooth crack, not yet built around a distinct turbine-whine layer, a compressed *chuff* character, or the secondary electromagnetic-crack texture. A future pass authoring recipes matching this section's five categories remains open work, tracked in [../../todo.md](../../todo.md).
+
 ## 16. Particle Effects
 
 Pooled, zero-allocation, following v1's real effects-bus architecture ([../vfx.md](../vfx.md)): muzzle discharge puff (compressed air, not smoke — pale, fast-dissipating, tinted faintly `energy`-blue at the core), heat-shimmer during sustained fire (§13), a brief Energy Core flare on turbine spin-up reaching max RPM (a one-time "kicks into high gear" visual beat, not a per-shot effect).
