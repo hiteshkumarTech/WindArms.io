@@ -8,6 +8,7 @@ import * as THREE from 'three';
 import { PLAYER } from '@/lib/game/constants';
 import { accelerate, applyFriction, wishDirection } from '@/lib/game/movement';
 import { clamp } from '@/lib/utils';
+import { beginBodyPoseGeneration, invalidateBodyWorldPose, publishBodyWorldPose } from '@/lib/v2/operators/firstPersonBodyPose';
 import { rangeLocalPose } from '@/lib/v2/range/localPose';
 import type { RangeInputSnapshot } from '@/lib/v2/range/useRangeKeyboardInput';
 import { viewKick } from '@/lib/v2/range/viewKick';
@@ -45,6 +46,21 @@ export default function RangeController({ inputRef }: { inputRef: React.MutableR
   const pitch = useRef(0);
   const grounded = useRef(false);
   const lastGroundedAt = useRef(-Infinity);
+  const bodyPoseGeneration = useRef(0);
+  const bodyPositionScratch = useRef(new THREE.Vector3());
+  // /v2/range has no match store/respawn-nonce concept — this is the
+  // route-local equivalent, bumped whenever the kill-Y recovery-volume
+  // branch below fires, so the body-pose bridge still exposes a
+  // teleport-class signal for a future smoothing pass (Step 8D).
+  const respawnNonce = useRef(0);
+
+  // Step 8C: sole writer of the player's world-space body pose for
+  // /v2/range — see firstPersonBodyPose.ts's module doc.
+  useEffect(() => {
+    const generation = beginBodyPoseGeneration();
+    bodyPoseGeneration.current = generation;
+    return () => invalidateBodyWorldPose(generation);
+  }, []);
 
   useEffect(() => {
     const controller = world.createCharacterController(0.01);
@@ -141,6 +157,7 @@ export default function RangeController({ inputRef }: { inputRef: React.MutableR
       vel.set(0, 0, 0);
       [nextX, nextY, nextZ] = RANGE_SPAWN;
       body.setTranslation({ x: nextX, y: nextY, z: nextZ }, true);
+      respawnNonce.current += 1;
     } else {
       body.setNextKinematicTranslation({ x: nextX, y: nextY, z: nextZ });
     }
@@ -162,6 +179,11 @@ export default function RangeController({ inputRef }: { inputRef: React.MutableR
     rangeLocalPose.horizontalSpeed = horizontalSpeed;
     rangeLocalPose.grounded = grounded.current;
     rangeLocalPose.state = !grounded.current ? 'air' : horizontalSpeed < 0.5 ? 'idle' : sprinting ? 'sprint' : 'walk';
+
+    // Step 8C: publish this frame's already-computed world position/yaw —
+    // see firstPersonBodyPose.ts's module doc. Never re-derived from
+    // camera.position.
+    publishBodyWorldPose(bodyPoseGeneration.current, bodyPositionScratch.current.set(nextX, nextY, nextZ), yaw.current, grounded.current, respawnNonce.current);
   });
 
   return (

@@ -27,6 +27,11 @@ export function operatorArmsSlot(id: OperatorId): string {
   return `operator-${id}-arms`;
 }
 
+/** Milestone 8, Step 8B/8C — dedicated first-person lower-body derivative (waist/pelvis/legs/boots, no head/arms). */
+export function operatorLowerBodySlot(id: OperatorId): string {
+  return `operator-${id}-lowerbody`;
+}
+
 export function operatorSkinModelSlot(id: OperatorId, skinId: string): string {
   return `operator-${id}-skin-${skinId}`;
 }

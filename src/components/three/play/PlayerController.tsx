@@ -8,6 +8,7 @@ import * as THREE from 'three';
 import { PLAYER } from '@/lib/game/constants';
 import { accelerate, applyFriction, wishDirection } from '@/lib/game/movement';
 import { clamp } from '@/lib/utils';
+import { beginBodyPoseGeneration, invalidateBodyWorldPose, publishBodyWorldPose } from '@/lib/v2/operators/firstPersonBodyPose';
 import { rangeLocalPose } from '@/lib/v2/range/localPose';
 import type { RangeInputSnapshot } from '@/lib/v2/range/useRangeKeyboardInput';
 import { viewKick } from '@/lib/v2/range/viewKick';
@@ -67,6 +68,18 @@ export default function PlayerController({ inputRef }: { inputRef: React.Mutable
   const grounded = useRef(false);
   const lastGroundedAt = useRef(-Infinity);
   const lastRespawnNonce = useRef(0);
+  const bodyPoseGeneration = useRef(0);
+  const bodyPositionScratch = useRef(new THREE.Vector3());
+
+  // Step 8C: this controller is the sole writer of the player's world-space
+  // body pose for /v2/play — see firstPersonBodyPose.ts's module doc for the
+  // generation-counter contract. A fresh generation on every mount means a
+  // route remount can never read a previous instance's stale position.
+  useEffect(() => {
+    const generation = beginBodyPoseGeneration();
+    bodyPoseGeneration.current = generation;
+    return () => invalidateBodyWorldPose(generation);
+  }, []);
 
   useEffect(() => {
     const controller = world.createCharacterController(0.01);
@@ -108,6 +121,7 @@ export default function PlayerController({ inputRef }: { inputRef: React.Mutable
       velocity.current.set(0, 0, 0);
       body.setTranslation({ x: PLAYER_SPAWN[0], y: PLAYER_SPAWN[1], z: PLAYER_SPAWN[2] }, true);
       camera.position.set(PLAYER_SPAWN[0], PLAYER_SPAWN[1] + PLAYER.EYE_STAND, PLAYER_SPAWN[2]);
+      publishBodyWorldPose(bodyPoseGeneration.current, bodyPositionScratch.current.set(...PLAYER_SPAWN), yaw.current, true, match.respawnNonce);
       return;
     }
 
@@ -214,6 +228,14 @@ export default function PlayerController({ inputRef }: { inputRef: React.Mutable
     rangeLocalPose.horizontalSpeed = horizontalSpeed;
     rangeLocalPose.grounded = grounded.current;
     rangeLocalPose.state = !grounded.current ? 'air' : horizontalSpeed < 0.5 ? 'idle' : sprinting ? 'sprint' : 'walk';
+
+    // Step 8C: publish this frame's already-computed world position/yaw for
+    // KaelFirstPersonLowerBody — never re-derived from camera.position (see
+    // firstPersonBodyPose.ts's module doc). Uses the SAME nextX/nextY/nextZ
+    // the camera itself was just set from, so the recovery-volume teleport
+    // above is reflected here automatically (that branch already rewrote
+    // nextX/nextY/nextZ before this point runs).
+    publishBodyWorldPose(bodyPoseGeneration.current, bodyPositionScratch.current.set(nextX, nextY, nextZ), yaw.current, grounded.current, match.respawnNonce);
   });
 
   return (

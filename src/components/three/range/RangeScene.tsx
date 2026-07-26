@@ -10,6 +10,7 @@ import KaelArmIkDebug from '@/components/three/weapons/debug/KaelArmIkDebug';
 import VortexGripAnchorDebug from '@/components/three/weapons/debug/VortexGripAnchorDebug';
 import KaelFirstPersonArms from '@/components/three/weapons/KaelFirstPersonArms';
 import VortexViewmodel from '@/components/three/weapons/VortexViewmodel';
+import KaelFirstPersonLowerBody from '@/components/three/operators/KaelFirstPersonLowerBody';
 import { useAnimDebugEnabled } from '@/lib/v2/weapons/useAnimDebugEnabled';
 import { useGripDebugEnabled } from '@/lib/v2/weapons/useGripDebugEnabled';
 import { useIkDebugEnabled } from '@/lib/v2/weapons/useIkDebugEnabled';
@@ -51,6 +52,7 @@ export default function RangeScene({ inputRef }: { inputRef: React.MutableRefObj
         <KaelFirstPersonArms />
         {ikDebugEnabled && <KaelArmIkDebug />}
         {animDebugEnabled && <ActionTargetDebugMarkers />}
+        <KaelFirstPersonLowerBody />
       </Suspense>
       <RangeEffectsPools />
     </Canvas>

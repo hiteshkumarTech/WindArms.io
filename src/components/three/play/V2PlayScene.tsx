@@ -11,6 +11,7 @@ import RangeEffectsPools from '@/components/three/range/RangeEffectsPools';
 import KaelFirstPersonArms from '@/components/three/weapons/KaelFirstPersonArms';
 import VortexFireSystem from '@/components/three/weapons/VortexFireSystem';
 import VortexViewmodel from '@/components/three/weapons/VortexViewmodel';
+import KaelFirstPersonLowerBody from '@/components/three/operators/KaelFirstPersonLowerBody';
 import { useV2MatchStore } from '@/lib/v2/play/matchStore';
 import { PLAYER_SPAWN } from '@/lib/v2/play/spawnConfig';
 import MatchDirector from './MatchDirector';
@@ -76,6 +77,7 @@ export default function V2PlayScene({ inputRef }: { inputRef: React.MutableRefOb
       <Suspense fallback={null}>
         <VortexViewmodel />
         <KaelFirstPersonArms />
+        <KaelFirstPersonLowerBody />
       </Suspense>
       <RangeEffectsPools />
     </Canvas>
