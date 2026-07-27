@@ -4,40 +4,63 @@ import { Component, Suspense, useEffect, useMemo, useRef, type ReactNode } from 
 import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
 import { clone as cloneSkeleton } from 'three/examples/jsm/utils/SkeletonUtils.js';
+import { PLAYER } from '@/lib/game/constants';
 import { useLoadedPipelineAsset, useResolveModelSlot } from '@/lib/v2/pipeline';
 import { operatorLowerBodySlot } from '@/lib/v2/operators';
 import { bodyDebugReadout } from '@/lib/v2/operators/bodyDebugReadout';
-import { useBodyDebugStore } from '@/lib/v2/operators/bodyDebugStore';
+import { useBodyDebugStore, type LowerBodyPreviewMode } from '@/lib/v2/operators/bodyDebugStore';
 import { getFirstPersonBodyWorldPose } from '@/lib/v2/operators/firstPersonBodyPose';
 import { computeLowerBodyWorldTransform, LOWERBODY_CANONICAL_LOCAL_OFFSET, type LowerBodyTransformOutput } from '@/lib/v2/operators/lowerBodyTransform';
+import {
+  applyLowerBodyLocomotionPose,
+  buildLowerBodyRigRuntime,
+  createLowerBodyRigScratch,
+  MissingLowerBodyBoneError,
+  resolveLowerBodyBones,
+  restoreLowerBodyRestPose,
+  type LowerBodyRigRuntime,
+} from '@/lib/v2/operators/lowerBodyRig';
+import {
+  computeLowerBodyLocomotionPose,
+  createLowerBodyLocomotionPose,
+  createLowerBodyLocomotionRuntimeState,
+  type LowerBodyLocomotionInput,
+} from '@/lib/v2/operators/lowerBodyLocomotionPose';
 
 /**
- * Kael first-person lower-body derivative (Milestone 8, Step 8C) — STATIC
- * integration only. Renders `operator-kael-lowerbody.glb` (Step 8B/8B.1,
- * waist/pelvis/thighs/knees/shins/boots, no head/neck/shoulders/arms/hands)
- * at the player's world position, following world YAW ONLY.
+ * Kael first-person lower-body derivative (Milestone 8, Step 8C static
+ * integration, Step 8D procedural locomotion). Renders
+ * `operator-kael-lowerbody.glb` (Step 8B/8B.1, waist/pelvis/thighs/knees/
+ * shins/boots, no head/neck/shoulders/arms/hands) at the player's world
+ * position, following world YAW ONLY, with small restrained procedural
+ * bone posing layered on top (idle breathing, walk/sprint gait, jump/air/
+ * landing, Wind Lift).
  *
- * OWNERSHIP (non-negotiable, see the Step 8C brief):
- *   PlayerController.tsx/RangeController.tsx own world position and
- *   locomotion, publishing it every frame via `firstPersonBodyPose.ts` —
- *   this component NEVER re-derives position from camera.position (which
- *   would silently inherit any future camera-only bob/sway) and NEVER
- *   reads camera pitch. The camera owns view pitch alone; this component
- *   never rotates on that axis. Kael FP-arms and the Vortex viewmodel
- *   remain entirely separate, camera-attached components — this one has no
- *   coupling to either.
+ * OWNERSHIP (non-negotiable, see the Step 8C/8D briefs):
+ *   PlayerController.tsx/RangeController.tsx own world position, yaw, AND
+ *   movement signals (horizontalSpeed/verticalVelocity/movementState/
+ *   windLiftActive), publishing them every frame via `firstPersonBodyPose.ts`
+ *   — this component NEVER re-derives position from camera.position, NEVER
+ *   recomputes movement/physics, and NEVER reads camera pitch. The camera
+ *   owns view pitch alone; this component never rotates on that axis. Kael
+ *   FP-arms and the Vortex viewmodel remain entirely separate, camera-
+ *   attached components — this one has no coupling to either.
+ *
+ * PROCEDURAL, NOT AUTHORED (Step 8D): every bone pose below comes from
+ * `lowerBodyLocomotionPose.ts`'s pure, hand-tuned functions of movement
+ * state/phase — there are no keyframes, no baked animation clips, nothing
+ * sampled from a DCC tool. Bone posing is a small ADDITIVE offset applied
+ * relative to each bone's validated rest transform (`lowerBodyRig.ts`),
+ * never an accumulation on top of the previous frame's already-posed value
+ * — every frame recomputes from rest, so there is no cumulative drift and
+ * disabling locomotion (`?body=1` panel or `debug.locomotionEnabled`)
+ * always reproduces the EXACT Step 8C/8C.1 static rest pose.
  *
  * Deliberately NOT built on `FirstPersonOperatorRig`/`OperatorModel` (same
  * reasoning `KaelFirstPersonArms.tsx`'s doc comment gives — this component
  * owns 100% of its own transform) and does NOT use mesh-name filtering: the
  * asset already physically excludes head/arm geometry, so there is nothing
  * to filter.
- *
- * STATIC REST-POSE RULE (Step 8C scope): the asset has zero authored
- * animation clips. No bone is ever touched here — no walk cycle, no pelvis
- * bob, no sprint lean, no jump compression, no Wind Lift posture. The mesh
- * translates/rotates with the player as one rigid body and nothing more.
- * Procedural locomotion is explicitly Step 8D's job, not this one's.
  */
 
 function KaelLowerBodyInner() {
@@ -75,6 +98,25 @@ export default function KaelFirstPersonLowerBody() {
   );
 }
 
+/**
+ * Step 8D — synthetic movement inputs for the debug panel's per-state
+ * preview mode, letting a developer inspect any single locomotion state on
+ * demand without performing it in-game. `landing` is a one-shot: it reads
+ * as a landing only on the FIRST frame after switching into it (a real
+ * grounded->true edge), then settles into idle-on-ground for as long as it
+ * stays selected — flip to another mode and back to re-trigger, same as
+ * re-landing in real play requires actually leaving the ground first.
+ */
+const PREVIEW_INPUTS: Record<Exclude<LowerBodyPreviewMode, 'live'>, Omit<LowerBodyLocomotionInput, 'deltaSeconds' | 'respawnNonce'>> = {
+  idle: { horizontalSpeed: 0, verticalVelocity: 0, grounded: true, movementState: 'idle', windLiftActive: false },
+  walk: { horizontalSpeed: PLAYER.WALK_SPEED, verticalVelocity: 0, grounded: true, movementState: 'walk', windLiftActive: false },
+  sprint: { horizontalSpeed: PLAYER.SPRINT_SPEED, verticalVelocity: 0, grounded: true, movementState: 'sprint', windLiftActive: false },
+  jumpRise: { horizontalSpeed: 0, verticalVelocity: PLAYER.JUMP_VELOCITY, grounded: false, movementState: 'air', windLiftActive: false },
+  airborne: { horizontalSpeed: 0, verticalVelocity: -6, grounded: false, movementState: 'air', windLiftActive: false },
+  landing: { horizontalSpeed: 0, verticalVelocity: -0.6, grounded: true, movementState: 'idle', windLiftActive: false },
+  windLift: { horizontalSpeed: 0, verticalVelocity: 8, grounded: false, movementState: 'air', windLiftActive: true },
+};
+
 function LoadedKaelLowerBody({ url, lod }: { url: string; lod: 0 | 1 | 2 }) {
   const result = useLoadedPipelineAsset(operatorLowerBodySlot('kael'), url, lod);
   const camera = useThree((state) => state.camera);
@@ -85,6 +127,19 @@ function LoadedKaelLowerBody({ url, lod }: { url: string; lod: 0 | 1 | 2 }) {
   const combinedOffsetScratch = useRef<[number, number, number]>([0, 0, 0]);
   const transformOut = useRef<LowerBodyTransformOutput>({ position: new THREE.Vector3(), yaw: 0 });
   const boundsBox = useRef(new THREE.Box3());
+
+  // Step 8D — rig + locomotion runtime, one per mount (never module-level —
+  // see lowerBodyLocomotionPose.ts's doc comment on why this must be
+  // caller-owned). `rigRuntimeRef` starts null and is built once bone
+  // resolution succeeds (see the effect below); a resolution failure
+  // (dev-time validation, see lowerBodyRig.ts) leaves it null forever and
+  // the component gracefully continues in Step 8C static-only mode rather
+  // than hiding the whole body.
+  const rigRuntimeRef = useRef<LowerBodyRigRuntime | null>(null);
+  const locomotionRuntimeRef = useRef(createLowerBodyLocomotionRuntimeState());
+  const locomotionPoseRef = useRef(createLowerBodyLocomotionPose());
+  const rigScratchRef = useRef(createLowerBodyRigScratch());
+  const lastUpdateTickRef = useRef(-1);
 
   // Step 8C.1 diagnostic — resolved once per instance, not re-traversed per
   // frame. Bone WORLD positions already account for the container's
@@ -166,13 +221,14 @@ function LoadedKaelLowerBody({ url, lod }: { url: string; lod: 0 | 1 | 2 }) {
     instance.traverse((node) => {
       if (node instanceof THREE.Mesh) {
         // Shadow work is explicitly deferred (Step 8E) — never cast from
-        // this static integration pass. receiveShadow may stay on when it
-        // reads correctly (verified in the browser validation pass).
+        // this integration pass. receiveShadow may stay on when it reads
+        // correctly (verified in the browser validation pass).
         node.castShadow = false;
         node.receiveShadow = true;
         // Camera-near skinned geometry — same reasoning as the arms rig:
         // this mesh's bounding sphere is computed from its REST pose and
-        // never updates (no bones move), so frustum culling against a
+        // never updates (bone posing here is small/additive, not enough to
+        // invalidate the bound in practice), so frustum culling against a
         // stale/incorrect bound could pop the whole body out of view when
         // it's actually on-screen.
         node.frustumCulled = false;
@@ -180,12 +236,37 @@ function LoadedKaelLowerBody({ url, lod }: { url: string; lod: 0 | 1 | 2 }) {
     });
   }, [instance]);
 
+  // Step 8D — resolve the 7 required leg/pelvis bones and measure their
+  // rest metrics ONCE, right after the fresh clone's skeleton is available
+  // and BEFORE any procedural pose has ever touched it (see
+  // `buildLowerBodyRigRuntime`'s doc comment). A resolution failure is
+  // caught here (not left to bubble to the error boundary) so a bone-name
+  // mismatch degrades to "static body, no locomotion" rather than hiding
+  // the whole feature — the static integration is strictly more valuable
+  // to keep than an all-or-nothing failure.
+  useEffect(() => {
+    rigRuntimeRef.current = null;
+    if (!instance || !containerRef.current) return;
+    try {
+      const bones = resolveLowerBodyBones(instance);
+      rigRuntimeRef.current = buildLowerBodyRigRuntime(containerRef.current, bones);
+    } catch (error) {
+      if (process.env.NODE_ENV !== 'production') {
+        const detail = error instanceof MissingLowerBodyBoneError ? error.message : String(error);
+        console.warn(`[kael-fp-lowerbody] locomotion rig resolution failed — continuing in static-only mode. ${detail}`);
+      }
+    }
+    return () => {
+      rigRuntimeRef.current = null;
+    };
+  }, [instance]);
+
   useEffect(() => {
     const map = originalMaterialsRef.current;
     return () => map.clear();
   }, []);
 
-  useFrame(() => {
+  useFrame((_state, rawDelta) => {
     const container = containerRef.current;
     if (!container || !instance) return;
 
@@ -214,8 +295,7 @@ function LoadedKaelLowerBody({ url, lod }: { url: string; lod: 0 | 1 | 2 }) {
     }
 
     // World transform: player world position + world yaw ONLY. Never
-    // camera pitch, never recoil/sway/ADS/weapon motion. Bones are never
-    // touched — the mesh renders in its validated rest pose. The canonical
+    // camera pitch, never recoil/sway/ADS/weapon motion. The canonical
     // capsule-to-feet offset is ALWAYS applied (a coordinate-frame
     // reconciliation, not a tunable) — the debug panel's offset is an
     // ADDITIONAL fine-tune on top of it, defaulting to zero.
@@ -233,6 +313,69 @@ function LoadedKaelLowerBody({ url, lod }: { url: string; lod: 0 | 1 | 2 }) {
     );
     container.position.copy(transformOut.current.position);
     container.rotation.set(0, transformOut.current.yaw, 0);
+
+    // Step 8D — procedural bone posing, layered on top of the rigid
+    // position/yaw transform just set above. Disabled (or rig not yet
+    // resolved) always means an exact, unconditional rest-pose restore —
+    // never a residual offset from a previous frame.
+    const rig = rigRuntimeRef.current;
+    if (rig) {
+      if (!debug.locomotionEnabled) {
+        restoreLowerBodyRestPose(rig);
+      } else {
+        // Pause/stall detection: `pose.updateTick` only advances when the
+        // owning controller actually published this browser frame (see
+        // firstPersonBodyPose.ts's Step 8D doc comment) — if it didn't,
+        // elapsed time for the locomotion pose is 0, which is exactly
+        // "pause freezes the last valid pose" with no explicit paused
+        // concept needed here or in either controller.
+        const tickAdvanced = pose.updateTick !== lastUpdateTickRef.current;
+        lastUpdateTickRef.current = pose.updateTick;
+        const liveDelta = tickAdvanced ? Math.max(0, rawDelta) : 0;
+
+        // A small plain literal, not a persistent mutable scratch — cheap
+        // enough for V8 to optimize (7 numbers/booleans, monomorphic shape
+        // every frame), same tolerance the codebase already has for
+        // PlayerController.tsx's own per-frame `desired = {x,y,z}` literal.
+        // `LowerBodyLocomotionInput`'s fields are deliberately `readonly` at
+        // the pure-module boundary, so a genuinely reused/mutated scratch
+        // object would fight that on every write.
+        const movementSource = debug.previewMode === 'live' ? pose : PREVIEW_INPUTS[debug.previewMode];
+        const input: LowerBodyLocomotionInput = {
+          deltaSeconds: debug.freezeStride ? 0 : liveDelta,
+          horizontalSpeed: movementSource.horizontalSpeed,
+          verticalVelocity: movementSource.verticalVelocity,
+          grounded: movementSource.grounded,
+          movementState: movementSource.movementState,
+          windLiftActive: movementSource.windLiftActive,
+          respawnNonce: pose.respawnNonce,
+        };
+        if (debug.freezeStride) {
+          locomotionRuntimeRef.current.gaitPhase = THREE.MathUtils.clamp(debug.stridePhaseScrub, 0, 1) * Math.PI * 2;
+        }
+
+        const locomotionPose = computeLowerBodyLocomotionPose(input, locomotionRuntimeRef.current, locomotionPoseRef.current);
+        applyLowerBodyLocomotionPose(rig, container, locomotionPose, rigScratchRef.current);
+
+        if (process.env.NODE_ENV !== 'production') {
+          bodyDebugReadout.locomotionState = locomotionPose.state;
+          bodyDebugReadout.stridePhase = locomotionPose.phase;
+          bodyDebugReadout.locomotionBlendWeight = locomotionPose.blendWeight;
+          bodyDebugReadout.pelvisPositionOffset[0] = locomotionPose.pelvisPositionOffset[0];
+          bodyDebugReadout.pelvisPositionOffset[1] = locomotionPose.pelvisPositionOffset[1];
+          bodyDebugReadout.pelvisPositionOffset[2] = locomotionPose.pelvisPositionOffset[2];
+          bodyDebugReadout.pelvisRotationEuler[0] = locomotionPose.pelvisRotationEuler[0];
+          bodyDebugReadout.pelvisRotationEuler[1] = locomotionPose.pelvisRotationEuler[1];
+          bodyDebugReadout.pelvisRotationEuler[2] = locomotionPose.pelvisRotationEuler[2];
+          bodyDebugReadout.leftUpperLegPitch = locomotionPose.leftUpperLegRotation[0];
+          bodyDebugReadout.rightUpperLegPitch = locomotionPose.rightUpperLegRotation[0];
+          bodyDebugReadout.leftLowerLegPitch = locomotionPose.leftLowerLegRotation[0];
+          bodyDebugReadout.rightLowerLegPitch = locomotionPose.rightLowerLegRotation[0];
+          bodyDebugReadout.leftFootPitch = locomotionPose.leftFootRotation[0];
+          bodyDebugReadout.rightFootPitch = locomotionPose.rightFootRotation[0];
+        }
+      }
+    }
 
     if (process.env.NODE_ENV !== 'production') {
       bodyDebugReadout.effectiveYaw = transformOut.current.yaw;

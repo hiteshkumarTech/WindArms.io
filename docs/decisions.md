@@ -813,3 +813,61 @@ Classification (per the brief's required Section 6 decision): **PASS WITHOUT EYE
 Known limitation carried forward unchanged from Step 8C: this character's own eye-to-waist proportion is still shorter than a generic real human's even after this fix (the fix corrects the SILHOUETTE/viewing-angle problem, not the underlying proportion gap itself, which remains out of scope) — the waist reads a little closer than a textbook-perfect result would, but no longer as an isolated, disconnected blob.
 
 ---
+
+**2026-07-27 — Step 8D: bone posing is expressed in world-relative swing axes, never guessed bone-local Euler angles**
+
+Decision: `lowerBodyRig.ts`'s `applyLowerBodyLocomotionPose` poses every leg/pelvis bone by computing its desired WORLD orientation (rest orientation, re-expressed at the container's current yaw, further rotated by a small angle around the CHARACTER's world-space local-right/local-forward axes, computed fresh each frame from the container's live world quaternion) and only converts to a bone-local quaternion as the final step.
+
+Reason: this asset's Mixamo/Blender-exported rig gives no guarantee that a bone's own local X/Y/Z axes correspond to any particular anatomical direction (hip flexion, knee bend) — a naive `bone.rotation.x += swingAngle` approach would require correctly guessing that axis for 7 different bones, with a wrong guess manifesting as exactly the failure modes the Step 8D brief explicitly forbids ("knees bending sideways," "legs crossing," "feet rotating backward"). The arm IK system already in this codebase (`kaelArmRig.ts`'s `ArmRestMetrics`) solves an analogous problem by measuring each bone's rest orientation CONTAINER-RELATIVE once, then recomposing with the container's live transform every frame — reusing that same technique for a much simpler additive-swing (not full IK) case sidesteps the axis-guessing problem entirely, at the cost of one extra `getWorldQuaternion` read per bone per frame (cheap; bones are shallow, unchanging-topology chains).
+
+Rejected: guessing a per-bone local axis convention (would require empirically discovering it separately for hip/knee/ankle/pelvis, then hoping the same axis holds under yaw); building a from-scratch parent-to-child manual quaternion-composition chain to avoid the extra scene-graph reads (unnecessary — `Object3D.getWorldQuaternion` self-corrects its own ancestor chain regardless of write order within the same frame, already verified and documented for this exact rig family in `kaelArmSolve.ts`'s doc comment, so there is no real staleness risk to engineer around).
+
+Chosen: measure each bone's rest quaternion relative to the container once at mount (`buildLowerBodyRigRuntime`), then every frame compute `desiredWorldQuat = swingOffsetQuat * containerWorldQuat * restQuatContainerRelative` and convert to local via the bone's actual (freshly-read) parent world quaternion. The only axes ever used for legs are the container's own live local-right (pitch/swing) — never yaw or roll — which structurally prevents sideways knee bends and leg-crossing by construction, not by convention alone. Verified by a dedicated test (`lowerBodyRig.test.ts`) that applies a pose at two different container yaws and confirms the resulting WORLD rotation actually differs (proving the swing follows live yaw, not a frozen axis), and by a left/right symmetry test (equal-magnitude opposite-sign input produces equal-magnitude rotation away from rest on both sides).
+
+---
+
+**2026-07-27 — Step 8D: takeoff detection reads THIS frame's vertical velocity; landing detection reads the PREVIOUS frame's — a real, test-caught asymmetry, not an oversight**
+
+Decision: `lowerBodyLocomotionPose.ts`'s takeoff-envelope trigger checks `verticalVelocity` (the value published THIS call); the landing-envelope trigger's strength calculation uses `state.prevVerticalVelocity` (the value from the PREVIOUS call, before this one).
+
+Reason: `PlayerController.tsx`/`RangeController.tsx` set `vel.y = PLAYER.JUMP_VELOCITY` and flip `grounded` to false in the SAME frame a jump starts — so the true takeoff impulse is present in the very frame that publishes `grounded: false` for the first time, and reading it there is correct. Landing is the opposite: the controller's own grounded-clamp (`if (vel.y < 0) vel.y = -0.6`) runs in the SAME frame `grounded` flips to true, AFTER the real impact velocity has already been used to move the character — meaning by publish time, every landing's true impact speed has already been overwritten with a small fixed constant, regardless of how far the character actually fell. The only frame where the real pre-impact speed was ever visible is the previous one, while still airborne.
+
+Caught by: an automated test (`lowerBodyLocomotionPose.test.ts`, "a real jump... triggers the takeoff envelope") that initially failed — the first implementation used `prevVerticalVelocity` for BOTH triggers (copy-pasted reasoning from the landing case without re-deriving it for takeoff), and the test's synthetic input (jump velocity published in the SAME call as `grounded: false`, matching the real controllers' actual behavior) caught the mismatch immediately. Not caught by inspection alone — this is exactly the kind of subtle, easy-to-miss timing asymmetry a same-frame-vs-previous-frame test forces out into the open.
+
+Chosen: two different, individually-justified reads (documented inline at both call sites) rather than a single "always use the previous frame" rule that would silently under-detect every real jump (since `prevVerticalVelocity` on the leaving-ground frame still reflects whatever the character was doing WHILE grounded — near zero — not the jump impulse that only exists starting that same frame).
+
+---
+
+**2026-07-27 — Step 8D: dev-only preview/debug controls extend `bodyDebugStore`/`KaelBodyDebugPanel` rather than a new parallel tool**
+
+Decision: locomotion preview mode, freeze-stride, stride-phase scrub, and locomotion-enabled all live in the existing Step 8C `bodyDebugStore.ts`/`KaelBodyDebugPanel.tsx`, gated the same `?body=1` way, rather than a new `?locomotion=1`-style tool.
+
+Reason: every Step 8D control needs to interact with the Step 8C static-offset controls in the SAME frame (e.g. "preview the sprint gait at a specific pitch with a specific position offset") — splitting them into two separately-gated panels would force a developer to enable two flags and cross-reference two floating panels for what is conceptually one calibration session for one feature (the lower body). `resetLocomotion()` is a NEW, separate store action from the existing `reset()` (which still only touches the Step 8C position/yaw/marker fields) specifically so a developer can reset "just the animation controls" without losing a carefully-tuned static offset mid-session — verified by a dedicated test that resets locomotion and asserts the position offset survives untouched.
+
+Chosen: one store, one panel, two independently-resettable groups of fields.
+
+---
+
+**2026-07-27 — Step 8D real-browser validation: headless SwiftShader rendering makes wall-clock-timed screenshots of short envelopes (takeoff/landing) unreliable; a state-polling capture technique was used instead**
+
+Decision: the takeoff/landing screenshots for human review were captured by polling the debug panel's own live "locomotion state" readout text every ~8ms and screenshotting the instant it actually read `"takeoff"`/`"landing"`, not by guessing a wall-clock delay after switching preview mode.
+
+Reason: this session's headless Chromium has no real GPU (SwiftShader software rasterization, consistent with the Step 8C/8C.1 performance-caveat precedent) and renders at roughly 3-4fps for this scene. The takeoff/landing envelopes are deliberately short (~160-280ms) to read as a "quick, believable" transient rather than a slow, obvious animation — but `deltaSeconds` is fed from each rendered frame's REAL elapsed wall-clock time (clamped at 100ms), so in this slow environment a single simulated frame can advance the timer by up to 100ms, and two slow frames can consume an entire 160ms envelope. A first attempt using a fixed `waitForTimeout(60)` after switching preview mode landed on `airRise`/`idle` (envelope already finished) rather than `takeoff`/`landing`, discovered by reading the panel's own state text rather than trusting the screenshot alone.
+
+Rejected: lengthening the envelope durations to make them easier to screenshot in a slow environment (would mean shipping a WORSE, slower-reading transient for real players just to make automated capture easier — backwards priority). Rejected: presenting the mis-timed `airRise`/settled screenshots as "jump take-off"/"landing" evidence (would misrepresent what those states actually show).
+
+Chosen: poll the already-existing live readout and capture reactively. This is a validation-tooling technique only — no production code changed to accommodate it. Also reconfirmed two Step 8C.1-established Playwright findings and found one NEW one this session: (1) DOM checkbox clicks remain unreliable once pointer lock is engaged (still true, re-verified — the neutral-material toggle silently failed to apply when clicked post-lock); (2) `<select>` `.selectOption()` and range-input `.fill()` remain reliable post-lock (used throughout for preview-mode switching and the stride-phase scrub slider); (3) NEW — a Playwright-synthetic `Escape` keypress does not reliably trigger Chromium's native pointer-lock-exit in headless mode, so `/v2/play`'s real match-pause (which depends on the `pointerlockchange` event) never fired when tested via `page.keyboard.press('Escape')`, even though `document.pointerLockElement` visibly stayed set — worked around by calling `document.exitPointerLock()` directly via `page.evaluate`, which fires the same underlying event a real Escape press does and correctly triggered `match.pause()`.
+
+---
+
+**2026-07-27 — Step 8D pause-freeze validated with a byte-level screenshot diff, not a visual approximation**
+
+Decision: the claim "pause freezes the lower body's locomotion pose exactly" is backed by two `/v2/play` screenshots taken 900ms apart while genuinely paused (see the `exitPointerLock` finding above) being reported as **byte-identical** (`Buffer.equals()`, not a perceptual/threshold diff) — same file size, same bytes.
+
+Reason: this is the strongest available proof that literally nothing in the render — camera, weapon, HUD, AND the lower body's bone poses/position — changed across a real elapsed-time gap while paused, which is exactly what "pause cannot advance the landing envelope"/"pause freezes the last valid pose" require. This works because `PlayerController.tsx` returns from its `useFrame` callback before ever calling `publishBodyWorldPose` while `match.phase === 'paused'` — `firstPersonBodyPose.ts`'s `updateTick` therefore never advances, `KaelFirstPersonLowerBody.tsx` reads `liveDelta = 0` for that stalled tick, and `computeLowerBodyLocomotionPose` with `deltaSeconds: 0` is provably a no-op (also covered by a dedicated unit test in `lowerBodyLocomotionPose.test.ts`).
+
+Reason (a related, deliberately NOT re-tested claim): `/v2/range` has no equivalent real pause at all (`RangeController.tsx` never gates on any phase concept — Escape there only releases the pointer/input, physics and publishing continue) — this was already true before Step 8D and remains true; Step 8D's `updateTick`-based freeze mechanism is a general "did the authoritative writer stall" detector that would ALSO correctly freeze locomotion if `/v2/range` ever gained a real pause concept in the future, but there is nothing to prove today on that route specifically.
+
+Chosen: report the `/v2/play` byte-identical result as the authoritative pause-freeze proof; note the `/v2/range` non-finding honestly rather than silently reusing the wrong route's screenshot as if it proved the same thing.
+
+---

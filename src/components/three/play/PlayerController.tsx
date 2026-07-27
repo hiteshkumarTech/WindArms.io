@@ -163,6 +163,10 @@ export default function PlayerController({ inputRef }: { inputRef: React.Mutable
 
     // Wind Lift updraft — smooth acceleration inside the column, active-phase only.
     const position = body.translation();
+    // Step 8D: hoisted out of the `if` below so the lower-body locomotion
+    // publish at the end of this frame can report it — KaelFirstPersonLowerBody
+    // never recomputes the column check itself (see lowerBodyLocomotionPose.ts).
+    let windLiftActive = false;
     if (match.phase === 'active') {
       const dx = position.x - WIND_LIFT.position[0];
       const dz = position.z - WIND_LIFT.position[2];
@@ -170,6 +174,7 @@ export default function PlayerController({ inputRef }: { inputRef: React.Mutable
       if (insideColumn) {
         vel.y = Math.min(vel.y + WIND_LIFT.accel * simulationDeltaS, WIND_LIFT.maxRiseSpeed);
         grounded.current = false;
+        windLiftActive = true;
       }
     }
 
@@ -229,13 +234,21 @@ export default function PlayerController({ inputRef }: { inputRef: React.Mutable
     rangeLocalPose.grounded = grounded.current;
     rangeLocalPose.state = !grounded.current ? 'air' : horizontalSpeed < 0.5 ? 'idle' : sprinting ? 'sprint' : 'walk';
 
-    // Step 8C: publish this frame's already-computed world position/yaw for
-    // KaelFirstPersonLowerBody — never re-derived from camera.position (see
-    // firstPersonBodyPose.ts's module doc). Uses the SAME nextX/nextY/nextZ
-    // the camera itself was just set from, so the recovery-volume teleport
-    // above is reflected here automatically (that branch already rewrote
-    // nextX/nextY/nextZ before this point runs).
-    publishBodyWorldPose(bodyPoseGeneration.current, bodyPositionScratch.current.set(nextX, nextY, nextZ), yaw.current, grounded.current, match.respawnNonce);
+    // Step 8C/8D: publish this frame's already-computed world position/yaw
+    // and movement signals for KaelFirstPersonLowerBody — never re-derived
+    // from camera.position (see firstPersonBodyPose.ts's module doc). Uses
+    // the SAME nextX/nextY/nextZ the camera itself was just set from, so the
+    // recovery-volume teleport above is reflected here automatically (that
+    // branch already rewrote nextX/nextY/nextZ before this point runs).
+    // `vel.y` is this frame's ALREADY-clamped value (see the grounded-clamp
+    // branch above) — deliberate, see lowerBodyLocomotionPose.ts's doc
+    // comment on why landing detection reads the PREVIOUS frame's value.
+    publishBodyWorldPose(bodyPoseGeneration.current, bodyPositionScratch.current.set(nextX, nextY, nextZ), yaw.current, grounded.current, match.respawnNonce, {
+      horizontalSpeed,
+      verticalVelocity: vel.y,
+      movementState: rangeLocalPose.state,
+      windLiftActive,
+    });
   });
 
   return (

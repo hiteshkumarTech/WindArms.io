@@ -2,18 +2,20 @@
 
 import { useEffect, useState } from 'react';
 import { bodyDebugReadout } from '@/lib/v2/operators/bodyDebugReadout';
-import { formatBodyConfigAsCode, useBodyDebugStore } from '@/lib/v2/operators/bodyDebugStore';
+import { formatBodyConfigAsCode, useBodyDebugStore, type LowerBodyPreviewMode } from '@/lib/v2/operators/bodyDebugStore';
 import { getFirstPersonBodyWorldPose } from '@/lib/v2/operators/firstPersonBodyPose';
 import { rangeLocalPose } from '@/lib/v2/range/localPose';
 
+const PREVIEW_MODES: LowerBodyPreviewMode[] = ['live', 'idle', 'walk', 'sprint', 'jumpRise', 'airborne', 'landing', 'windLift'];
+
 /**
- * Dev-only Kael lower-body calibration panel (Milestone 8, Step 8C). Plain
- * DOM overlay, `/v2/range?body=1` only, gated by `useBodyDebugEnabled()` at
- * the mount site — same convention as `KaelArmIkTunerPanel.tsx`/
- * `ArmActionDebugPanel.tsx`. Edits `bodyDebugStore` only;
- * `KaelFirstPersonLowerBody.tsx`'s per-frame transform reads this same
- * store, so an offset changed here immediately drives the real rendered
- * position — no separate preview replica.
+ * Dev-only Kael lower-body calibration panel (Milestone 8, Step 8C static
+ * offsets, Step 8D locomotion preview/scrub). Plain DOM overlay,
+ * `/v2/range?body=1` only, gated by `useBodyDebugEnabled()` at the mount
+ * site — same convention as `KaelArmIkTunerPanel.tsx`/`ArmActionDebugPanel.tsx`.
+ * Edits `bodyDebugStore` only; `KaelFirstPersonLowerBody.tsx`'s per-frame
+ * transform/pose reads this same store, so a change here immediately
+ * drives the real rendered result — no separate preview replica.
  */
 export default function KaelBodyDebugPanel() {
   const body = useBodyDebugStore();
@@ -31,6 +33,22 @@ export default function KaelBodyDebugPanel() {
     meshCount: number;
     triangleCount: number;
     materialName: string;
+    movementState: string;
+    horizontalSpeed: number;
+    verticalVelocity: number;
+    grounded: boolean;
+    windLiftActive: boolean;
+    locomotionState: string;
+    stridePhase: number;
+    locomotionBlendWeight: number;
+    pelvisPositionOffset: [number, number, number];
+    pelvisRotationEuler: [number, number, number];
+    leftUpperLegPitch: number;
+    rightUpperLegPitch: number;
+    leftLowerLegPitch: number;
+    rightLowerLegPitch: number;
+    leftFootPitch: number;
+    rightFootPitch: number;
   } | null>(null);
 
   // Both `getFirstPersonBodyWorldPose()` and `rangeLocalPose` are plain
@@ -54,6 +72,22 @@ export default function KaelBodyDebugPanel() {
         meshCount: bodyDebugReadout.meshCount,
         triangleCount: bodyDebugReadout.triangleCount,
         materialName: bodyDebugReadout.materialName,
+        movementState: pose.movementState,
+        horizontalSpeed: pose.horizontalSpeed,
+        verticalVelocity: pose.verticalVelocity,
+        grounded: pose.grounded,
+        windLiftActive: pose.windLiftActive,
+        locomotionState: bodyDebugReadout.locomotionState,
+        stridePhase: bodyDebugReadout.stridePhase,
+        locomotionBlendWeight: bodyDebugReadout.locomotionBlendWeight,
+        pelvisPositionOffset: [...bodyDebugReadout.pelvisPositionOffset],
+        pelvisRotationEuler: [...bodyDebugReadout.pelvisRotationEuler],
+        leftUpperLegPitch: bodyDebugReadout.leftUpperLegPitch,
+        rightUpperLegPitch: bodyDebugReadout.rightUpperLegPitch,
+        leftLowerLegPitch: bodyDebugReadout.leftLowerLegPitch,
+        rightLowerLegPitch: bodyDebugReadout.rightLowerLegPitch,
+        leftFootPitch: bodyDebugReadout.leftFootPitch,
+        rightFootPitch: bodyDebugReadout.rightFootPitch,
       });
     }, 100);
     return () => window.clearInterval(id);
@@ -147,6 +181,58 @@ export default function KaelBodyDebugPanel() {
         </button>
       </div>
 
+      <div className="mb-2 mt-1 border-t border-white/10 pt-2">
+        <div className="mb-1 font-bold uppercase tracking-wide text-storm-energy">Locomotion (Step 8D)</div>
+
+        <label className="mb-2 flex items-center gap-2">
+          <input type="checkbox" checked={body.locomotionEnabled} onChange={() => body.toggleLocomotionEnabled()} />
+          <span>locomotion enabled</span>
+        </label>
+
+        <label className="mb-2 block">
+          <div className="mb-1 flex justify-between text-white/60">
+            <span>preview mode</span>
+          </div>
+          <select
+            className="w-full rounded border border-white/15 bg-black/60 px-1 py-1 text-white/90"
+            value={body.previewMode}
+            onChange={(e) => body.setPreviewMode(e.target.value as (typeof PREVIEW_MODES)[number])}
+          >
+            {PREVIEW_MODES.map((mode) => (
+              <option key={mode} value={mode}>
+                {mode}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="mb-2 flex items-center gap-2">
+          <input type="checkbox" checked={body.freezeStride} onChange={() => body.toggleFreezeStride()} />
+          <span>freeze stride</span>
+        </label>
+
+        <label className="mb-2 block">
+          <div className="mb-1 flex justify-between text-white/60">
+            <span>scrub stride phase</span>
+            <span>{body.stridePhaseScrub.toFixed(3)}</span>
+          </div>
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.005}
+            value={body.stridePhaseScrub}
+            disabled={!body.freezeStride}
+            onChange={(e) => body.setStridePhaseScrub(Number(e.target.value))}
+            className="w-full disabled:opacity-40"
+          />
+        </label>
+
+        <button type="button" className="mb-2 w-full rounded bg-white/10 px-2 py-1 hover:bg-white/20" onClick={() => body.resetLocomotion()}>
+          Reset locomotion
+        </button>
+      </div>
+
       <div className="rounded bg-black/60 p-2 text-[10px] leading-tight text-white/70">
         {readout ? (
           <>
@@ -164,6 +250,30 @@ export default function KaelBodyDebugPanel() {
               meshes: {readout.meshCount} · tris: {readout.triangleCount}
             </div>
             <div>material: {readout.materialName || '(loading)'}</div>
+            <div className="mt-1 border-t border-white/10 pt-1">
+              movement: {readout.movementState} · grounded: {readout.grounded ? 'yes' : 'no'} · windLift: {readout.windLiftActive ? 'yes' : 'no'}
+            </div>
+            <div>
+              speed: {readout.horizontalSpeed.toFixed(2)}m/s · vertical vel: {readout.verticalVelocity.toFixed(2)}m/s
+            </div>
+            <div>
+              locomotion state: {readout.locomotionState} · blend: {readout.locomotionBlendWeight.toFixed(2)} · phase: {readout.stridePhase.toFixed(3)}
+            </div>
+            <div>
+              pelvis offset: [{readout.pelvisPositionOffset.map((v) => v.toFixed(3)).join(', ')}]m
+            </div>
+            <div>
+              pelvis rotation: [{readout.pelvisRotationEuler.map((v) => v.toFixed(3)).join(', ')}]rad
+            </div>
+            <div>
+              upper leg L/R: {readout.leftUpperLegPitch.toFixed(3)} / {readout.rightUpperLegPitch.toFixed(3)}
+            </div>
+            <div>
+              lower leg L/R: {readout.leftLowerLegPitch.toFixed(3)} / {readout.rightLowerLegPitch.toFixed(3)}
+            </div>
+            <div>
+              foot L/R: {readout.leftFootPitch.toFixed(3)} / {readout.rightFootPitch.toFixed(3)}
+            </div>
           </>
         ) : (
           <div>waiting for first frame…</div>

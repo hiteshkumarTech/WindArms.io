@@ -180,10 +180,16 @@ export default function RangeController({ inputRef }: { inputRef: React.MutableR
     rangeLocalPose.grounded = grounded.current;
     rangeLocalPose.state = !grounded.current ? 'air' : horizontalSpeed < 0.5 ? 'idle' : sprinting ? 'sprint' : 'walk';
 
-    // Step 8C: publish this frame's already-computed world position/yaw —
-    // see firstPersonBodyPose.ts's module doc. Never re-derived from
-    // camera.position.
-    publishBodyWorldPose(bodyPoseGeneration.current, bodyPositionScratch.current.set(nextX, nextY, nextZ), yaw.current, grounded.current, respawnNonce.current);
+    // Step 8C/8D: publish this frame's already-computed world position/yaw
+    // and movement signals — see firstPersonBodyPose.ts's module doc. Never
+    // re-derived from camera.position. /v2/range has no Wind Lift concept —
+    // windLiftActive is always false here, matching pre-Step-8D behavior.
+    publishBodyWorldPose(bodyPoseGeneration.current, bodyPositionScratch.current.set(nextX, nextY, nextZ), yaw.current, grounded.current, respawnNonce.current, {
+      horizontalSpeed,
+      verticalVelocity: vel.y,
+      movementState: rangeLocalPose.state,
+      windLiftActive: false,
+    });
   });
 
   return (

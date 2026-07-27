@@ -55,3 +55,44 @@ describe('bodyDebugStore (Step 8C) — canonical defaults and reset', () => {
     useBodyDebugStore.getState().reset();
   });
 });
+
+describe('bodyDebugStore (Step 8D) — locomotion controls', () => {
+  it('canonical defaults: locomotion enabled, live preview, not frozen, zero scrub', () => {
+    useBodyDebugStore.getState().reset();
+    const s = useBodyDebugStore.getState();
+    assert.strictEqual(s.locomotionEnabled, true);
+    assert.strictEqual(s.freezeStride, false);
+    assert.strictEqual(s.stridePhaseScrub, 0);
+    assert.strictEqual(s.previewMode, 'live');
+  });
+
+  it('resetLocomotion() restores only the locomotion fields, leaving position/yaw calibration untouched', () => {
+    useBodyDebugStore.getState().reset();
+    useBodyDebugStore.getState().setPositionOffsetLocal([0.3, -0.1, 0.2]);
+    useBodyDebugStore.getState().toggleLocomotionEnabled();
+    useBodyDebugStore.getState().toggleFreezeStride();
+    useBodyDebugStore.getState().setStridePhaseScrub(0.5);
+    useBodyDebugStore.getState().setPreviewMode('sprint');
+
+    useBodyDebugStore.getState().resetLocomotion();
+    const s = useBodyDebugStore.getState();
+    assert.strictEqual(s.locomotionEnabled, true);
+    assert.strictEqual(s.freezeStride, false);
+    assert.strictEqual(s.stridePhaseScrub, 0);
+    assert.strictEqual(s.previewMode, 'live');
+    assert.deepStrictEqual(s.positionOffsetLocal, [0.3, -0.1, 0.2], 'resetLocomotion must not touch the Step 8C position calibration');
+
+    useBodyDebugStore.getState().reset();
+  });
+
+  it('toggleLocomotionEnabled/toggleFreezeStride flip only their own field', () => {
+    useBodyDebugStore.getState().reset();
+    useBodyDebugStore.getState().toggleLocomotionEnabled();
+    assert.strictEqual(useBodyDebugStore.getState().locomotionEnabled, false);
+    assert.strictEqual(useBodyDebugStore.getState().freezeStride, false);
+    useBodyDebugStore.getState().toggleFreezeStride();
+    assert.strictEqual(useBodyDebugStore.getState().freezeStride, true);
+    assert.strictEqual(useBodyDebugStore.getState().locomotionEnabled, false, 'unrelated toggle must not have re-enabled locomotion');
+    useBodyDebugStore.getState().reset();
+  });
+});

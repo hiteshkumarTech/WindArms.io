@@ -111,3 +111,50 @@ describe('firstPersonBodyPose — lifecycle (Step 8C)', () => {
     assert.strictEqual(a, b);
   });
 });
+
+describe('firstPersonBodyPose — Step 8D movement signals', () => {
+  it('omitting the movement argument defaults to idle/zero/no-Wind-Lift (pre-Step-8D call sites keep compiling and behaving neutrally)', () => {
+    const gen = beginBodyPoseGeneration();
+    publishBodyWorldPose(gen, POS1, 0, true, 0);
+    const snap = getFirstPersonBodyWorldPose();
+    assert.strictEqual(snap.horizontalSpeed, 0);
+    assert.strictEqual(snap.verticalVelocity, 0);
+    assert.strictEqual(snap.movementState, 'idle');
+    assert.strictEqual(snap.windLiftActive, false);
+  });
+
+  it('a supplied movement signal publishes verbatim', () => {
+    const gen = beginBodyPoseGeneration();
+    publishBodyWorldPose(gen, POS1, 0, false, 0, { horizontalSpeed: 6.2, verticalVelocity: -3.5, movementState: 'sprint', windLiftActive: true });
+    const snap = getFirstPersonBodyWorldPose();
+    assert.strictEqual(snap.horizontalSpeed, 6.2);
+    assert.strictEqual(snap.verticalVelocity, -3.5);
+    assert.strictEqual(snap.movementState, 'sprint');
+    assert.strictEqual(snap.windLiftActive, true);
+  });
+
+  it('non-finite horizontalSpeed/verticalVelocity is rejected — no publish occurs at all', () => {
+    const gen = beginBodyPoseGeneration();
+    const before = getFirstPersonBodyWorldPose().ready;
+    const ok1 = publishBodyWorldPose(gen, POS1, 0, true, 0, { horizontalSpeed: NaN, verticalVelocity: 0, movementState: 'idle', windLiftActive: false });
+    const ok2 = publishBodyWorldPose(gen, POS1, 0, true, 0, { horizontalSpeed: 0, verticalVelocity: Infinity, movementState: 'idle', windLiftActive: false });
+    assert.strictEqual(ok1, false);
+    assert.strictEqual(ok2, false);
+    assert.strictEqual(getFirstPersonBodyWorldPose().ready, before);
+  });
+
+  it('updateTick increments on every successful publish and does NOT increment on a rejected (stale-generation or non-finite) publish', () => {
+    const gen = beginBodyPoseGeneration();
+    publishBodyWorldPose(gen, POS1, 0, true, 0);
+    const tickAfterFirst = getFirstPersonBodyWorldPose().updateTick;
+    publishBodyWorldPose(gen, POS2, 0, true, 0);
+    const tickAfterSecond = getFirstPersonBodyWorldPose().updateTick;
+    assert.ok(tickAfterSecond > tickAfterFirst, 'expected updateTick to increment on a second successful publish');
+
+    const staleGen = gen;
+    beginBodyPoseGeneration(); // supersedes — this generation is now stale
+    const tickBeforeRejected = getFirstPersonBodyWorldPose().updateTick;
+    publishBodyWorldPose(staleGen, POS1, 0, true, 0);
+    assert.strictEqual(getFirstPersonBodyWorldPose().updateTick, tickBeforeRejected, 'a rejected (stale-generation) publish must not advance updateTick');
+  });
+});
