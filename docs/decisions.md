@@ -871,3 +871,65 @@ Reason (a related, deliberately NOT re-tested claim): `/v2/range` has no equival
 Chosen: report the `/v2/play` byte-identical result as the authoritative pause-freeze proof; note the `/v2/range` non-finding honestly rather than silently reusing the wrong route's screenshot as if it proved the same thing.
 
 ---
+
+**2026-07-28 — Step 8E-A audit: Option B (full-body shadow-only rig, legs locomotion-synced, arms IK-solved to the real grip target) approved as the final architecture, but its own proposed Step 8E-B literal plan rejected**
+
+Decision: the read-only Step 8E-A audit's architecture comparison (visible-body-reuse vs. full-body-shadow-only-with-pose-sync vs. simplified-proxy vs. composite) is settled on Option B. Its own proposed next step — mounting the relaxed-A-pose full body, disabling the existing FP-arm shadow, and requesting human shadow approval in the same pass — is explicitly rejected as the literal Step 8E-B.
+
+Reason: the full-body GLB (`operator-kael.lod1.glb`) has zero authored animation clips (confirmed by direct GLB inspection, `docs/forge/kael-v0.1-inspection.md`) — its arms/spine render only the source's static bind-pose "relaxed A-pose," unrelated to the actually-held rifle. Following the audit's own proposed sequence would mean replacing a partial-but-plausible existing shadow (FP-arms casting, even if previously invisible near the player due to the frustum bug fixed in this same step) with a complete, but obviously WRONG, rifle-user silhouette, and then asking a human to sign off on it as if it were a real improvement. The audit itself flags this exact risk in its own risk section — proceeding anyway would be building something explicitly foreseen as regressive.
+
+Rejected: the audit's literal 8E-B (full swap + disable old shadow + request final approval this pass). Rejected: the audit's proposed "Medium = relaxed static arms" quality tier — a coherent shadow is optional to skip, but a visibly wrong one is not an acceptable shipped tier at any quality level.
+
+Chosen: a revised four-step sequence — 8E-B (dev-only shadow foundation + leg synchronisation ONLY, gated behind `/v2/range?shadow=1`, never touching the existing FP-arms shadow's normal-session behavior), 8E-C (world-space arm IK + exact weapon shadow — the part that actually makes the full body's pose correct), 8E-D (visual/light calibration), 8E-E (lifecycle/performance/quality gating and the final caster-ownership switch). The full-body shadow only ever becomes the SOLE caster once arms and weapon agree with the real held pose, not before.
+
+---
+
+**2026-07-28 — Step 8E-B: the shadow body's root offset is physically derived, not the visible body's silhouette-tuned offset**
+
+Decision: `KaelFirstPersonShadowBody.tsx` positions its root using a new constant, `SHADOW_BODY_PHYSICAL_LOCAL_OFFSET` (`shadowBodyTransform.ts`) — `[0, -(PLAYER.HALF_HEIGHT + PLAYER.RADIUS), 0]`, i.e. Y=-1.0m only, no X, no Z — deliberately NOT `LOWERBODY_CANONICAL_LOCAL_OFFSET` (the visible lower body's `Y=-1.2m/Z=-0.5m`, Step 8C/8C.1).
+
+Reason: the visible body's offset is a two-part value — Step 8C's derived -1.0m capsule-center-to-feet reconciliation, PLUS Step 8C.1's empirical -0.2m/-0.5m(Z) silhouette nudge that exists SPECIFICALLY to fix an axial/end-on viewing-angle problem unique to a camera positioned at the player's own eye, looking down the length of its own standing leg (see the 2026-07-26 Step 8C.1 entry above). An externally-projected shadow is never viewed from that axial first-person angle — it's viewed from the light's direction, projected onto the floor — so importing the silhouette nudge would reproduce a correction for a viewing problem the shadow doesn't have, at the cost of a real, unexplained 0.2m vertical / 0.5m forward positional error versus the player's true physical location. Only the derived, physically-real capsule-to-feet term applies to the shadow.
+
+Chosen: a dedicated constant with its own doc comment stating explicitly why it must never be unified with the visible body's offset, backed by a pure-function test (`shadowBodyTransform.test.ts`) proving capsule-center-to-feet placement, no camera-forward offset, yaw-only orientation (no pitch input), respawn snap, and finite output for any input. Live-verified: shadow root world Y (0.01) exactly equals the visible body's world Y (1.01) minus 1.0m, at every tested movement state.
+
+---
+
+**2026-07-28 — Step 8E-B: one authoritative locomotion computation, distributed via a generation-safe bridge, not two independent computations kept in sync by convention**
+
+Decision: `KaelFirstPersonLowerBody.tsx` is the SOLE caller of `computeLowerBodyLocomotionPose()` on `/v2/range`. A new module, `lowerBodyLocomotionPoseBridge.ts`, publishes that already-computed result once per frame; `KaelFirstPersonShadowBody.tsx` only ever reads the published snapshot and applies it to its own separate rig runtime — it never computes a pose itself.
+
+Reason: the brief's own hard requirement is that the visible and shadow legs can structurally never read as two different bodies walking slightly out of phase with each other — the audit flagged this as a real risk of any two-skeleton shadow design. Two independent calls to the same pure function, even with byte-identical inputs, is a coincidence of correct inputs, not a structural guarantee — a future edit to either call site (different rounding, a stray extra frame of latency, a different `deltaSeconds` source) could silently desync them with no compiler or type error to catch it. Reusing the exact generation-safe publish/read idiom already established for `firstPersonBodyPose.ts`/`gripWorldPose.ts` (stale-generation publishes/invalidates silently rejected, a route remount starts clean) means there is exactly one pose value in existence per frame, referenced by both consumers — not two values that happen to agree.
+
+Chosen: `beginLowerBodyLocomotionPoseGeneration()`/`publishLowerBodyLocomotionPose()`/`invalidateLowerBodyLocomotionPose()`/`getSharedLowerBodyLocomotionPose()`, with the writer-side calls added immediately after `KaelFirstPersonLowerBody.tsx`'s own existing `computeLowerBodyLocomotionPose`/`applyLowerBodyLocomotionPose` calls (Step 8D code untouched, only extended). Verified by a 180-frame deterministic walk→sprint→jump→landing unit test asserting reference equality (`shared.pose === pose`) every single frame, and live-verified via the debug panel's own "visible state: X · shadow state: X (match)" readout holding true across idle/walk/sprint/jump-takeoff/airFall/landing and through a "freeze shared locomotion" test where both readouts stayed byte-identical 700ms apart while the player kept moving.
+
+---
+
+**2026-07-28 — Step 8E-B: the debug full-body shadow keeps the existing FP-arms shadow on everywhere except its own opt-in dev session**
+
+Decision: while `/v2/range?shadow=1` is active, the visible FP-arms' `castShadow` is disabled ONLY for that debug session (so the new full-body clone is the sole visible caster while inspecting it); the moment the flag is absent, FP-arms cast exactly as before, and no full-body caster exists at all. This is NOT the final one-authoritative-caster ownership change described in the Step 8E-A audit.
+
+Reason: the audit-approved end state (Option B, fully realized) is a single coherent full-body shadow that PERMANENTLY replaces the current partial FP-arms shadow for every player, every session. That switch is only correct once the full body's upper half actually matches the held weapon — i.e. after Step 8E-C's arm IK and weapon shadow land. Flipping real ownership now, before arms/weapon are solved, would make the ALWAYS-ON player-facing shadow worse (a relaxed-A-pose body with a floating invisible rifle) in exchange for legs that are honestly no more correct than the current partial shadow already provides. The scope correction from the user's brief is explicit on this point: "do NOT globally disable existing FP-arm shadows yet."
+
+Chosen: ownership stays exactly as it was pre-8E-B for every normal session (with or without `?shadow=1` present in the URL matters not at all for a normal player — this flag is dev-only and stripped from production builds by `useShadowDebugEnabled.ts`'s `NODE_ENV` gate); only the debug session itself temporarily reassigns casting so the new prototype can be inspected in isolation without two overlapping, competing shadows confusing the reading. The debug panel carries a persistent amber warning ("UPPER-BODY SHADOW UNSYNCHRONISED — STEP 8E-C REQUIRED") specifically so this in-progress state is never mistaken for a finished feature by a future reader of a screenshot.
+
+---
+
+**2026-07-28 — Step 8E-B: the pre-existing `/v2/range` shadow-camera frustum bug was a real, already-shipped defect, fixed with a computed (not copied) bound**
+
+Decision: `RangeScene.tsx`'s directional light now sets explicit `shadow-camera-{left,right,top,bottom,near,far}` props sourced from a new `RANGE_SHADOW_CAMERA_BOUNDS` constant (`±65/near1/far100`), replacing THREE.js's implicit default (an origin-centered `±5` orthographic frustum, since no `target` prop ever repositioned the light).
+
+Reason: this is a real, already-shipped bug independent of anything in Step 8E-B's own new work — `/v2/range`'s own spawn point (`RangeController.tsx`: `[0, 3, 10]`) already sits outside a `±5` frustum, and the existing (already-`castShadow`-enabled) FP-arms shadow was very likely never visible anywhere near the player before this fix, on any prior milestone. `/v2/play`'s own light uses `±30`, which was tested and found to still clip most of this range's actual floor (`RANGE_FLOOR_SIZE`/`RANGE_FLOOR_CENTER`, x:[-18,18]/z:[-60,20]) — so `±30` was rejected as a copy-paste fix and a value computed from the real floor geometry was used instead.
+
+Chosen: a single source-of-truth module, `rangeEnvironmentBounds.ts`, exporting both the floor's real size/center (now also consumed by `RangeEnvironment.tsx`, replacing inline literals) and the shadow bounds, plus `boundsCoverFloor()` — a conservative per-axis-from-origin coverage check. A regression test (`rangeEnvironmentBounds.test.ts`) proves the default `±5` bounds do NOT cover the real floor (confirming the bug was real, not hypothetical), that `/v2/play`'s `±30` would still clip it, and that the chosen `±65/near1/far100` does cover it — so a future accidental shrink of either the floor or the bounds is caught by a failing test rather than silently regressing back to an invisible shadow. Light color, intensity, and position were deliberately left untouched — only the shadow-camera frustum changed.
+
+---
+
+**2026-07-28 — Step 8E-B: recovery-volume teleport is NOT live-verified — reported as an open item, not silently promoted to an empirical pass**
+
+Decision: the brief's validation-matrix item "recovery-volume teleport: no stale shadow after teleport" stays **unverified in the browser** as of this step. What IS reported is a structural argument plus existing unit-test coverage — this is explicitly weaker evidence than every other validation-matrix item (which were all live-triggered and screenshotted) and must not be read or cited as if it were a live pass. Carried forward as open until either a map with a reachable kill-plane edge exists, or Step 8E-E revisits it directly.
+
+Reason: `RangeEnvironment.tsx`'s test range is a fully sealed box — four fixed walls (`x=±18`, `z=-59`/`z=19`, all 8 units tall) enclose the entire floor on every side, so the `RANGE_KILL_Y=-20` recovery volume (the same defensive kill-plane pattern as `/v2/play`) is structurally unreachable by any legitimate WASD movement on this map; there is no edge to walk off. Reaching it would require either an out-of-scope physics-clipping exploit or directly poking Rapier internals via injected JS — neither is a legitimate validation methodology, and both risk violating the brief's own "do not change movement physics" constraint by proxy.
+
+Chosen: report the structural guarantee instead — `KaelFirstPersonShadowBody.tsx` never reads or reacts to `respawnNonce` itself; every frame it reads `pose.worldPosition`/`worldYaw` directly off `getFirstPersonBodyWorldPose()`'s current snapshot with no interpolation, smoothing, or cached previous-frame value. Since a respawn is nothing more than the SAME snapshot's position field changing to a new value between two frames, and the shadow has no separate position-tracking state of its own to go stale, there is no code path by which the shadow COULD lag behind a teleport — the "staleness" failure mode this test targets doesn't have a mechanism to occur, and `shadowBodyTransform.test.ts`'s existing "respawn snap" test (a discontinuous world-position jump produces an immediate, exact, finite output with no interpolation artifact) covers the same transform math at the unit level. Documented as an honest scope note for whoever builds Step 8E-C, rather than a claimed-but-unverified pass.
+
+---

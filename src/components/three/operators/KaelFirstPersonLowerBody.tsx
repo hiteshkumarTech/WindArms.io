@@ -26,6 +26,11 @@ import {
   createLowerBodyLocomotionRuntimeState,
   type LowerBodyLocomotionInput,
 } from '@/lib/v2/operators/lowerBodyLocomotionPose';
+import {
+  beginLowerBodyLocomotionPoseGeneration,
+  invalidateLowerBodyLocomotionPose,
+  publishLowerBodyLocomotionPose,
+} from '@/lib/v2/operators/lowerBodyLocomotionPoseBridge';
 
 /**
  * Kael first-person lower-body derivative (Milestone 8, Step 8C static
@@ -61,6 +66,15 @@ import {
  * owns 100% of its own transform) and does NOT use mesh-name filtering: the
  * asset already physically excludes head/arm geometry, so there is nothing
  * to filter.
+ *
+ * Step 8E-B — SOLE WRITER of the shared locomotion-pose bridge
+ * (`lowerBodyLocomotionPoseBridge.ts`): this component is the only place in
+ * the codebase that ever calls `computeLowerBodyLocomotionPose`. The
+ * dev-only shadow-body prototype (`KaelFirstPersonShadowBody.tsx`,
+ * `/v2/range?shadow=1` only) reads the published result and applies it to
+ * its own leg bones — it NEVER computes its own pose, so the two can never
+ * advance independent stride phases. See that bridge module's own doc
+ * comment for the full reasoning.
  */
 
 function KaelLowerBodyInner() {
@@ -140,6 +154,16 @@ function LoadedKaelLowerBody({ url, lod }: { url: string; lod: 0 | 1 | 2 }) {
   const locomotionPoseRef = useRef(createLowerBodyLocomotionPose());
   const rigScratchRef = useRef(createLowerBodyRigScratch());
   const lastUpdateTickRef = useRef(-1);
+
+  // Step 8E-B — this component is the shared locomotion-pose bridge's SOLE
+  // writer; see the module doc comment above. Fresh generation per mount,
+  // same straggler-frame protection as every other bridge in this codebase.
+  const locomotionBridgeGenerationRef = useRef(0);
+  useEffect(() => {
+    const generation = beginLowerBodyLocomotionPoseGeneration();
+    locomotionBridgeGenerationRef.current = generation;
+    return () => invalidateLowerBodyLocomotionPose(generation);
+  }, []);
 
   // Step 8C.1 diagnostic — resolved once per instance, not re-traversed per
   // frame. Bone WORLD positions already account for the container's
@@ -356,6 +380,13 @@ function LoadedKaelLowerBody({ url, lod }: { url: string; lod: 0 | 1 | 2 }) {
 
         const locomotionPose = computeLowerBodyLocomotionPose(input, locomotionRuntimeRef.current, locomotionPoseRef.current);
         applyLowerBodyLocomotionPose(rig, container, locomotionPose, rigScratchRef.current);
+        // Step 8E-B — publish for the dev-only shadow-body prototype (a no-op
+        // when nothing is reading it, i.e. on every route/session where
+        // ?shadow=1 isn't set). Published unconditionally whenever a pose is
+        // actually computed this frame — when locomotion is disabled
+        // (`!debug.locomotionEnabled`, the branch above this one), nothing
+        // publishes and a shadow consumer simply keeps whatever it last read.
+        publishLowerBodyLocomotionPose(locomotionBridgeGenerationRef.current, locomotionPose);
 
         if (process.env.NODE_ENV !== 'production') {
           bodyDebugReadout.locomotionState = locomotionPose.state;

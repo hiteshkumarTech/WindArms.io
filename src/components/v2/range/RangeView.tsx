@@ -4,6 +4,7 @@ import dynamic from 'next/dynamic';
 import { useEffect, useRef } from 'react';
 import { usePointerLock } from '@/hooks/usePointerLock';
 import { useBodyDebugEnabled } from '@/lib/v2/operators/useBodyDebugEnabled';
+import { useShadowDebugEnabled } from '@/lib/v2/operators/useShadowDebugEnabled';
 import { useAnimDebugEnabled } from '@/lib/v2/weapons/useAnimDebugEnabled';
 import { useAudioDebugEnabled } from '@/lib/v2/weapons/useAudioDebugEnabled';
 import { useGripDebugEnabled } from '@/lib/v2/weapons/useGripDebugEnabled';
@@ -13,6 +14,7 @@ import { unlockVortexAudio } from '@/lib/v2/range/vortexAudio';
 import ArmActionDebugPanel from './ArmActionDebugPanel';
 import KaelArmIkTunerPanel from './KaelArmIkTunerPanel';
 import KaelBodyDebugPanel from './KaelBodyDebugPanel';
+import KaelShadowDebugPanel from './KaelShadowDebugPanel';
 import RangeHud from './RangeHud';
 import VortexAudioDebugPanel from './VortexAudioDebugPanel';
 import VortexGripTunerPanel from './VortexGripTunerPanel';
@@ -34,6 +36,7 @@ export default function RangeView() {
   const animDebugEnabled = useAnimDebugEnabled();
   const audioDebugEnabled = useAudioDebugEnabled();
   const bodyDebugEnabled = useBodyDebugEnabled();
+  const shadowDebugEnabled = useShadowDebugEnabled();
 
   useEffect(() => {
     setTarget(containerRef.current);
@@ -53,6 +56,7 @@ export default function RangeView() {
       {animDebugEnabled && <ArmActionDebugPanel />}
       {audioDebugEnabled && <VortexAudioDebugPanel />}
       {bodyDebugEnabled && <KaelBodyDebugPanel />}
+      {shadowDebugEnabled && <KaelShadowDebugPanel />}
       {!locked && (
         <button
           type="button"
