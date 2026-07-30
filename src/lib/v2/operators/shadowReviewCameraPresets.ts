@@ -167,6 +167,24 @@ export function computeShadowReviewCameraTransform(
 
   const spec = PRESET_SPECS[preset];
   const dir = new THREE.Vector3(0, 0, 1).applyAxisAngle(UP, playerYawRad + THREE.MathUtils.degToRad(spec.yawOffsetDeg));
+  // STEP 8E-C.3.2 CORRECTION: negate the forward/back component only (NOT a
+  // full 180° flip of `dir`, which would also invert left/right). The base
+  // vector (0,0,1) rotated by `yawOffsetDeg=0` sits at world +Z, but the
+  // player/character actually faces world -Z at yaw=0 (verified two
+  // independent ways: `RangeController.tsx` sets `camera.rotation.y =
+  // yaw.current` directly, the standard three.js "camera looks down -Z at
+  // rotation 0" convention; and the weapon-orientation investigation in
+  // `shadowWeaponPresentationPose.ts` independently confirmed forward =
+  // world -Z via a live muzzle-tip-vs-chest measurement). So every preset's
+  // `yawOffsetDeg` was being measured from BEHIND the player instead of in
+  // front — `threeQuarterFront` showed the character's back, `threeQuarterRear`
+  // showed their front (see docs/known-bugs.md's now-resolved entry). Left/
+  // right were NOT affected by this — independently verified via the real
+  // R/L shoulder world-position readout (`R pre-assist shoulder` x=+0.082,
+  // `L pre-assist shoulder` x=-0.271 at yaw=0, confirming character-right =
+  // world +X, matching `rightSide`'s existing +X camera placement) — so
+  // only the Z (front/back) component of `dir` is negated here, not X.
+  dir.z = -dir.z;
   result.position.set(playerPosition.x + dir.x * spec.radius, playerPosition.y + spec.cameraHeight, playerPosition.z + dir.z * spec.radius);
   result.lookAt.set(playerPosition.x, playerPosition.y + spec.lookAtHeight, playerPosition.z);
   return result;

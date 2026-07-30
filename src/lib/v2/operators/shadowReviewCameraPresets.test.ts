@@ -60,6 +60,46 @@ describe('shadowReviewCameraPresets — player-relative presets', () => {
   });
 });
 
+/**
+ * Step 8E-C.3.2 — regression coverage for the found-and-fixed front/rear
+ * naming bug (see docs/known-bugs.md's now-resolved entry and this module's
+ * own doc comment on the `dir.z = -dir.z` correction). At player yaw=0 the
+ * character faces world -Z (verified via `RangeController.tsx`'s
+ * `camera.rotation.y = yaw.current` and, independently, the weapon-muzzle
+ * world-position investigation in `shadowWeaponPresentationPose.ts`), and
+ * the character's own right side is world +X (verified via the real R/L
+ * shoulder world-position readout: R=+0.082, L=-0.271 at yaw=0). These tests
+ * pin BOTH facts down numerically so the naming bug cannot silently
+ * reappear.
+ */
+describe('shadowReviewCameraPresets — absolute front/rear/left/right correctness (Step 8E-C.3.2)', () => {
+  it('threeQuarterFront/bodyCloseThreeQuarter sit on the -Z (forward-facing) side of the player, not +Z (behind)', () => {
+    for (const preset of ['threeQuarterFront', 'bodyCloseThreeQuarter'] as const) {
+      const t = computeShadowReviewCameraTransform(preset, PLAYER_POS, 0);
+      assert.ok(t.position.z < PLAYER_POS.z, `${preset}: expected camera on the -Z (front) side, got z=${t.position.z} vs player z=${PLAYER_POS.z}`);
+    }
+  });
+
+  it('threeQuarterRear sits on the +Z (behind) side of the player, not -Z (front)', () => {
+    const t = computeShadowReviewCameraTransform('threeQuarterRear', PLAYER_POS, 0);
+    assert.ok(t.position.z > PLAYER_POS.z, `threeQuarterRear: expected camera on the +Z (rear) side, got z=${t.position.z} vs player z=${PLAYER_POS.z}`);
+  });
+
+  it("rightSide/handsCloseRight sit on the +X side of the player (the character's real right, per the measured shoulder ground truth)", () => {
+    for (const preset of ['rightSide', 'handsCloseRight'] as const) {
+      const t = computeShadowReviewCameraTransform(preset, PLAYER_POS, 0);
+      assert.ok(t.position.x > PLAYER_POS.x, `${preset}: expected camera on the +X (right) side, got x=${t.position.x} vs player x=${PLAYER_POS.x}`);
+    }
+  });
+
+  it("leftSide/bodyCloseSide/handsCloseLeft sit on the -X side of the player (the character's real left)", () => {
+    for (const preset of ['leftSide', 'bodyCloseSide', 'handsCloseLeft'] as const) {
+      const t = computeShadowReviewCameraTransform(preset, PLAYER_POS, 0);
+      assert.ok(t.position.x < PLAYER_POS.x, `${preset}: expected camera on the -X (left) side, got x=${t.position.x} vs player x=${PLAYER_POS.x}`);
+    }
+  });
+});
+
 describe('shadowReviewCameraPresets — lightFacing (world-fixed direction, not player-yaw-relative)', () => {
   it('the OFFSET from the player is identical regardless of player yaw (world-fixed, unlike the other presets)', () => {
     const offsets: THREE.Vector3[] = [];
