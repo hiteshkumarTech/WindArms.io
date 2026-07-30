@@ -5,6 +5,7 @@ import { useEffect, useRef } from 'react';
 import { usePointerLock } from '@/hooks/usePointerLock';
 import { useBodyDebugEnabled } from '@/lib/v2/operators/useBodyDebugEnabled';
 import { useShadowDebugEnabled } from '@/lib/v2/operators/useShadowDebugEnabled';
+import { useShadowReviewEnabled } from '@/lib/v2/operators/useShadowReviewEnabled';
 import { useAnimDebugEnabled } from '@/lib/v2/weapons/useAnimDebugEnabled';
 import { useAudioDebugEnabled } from '@/lib/v2/weapons/useAudioDebugEnabled';
 import { useGripDebugEnabled } from '@/lib/v2/weapons/useGripDebugEnabled';
@@ -15,6 +16,7 @@ import ArmActionDebugPanel from './ArmActionDebugPanel';
 import KaelArmIkTunerPanel from './KaelArmIkTunerPanel';
 import KaelBodyDebugPanel from './KaelBodyDebugPanel';
 import KaelShadowDebugPanel from './KaelShadowDebugPanel';
+import KaelShadowReviewPanel from './KaelShadowReviewPanel';
 import RangeHud from './RangeHud';
 import VortexAudioDebugPanel from './VortexAudioDebugPanel';
 import VortexGripTunerPanel from './VortexGripTunerPanel';
@@ -37,6 +39,7 @@ export default function RangeView() {
   const audioDebugEnabled = useAudioDebugEnabled();
   const bodyDebugEnabled = useBodyDebugEnabled();
   const shadowDebugEnabled = useShadowDebugEnabled();
+  const shadowReviewEnabled = useShadowReviewEnabled();
 
   useEffect(() => {
     setTarget(containerRef.current);
@@ -57,6 +60,7 @@ export default function RangeView() {
       {audioDebugEnabled && <VortexAudioDebugPanel />}
       {bodyDebugEnabled && <KaelBodyDebugPanel />}
       {shadowDebugEnabled && <KaelShadowDebugPanel />}
+      {shadowReviewEnabled && <KaelShadowReviewPanel />}
       {!locked && (
         <button
           type="button"

@@ -15,6 +15,7 @@ import { getGripWorldPose } from '@/lib/v2/weapons/gripWorldPose';
 import { kaelArmDebugState } from '@/lib/v2/weapons/kaelArmDebugState';
 import { useGripTunerStore } from '@/lib/v2/weapons/gripTunerStore';
 import { useIkTunerStore } from '@/lib/v2/weapons/ikTunerStore';
+import { useShadowDebugEnabled } from '@/lib/v2/operators/useShadowDebugEnabled';
 
 /**
  * Kael first-person arms — weapon-authoritative IK consumer (Milestone 7,
@@ -92,6 +93,16 @@ export default function KaelFirstPersonArms() {
 function LoadedKaelArms({ url, lod, camera }: { url: string; lod: number; camera: THREE.PerspectiveCamera }) {
   const result = useLoadedPipelineAsset(operatorArmsSlot('kael'), url, lod as 0 | 1 | 2);
   const scene = useThree((state) => state.scene);
+  // Step 8E-C — authoritative shadow-caster ownership: while the dev-only
+  // shadow prototype is active (`/v2/range?shadow=1`), it and
+  // `KaelFirstPersonShadowWeapon.tsx` become the sole casters for the
+  // body/weapon regions, so the visible arms stop casting for the duration
+  // of that debug session — never in a normal session, never on `/v2/play`
+  // (`useShadowDebugEnabled` is `false` there always). See
+  // `KaelFirstPersonShadowBody.tsx`'s own doc comment for the full
+  // ownership rule and the correction of Step 8E-B's own report, which
+  // described this as already wired when it had not actually been.
+  const shadowDebugActive = useShadowDebugEnabled();
   const containerRef = useRef<THREE.Group>(null);
   const containerWorldQuatRef = useRef(new THREE.Quaternion());
   const loggedPoseStatusRef = useRef(false);
@@ -252,12 +263,12 @@ function LoadedKaelArms({ url, lod, camera }: { url: string; lod: number; camera
     if (instance) {
       instance.traverse((node) => {
         if (node instanceof THREE.Mesh) {
-          node.castShadow = true;
+          node.castShadow = !shadowDebugActive;
           node.frustumCulled = false;
         }
       });
     }
-  }, [instance]);
+  }, [instance, shadowDebugActive]);
 
   // Diagnostic-group cleanup (Step 6E) — if the component unmounts while
   // DIRECT CAMERA MOUNT is still active (route change, Suspense retry),

@@ -4,9 +4,14 @@ Bugs that are known and intentionally not being fixed right now (postponed, low-
 
 ## Currently tracked
 
-None. A repo-wide search for `TODO`/`FIXME`/`XXX`/`HACK`/`BUG:` markers in `src/`, `server/`, and `shared/` on 2026-07-12 found no matches, and no intentionally-postponed bug is documented elsewhere in this doc set.
+### Shadow review camera presets: "front"/"rear" naming doesn't match which side of the character they show
 
-The closest thing to a known limitation is a flagged-off feature, not a bug: lag compensation (`LAG_COMP`) is implemented but disabled by default pending a soak test — see [decisions.md](decisions.md) and [technical/networking.md](technical/networking.md). Don't "fix" this by flipping the flag on without a soak test.
+**Where:** `src/lib/v2/operators/shadowReviewCameraPresets.ts` (dev-only, `/v2/range?shadow=1&shadowReview=1`)
+**Symptom:** the `threeQuarterFront`/`bodyCloseThreeQuarter` presets (and by extension `handsCloseRight`, positive `yawOffsetDeg` generally) show the character's BACK, not front; `threeQuarterRear` shows the FRONT. Found while building Step 8E-C.3.1's close camera presets and cross-checking against the character's actual facing (hands/face direction) in captured screenshots — the naming has been backwards since these presets were introduced in Step 8E-C.3, just never visually audited against the character's own facing until this pass's close-up work made it obvious.
+**Why postponed:** out of Step 8E-C.3.1's explicit scope (that pass's brief was review-harness isolation and calibration, not further camera-convention changes) and low-risk — it's a dev-only diagnostic label, not gameplay-facing. Root cause is presumably a yaw-convention mismatch between how these presets compute their offset and the character rig's own rest-pose facing, not yet root-caused.
+**Do not:** rename the preset labels or flip the yaw math as a quick fix without first root-causing WHY the mismatch exists — it may share a cause with other yaw/forward-convention bugs this milestone has already found and fixed elsewhere (the weapon-position and weapon-orientation history in this same file family). Treat it as one symptom of a pattern, not an isolated typo.
+
+The closest thing to another known limitation is a flagged-off feature, not a bug: lag compensation (`LAG_COMP`) is implemented but disabled by default pending a soak test — see [decisions.md](decisions.md) and [technical/networking.md](technical/networking.md). Don't "fix" this by flipping the flag on without a soak test.
 
 ## Adding an entry
 
