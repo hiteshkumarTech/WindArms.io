@@ -20,6 +20,7 @@ import {
 } from '@/lib/v2/operators/lowerBodyRig';
 import { getSharedLowerBodyLocomotionPose } from '@/lib/v2/operators/lowerBodyLocomotionPoseBridge';
 import { useShadowDebugStore } from '@/lib/v2/operators/shadowDebugStore';
+import { useShadowReviewStore } from '@/lib/v2/operators/shadowReviewStore';
 import { shadowBodyDebugReadout } from '@/lib/v2/operators/shadowBodyDebugReadout';
 import {
   applyChestAimFrame,
@@ -182,6 +183,8 @@ function LoadedKaelShadowBody({ url, lod }: { url: string; lod: 0 | 1 | 2 }) {
   const rigRuntimeRef = useRef<LowerBodyRigRuntime | null>(null);
   const rigScratchRef = useRef(createLowerBodyRigScratch());
   const diagnosticActiveRef = useRef(false);
+  /** Step 8E-D self-shadowing experiment — tracks the last-applied `selfShadowEnabled` so the traversal below only runs on an actual change, same idiom as `diagnosticActiveRef`. */
+  const selfShadowActiveRef = useRef(false);
 
   // Step 8E-C — arm rest metrics, resolved once per mount alongside the
   // Step 8E-B leg rig above. STEP 8E-C.1: `armRuntimeRef` is now measured
@@ -378,6 +381,24 @@ function LoadedKaelShadowBody({ url, lod }: { url: string; lod: 0 | 1 | 2 }) {
     if (diagnostic !== diagnosticActiveRef.current) {
       diagnosticActiveRef.current = diagnostic;
       applyOperatorRenderMode(instance, diagnostic ? 'full' : 'shadowOnly');
+    }
+
+    // Step 8E-D self-shadowing experiment — `applyOperatorRenderMode` never
+    // sets `receiveShadow` (see `renderModes.ts`'s own doc comment: the
+    // shared `shadowOnly`/`full` modes only ever governed material/
+    // visibility/castShadow, self-shadowing was never part of that
+    // contract). This is a SEPARATE, orthogonal toggle applied directly here
+    // rather than folded into `renderModes.ts`, since it's Step-8E-D-only,
+    // review-gated, and has nothing to do with which material a mesh draws.
+    // Inert unless `shadowReviewEnabled` (this whole component tree is
+    // already `?shadow=1`-gated; the store's `selfShadowEnabled` field is
+    // only ever set to non-default via the review panel).
+    const selfShadow = useShadowReviewStore.getState().selfShadowEnabled;
+    if (selfShadow !== selfShadowActiveRef.current) {
+      selfShadowActiveRef.current = selfShadow;
+      instance.traverse((node) => {
+        if (node instanceof THREE.Mesh) node.receiveShadow = selfShadow;
+      });
     }
 
     // PHYSICAL root transform — world position + yaw ONLY, via the derived

@@ -43,6 +43,26 @@ export default function RangeScene({ inputRef }: { inputRef: React.MutableRefObj
   const shadowDebugEnabled = useShadowDebugEnabled();
   const shadowReviewEnabled = useShadowReviewEnabled();
   const receiverEnabled = useShadowReviewStore((s) => s.receiverEnabled);
+  // Step 8E-D: reactive selectors (not getState() snapshots) so editing
+  // calibration via the review panel actually re-renders this component and
+  // updates the light's props live. Production values are LITERAL,
+  // unconditional — the exact byte-for-byte expression that existed before
+  // Step 8E-D. Every player who has never touched ?shadowReview=1 sees
+  // precisely this, regardless of anything stored in `shadowReviewStore`.
+  const calibratedBias = useShadowReviewStore((s) => s.shadowBias);
+  const calibratedNormalBias = useShadowReviewStore((s) => s.shadowNormalBias);
+  const calibratedMapSize = useShadowReviewStore((s) => s.shadowMapSize);
+  const shadowBias = shadowReviewEnabled ? calibratedBias : 0;
+  const shadowNormalBias = shadowReviewEnabled ? calibratedNormalBias : 0;
+  // Bias/normalBias apply live (three.js re-reads them per shadow pass, no
+  // render-target recreation needed). Resolution does NOT apply live: the
+  // shadow map is a WebGLRenderTarget lazily sized on first use, and
+  // three.js does not auto-recreate it on a `mapSize` change alone. The
+  // review panel's resolution control is documented as "requires route
+  // re-entry to take visual effect" rather than silently rendering at a
+  // stale size — reading the value reactively still keeps the panel's own
+  // readout accurate even though the shadow map itself lags until remount.
+  const shadowMapSize = shadowReviewEnabled ? calibratedMapSize : 1024;
   return (
     <Canvas shadows dpr={[1, 1.75]} camera={{ fov: PLAYER.FOV_BASE, near: 0.05, far: 200, position: [0, 3 + PLAYER.EYE_STAND, 10] }}>
       <color attach="background" args={[STORM.abyss]} />
@@ -58,12 +78,23 @@ export default function RangeScene({ inputRef }: { inputRef: React.MutableRefObj
           is computed from the real floor extent, not copied from
           `/v2/play`'s own `±30` (sized for a smaller, origin-centered 34×34
           arena — would still clip most of this floor). Light
-          position/intensity/color untouched. */}
+          position/intensity/color untouched.
+          Step 8E-D: `shadow-bias`/`shadow-normalBias`/`shadow-mapSize` are
+          now sourced from `shadowBias`/`shadowNormalBias`/`shadowMapSize`
+          above — each is the UNCONDITIONAL production literal (0/0/1024,
+          exactly what shipped before this step) unless `shadowReviewEnabled`
+          is true, in which case (and ONLY then) the dev-only calibration
+          store's values apply instead. Normal gameplay is provably
+          unaffected: `shadowReviewEnabled` requires `?shadowReview=1` AND
+          `?shadow=1` AND non-production, so a real player's session can
+          never evaluate the store branch at all. */}
       <directionalLight
         position={[12, 22, 8]}
         intensity={1.3}
         castShadow
-        shadow-mapSize={[1024, 1024]}
+        shadow-mapSize={[shadowMapSize, shadowMapSize]}
+        shadow-bias={shadowBias}
+        shadow-normalBias={shadowNormalBias}
         shadow-camera-near={RANGE_SHADOW_CAMERA_BOUNDS.near}
         shadow-camera-far={RANGE_SHADOW_CAMERA_BOUNDS.far}
         shadow-camera-left={RANGE_SHADOW_CAMERA_BOUNDS.left}

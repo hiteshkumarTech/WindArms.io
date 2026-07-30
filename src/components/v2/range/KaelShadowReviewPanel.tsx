@@ -4,6 +4,7 @@ import { useShadowReviewStore } from '@/lib/v2/operators/shadowReviewStore';
 import { SHADOW_REVIEW_CAMERA_PRESETS, type ShadowReviewCameraPreset } from '@/lib/v2/operators/shadowReviewCameraPresets';
 import { useShadowDebugStore } from '@/lib/v2/operators/shadowDebugStore';
 import { useShadowArmTunerStore } from '@/lib/v2/operators/shadowArmTunerStore';
+import { PERMITTED_SHADOW_MAP_SIZES, type ShadowMapSize, type ShadowReceiverMode } from '@/lib/v2/operators/shadowLightCalibration';
 
 const PRESET_LABELS: Record<ShadowReviewCameraPreset, string> = {
   threeQuarterFront: '3/4 front',
@@ -80,6 +81,55 @@ export default function KaelShadowReviewPanel() {
         />
         <span>show debug markers (uncheck for marker-free capture)</span>
       </label>
+
+      <div className="mt-3 border-t border-white/10 pt-2">
+        <div className="mb-1 font-bold uppercase tracking-wide text-storm-energy">Step 8E-D calibration</div>
+
+        <div className="mb-1 text-white/50">receiver mode</div>
+        <div className="mb-2 grid grid-cols-2 gap-1">
+          {(['production', 'readable'] as ShadowReceiverMode[]).map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              onClick={() => review.setReceiverMode(mode)}
+              className={`rounded px-2 py-1 capitalize ${review.receiverMode === mode ? 'bg-storm-energy/30 text-storm-energy' : 'bg-white/5 hover:bg-white/10'}`}
+            >
+              {mode}
+            </button>
+          ))}
+        </div>
+
+        <div className="mb-1 text-white/50">shadow-map resolution (requires route re-entry to apply)</div>
+        <div className="mb-2 grid grid-cols-2 gap-1">
+          {(PERMITTED_SHADOW_MAP_SIZES as readonly ShadowMapSize[]).map((size) => (
+            <button
+              key={size}
+              type="button"
+              onClick={() => review.setShadowMapSize(size)}
+              className={`rounded px-2 py-1 ${review.shadowMapSize === size ? 'bg-storm-energy/30 text-storm-energy' : 'bg-white/5 hover:bg-white/10'}`}
+            >
+              {size}²
+            </button>
+          ))}
+        </div>
+
+        <label className="mb-2 flex items-center gap-2">
+          <input type="checkbox" checked={review.selfShadowEnabled} onChange={() => review.toggleSelfShadow()} />
+          <span>self-shadowing (weapon-on-arm, arm-on-torso)</span>
+        </label>
+
+        <div className="mb-2 text-[10px] text-white/50">
+          bias: <span className="text-white/80">{review.shadowBias}</span> · normalBias: <span className="text-white/80">{review.shadowNormalBias}</span>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => review.resetCalibration()}
+          className="mb-1 w-full rounded bg-white/5 px-2 py-1 text-left hover:bg-white/10"
+        >
+          Reset to canonical Step 8E-D values
+        </button>
+      </div>
 
       <div className="mt-2 border-t border-white/10 pt-2 text-[10px] text-white/40">
         Marker-free + shadow-only + receiver-on = primary evidence.

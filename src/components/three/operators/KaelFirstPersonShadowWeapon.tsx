@@ -10,6 +10,7 @@ import { VORTEX_VIEWMODEL_POSES } from '@/lib/v2/weapons/vortexViewmodelPose';
 import { useShadowArmTunerStore } from '@/lib/v2/operators/shadowArmTunerStore';
 import { shadowArmDebugState } from '@/lib/v2/operators/shadowArmDebugState';
 import { useShadowDebugStore } from '@/lib/v2/operators/shadowDebugStore';
+import { useShadowReviewStore } from '@/lib/v2/operators/shadowReviewStore';
 import { applyOperatorRenderMode } from './renderModes';
 
 /**
@@ -106,6 +107,8 @@ function LoadedShadowWeapon({ url, lod }: { url: string; lod: 0 | 1 | 2 }) {
   const result = useLoadedPipelineAsset('vortex-rifle', url, lod);
   const groupRef = useRef<THREE.Group>(null);
   const diagnosticActiveRef = useRef(false);
+  /** Step 8E-D self-shadowing experiment — same idiom as `diagnosticActiveRef`. */
+  const selfShadowActiveRef = useRef(false);
 
   // Same convention as every other shadow prototype clone this pass builds
   // on — one clone per mount, `SkeletonUtils.clone` works correctly on a
@@ -157,6 +160,20 @@ function LoadedShadowWeapon({ url, lod }: { url: string; lod: 0 | 1 | 2 }) {
           if (n instanceof THREE.Mesh) n.material = WEAPON_DIAGNOSTIC_MATERIAL;
         });
       }
+    }
+
+    // Step 8E-D self-shadowing experiment — mirrors the shadow body's own
+    // toggle (`KaelFirstPersonShadowBody.tsx`); the weapon is the piece most
+    // likely to visibly benefit (a rifle held against the chest/forearm is
+    // exactly where a weapon-onto-body shadow would read, if it reads at
+    // all at this scale). Orthogonal to the diagnostic-material block above
+    // — `receiveShadow` is independent of which material is currently set.
+    const selfShadow = useShadowReviewStore.getState().selfShadowEnabled;
+    if (selfShadow !== selfShadowActiveRef.current) {
+      selfShadowActiveRef.current = selfShadow;
+      instance.traverse((n) => {
+        if (n instanceof THREE.Mesh) n.receiveShadow = selfShadow;
+      });
     }
 
     const enabled = useShadowArmTunerStore.getState().weaponShadowEnabled;
