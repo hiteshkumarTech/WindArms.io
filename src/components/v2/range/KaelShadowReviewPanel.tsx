@@ -1,10 +1,17 @@
 'use client';
 
-import { useShadowReviewStore } from '@/lib/v2/operators/shadowReviewStore';
+import { useEffect, useState } from 'react';
+import { useShadowReviewStore, type ShadowFrustumMode } from '@/lib/v2/operators/shadowReviewStore';
 import { SHADOW_REVIEW_CAMERA_PRESETS, type ShadowReviewCameraPreset } from '@/lib/v2/operators/shadowReviewCameraPresets';
 import { useShadowDebugStore } from '@/lib/v2/operators/shadowDebugStore';
 import { useShadowArmTunerStore } from '@/lib/v2/operators/shadowArmTunerStore';
 import { PERMITTED_SHADOW_MAP_SIZES, type ShadowMapSize, type ShadowReceiverMode } from '@/lib/v2/operators/shadowLightCalibration';
+import { playerCenteredShadowFrustumDebugState } from '@/lib/v2/operators/playerCenteredShadowFrustumDebugState';
+
+const FRUSTUM_MODE_LABELS: Record<ShadowFrustumMode, string> = {
+  'static-full-floor': 'Static (full floor)',
+  'player-centered': 'Player-centered',
+};
 
 const PRESET_LABELS: Record<ShadowReviewCameraPreset, string> = {
   threeQuarterFront: '3/4 front',
@@ -35,6 +42,31 @@ export default function KaelShadowReviewPanel() {
   const armTuner = useShadowArmTunerStore();
 
   const allMarkersHidden = !armTuner.showShoulderMarkers && !armTuner.showElbowPoleMarkers && !armTuner.showGripTargetMarkers;
+
+  // Step 8E-D.1 — same "poll a plain mutable singleton at a human-
+  // perceptible rate" convention as `KaelShadowDebugPanel.tsx`; the
+  // controller writes `playerCenteredShadowFrustumDebugState` every frame,
+  // this panel only samples it, never subscribes to it directly.
+  const [frustumReadout, setFrustumReadout] = useState(() => ({ ...playerCenteredShadowFrustumDebugState }));
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      const d = playerCenteredShadowFrustumDebugState;
+      setFrustumReadout({
+        active: d.active,
+        groundAnchorWorld: [...d.groundAnchorWorld] as [number, number, number],
+        snappedLightSpace: [...d.snappedLightSpace] as [number, number],
+        texelSizeX: d.texelSizeX,
+        texelSizeY: d.texelSizeY,
+        activeWidth: d.activeWidth,
+        activeHeight: d.activeHeight,
+        activeNear: d.activeNear,
+        activeFar: d.activeFar,
+        lightWorldPosition: [...d.lightWorldPosition] as [number, number, number],
+        targetWorldPosition: [...d.targetWorldPosition] as [number, number, number],
+      });
+    }, 100);
+    return () => window.clearInterval(id);
+  }, []);
 
   return (
     <div className="pointer-events-auto absolute right-4 top-4 z-40 w-72 rounded-lg border border-white/15 bg-black/80 p-3 font-mono text-xs text-white/90 backdrop-blur-sm">
@@ -129,6 +161,44 @@ export default function KaelShadowReviewPanel() {
         >
           Reset to canonical Step 8E-D values
         </button>
+      </div>
+
+      <div className="mt-3 border-t border-white/10 pt-2">
+        <div className="mb-1 font-bold uppercase tracking-wide text-storm-energy">Step 8E-D.1 shadow frustum</div>
+
+        <div className="mb-1 text-white/50">tracking mode</div>
+        <div className="mb-2 grid grid-cols-1 gap-1">
+          {(['player-centered', 'static-full-floor'] as ShadowFrustumMode[]).map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              onClick={() => review.setFrustumMode(mode)}
+              className={`rounded px-2 py-1 text-left ${review.frustumMode === mode ? 'bg-storm-energy/30 text-storm-energy' : 'bg-white/5 hover:bg-white/10'}`}
+            >
+              {FRUSTUM_MODE_LABELS[mode]}
+            </button>
+          ))}
+        </div>
+
+        <label className="mb-2 flex items-center gap-2">
+          <input type="checkbox" checked={review.showFrustumHelper} onChange={() => review.toggleFrustumHelper()} />
+          <span>show frustum helper (uncheck for marker-free capture)</span>
+        </label>
+
+        <div className="rounded bg-black/60 p-2 text-[10px] leading-tight text-white/70">
+          <div>tracking active: {frustumReadout.active ? 'yes (player-centered)' : 'no (static)'}</div>
+          <div>ground anchor: [{frustumReadout.groundAnchorWorld.map((v) => v.toFixed(2)).join(', ')}]</div>
+          <div>snapped light-space center: [{frustumReadout.snappedLightSpace.map((v) => v.toFixed(3)).join(', ')}]</div>
+          <div>
+            texel size: X {(frustumReadout.texelSizeX * 1000).toFixed(2)}mm · Y {(frustumReadout.texelSizeY * 1000).toFixed(2)}mm
+          </div>
+          <div>
+            active frustum: {frustumReadout.activeWidth.toFixed(2)}m × {frustumReadout.activeHeight.toFixed(2)}m · near {frustumReadout.activeNear.toFixed(1)} · far{' '}
+            {frustumReadout.activeFar.toFixed(1)}
+          </div>
+          <div>light world pos: [{frustumReadout.lightWorldPosition.map((v) => v.toFixed(2)).join(', ')}]</div>
+          <div>target world pos: [{frustumReadout.targetWorldPosition.map((v) => v.toFixed(2)).join(', ')}]</div>
+        </div>
       </div>
 
       <div className="mt-2 border-t border-white/10 pt-2 text-[10px] text-white/40">

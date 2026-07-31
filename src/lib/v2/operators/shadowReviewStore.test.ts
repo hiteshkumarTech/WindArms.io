@@ -125,3 +125,52 @@ describe('shadowReviewStore (Step 8E-D) — calibration fields', () => {
     assert.strictEqual(useShadowReviewStore.getState().receiverMode, CANONICAL_SHADOW_CALIBRATION.receiverMode);
   });
 });
+
+/**
+ * Step 8E-D.1 — the player-centered shadow frustum's own store fields.
+ * `frustumMode` lives in `CALIBRATION_DEFAULTS` (it's a calibration choice,
+ * restorable via `resetCalibration()`); `showFrustumHelper` lives in
+ * `DEFAULTS` (a pure visualization toggle, same group as `receiverEnabled`,
+ * restorable only via the full `reset()` — matches the arm-tuner markers'
+ * own "never part of a calibration reset" convention).
+ */
+describe('shadowReviewStore (Step 8E-D.1) — frustum tracking fields', () => {
+  it('canonical default frustumMode is player-centered (the candidate for human review)', () => {
+    useShadowReviewStore.getState().resetCalibration();
+    assert.strictEqual(useShadowReviewStore.getState().frustumMode, 'player-centered');
+  });
+
+  it('setFrustumMode accepts both modes', () => {
+    useShadowReviewStore.getState().setFrustumMode('static-full-floor');
+    assert.strictEqual(useShadowReviewStore.getState().frustumMode, 'static-full-floor');
+    useShadowReviewStore.getState().setFrustumMode('player-centered');
+    assert.strictEqual(useShadowReviewStore.getState().frustumMode, 'player-centered');
+  });
+
+  it('resetCalibration() restores frustumMode to player-centered', () => {
+    useShadowReviewStore.getState().setFrustumMode('static-full-floor');
+    useShadowReviewStore.getState().resetCalibration();
+    assert.strictEqual(useShadowReviewStore.getState().frustumMode, 'player-centered');
+  });
+
+  it('showFrustumHelper defaults to false and is untouched by resetCalibration()', () => {
+    useShadowReviewStore.getState().reset();
+    assert.strictEqual(useShadowReviewStore.getState().showFrustumHelper, false);
+    useShadowReviewStore.getState().toggleFrustumHelper();
+    assert.strictEqual(useShadowReviewStore.getState().showFrustumHelper, true);
+    useShadowReviewStore.getState().resetCalibration();
+    assert.strictEqual(useShadowReviewStore.getState().showFrustumHelper, true, 'resetCalibration() must not touch showFrustumHelper — it is not a calibration value');
+    useShadowReviewStore.getState().reset();
+    assert.strictEqual(useShadowReviewStore.getState().showFrustumHelper, false);
+  });
+
+  it('toggleFrustumHelper flips only its own field', () => {
+    useShadowReviewStore.getState().reset();
+    useShadowReviewStore.getState().setCameraPreset('shadowWide');
+    useShadowReviewStore.getState().toggleFrustumHelper();
+    const s = useShadowReviewStore.getState();
+    assert.strictEqual(s.showFrustumHelper, true);
+    assert.strictEqual(s.cameraPreset, 'shadowWide', 'unrelated field must be untouched');
+    useShadowReviewStore.getState().reset();
+  });
+});

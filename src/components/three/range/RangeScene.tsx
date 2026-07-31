@@ -1,8 +1,9 @@
 'use client';
 
-import { Suspense } from 'react';
+import { Suspense, useMemo, useRef } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { Physics } from '@react-three/rapier';
+import * as THREE from 'three';
 import { PLAYER } from '@/lib/game/constants';
 import { STORM } from '@/lib/v2/tokens';
 import ActionTargetDebugMarkers from '@/components/three/weapons/debug/ActionTargetDebugMarkers';
@@ -16,6 +17,8 @@ import KaelFirstPersonShadowWeapon from '@/components/three/operators/KaelFirstP
 import KaelShadowArmDebugMarkers from '@/components/three/operators/debug/KaelShadowArmDebugMarkers';
 import KaelShadowReviewCamera from '@/components/three/operators/KaelShadowReviewCamera';
 import KaelShadowReceiver from '@/components/three/operators/KaelShadowReceiver';
+import KaelPlayerCenteredShadowController from '@/components/three/operators/KaelPlayerCenteredShadowController';
+import KaelShadowFrustumHelper from '@/components/three/operators/debug/KaelShadowFrustumHelper';
 import { useAnimDebugEnabled } from '@/lib/v2/weapons/useAnimDebugEnabled';
 import { useGripDebugEnabled } from '@/lib/v2/weapons/useGripDebugEnabled';
 import { useIkDebugEnabled } from '@/lib/v2/weapons/useIkDebugEnabled';
@@ -43,6 +46,7 @@ export default function RangeScene({ inputRef }: { inputRef: React.MutableRefObj
   const shadowDebugEnabled = useShadowDebugEnabled();
   const shadowReviewEnabled = useShadowReviewEnabled();
   const receiverEnabled = useShadowReviewStore((s) => s.receiverEnabled);
+  const showFrustumHelper = useShadowReviewStore((s) => s.showFrustumHelper);
   // Step 8E-D: reactive selectors (not getState() snapshots) so editing
   // calibration via the review panel actually re-renders this component and
   // updates the light's props live. Production values are LITERAL,
@@ -63,6 +67,17 @@ export default function RangeScene({ inputRef }: { inputRef: React.MutableRefObj
   // stale size — reading the value reactively still keeps the panel's own
   // readout accurate even though the shadow map itself lags until remount.
   const shadowMapSize = shadowReviewEnabled ? calibratedMapSize : 1024;
+  // Step 8E-D.1 — `lightRef` lets `KaelPlayerCenteredShadowController`
+  // (dev-only, mounted below only while `shadowReviewEnabled`) read/write
+  // this exact light instance's `position` and `shadow.camera` bounds
+  // in-place. `shadowTarget` is an explicit, ALWAYS-present Object3D (not
+  // conditionally attached) — see that controller's own doc comment for why
+  // an always-present target at the origin is what makes "normal /v2/range
+  // unchanged" and "no stale target left behind on flag disable" both true
+  // at once. Created once via `useMemo` (not JSX ref) so `target={shadowTarget}`
+  // is valid on the very first render, never `undefined`.
+  const lightRef = useRef<THREE.DirectionalLight>(null);
+  const shadowTarget = useMemo(() => new THREE.Object3D(), []);
   return (
     <Canvas shadows dpr={[1, 1.75]} camera={{ fov: PLAYER.FOV_BASE, near: 0.05, far: 200, position: [0, 3 + PLAYER.EYE_STAND, 10] }}>
       <color attach="background" args={[STORM.abyss]} />
@@ -89,7 +104,9 @@ export default function RangeScene({ inputRef }: { inputRef: React.MutableRefObj
           `?shadow=1` AND non-production, so a real player's session can
           never evaluate the store branch at all. */}
       <directionalLight
+        ref={lightRef}
         position={[12, 22, 8]}
+        target={shadowTarget}
         intensity={1.3}
         castShadow
         shadow-mapSize={[shadowMapSize, shadowMapSize]}
@@ -102,6 +119,12 @@ export default function RangeScene({ inputRef }: { inputRef: React.MutableRefObj
         shadow-camera-top={RANGE_SHADOW_CAMERA_BOUNDS.top}
         shadow-camera-bottom={RANGE_SHADOW_CAMERA_BOUNDS.bottom}
       />
+      {/* Step 8E-D.1 — explicit, always-present shadow-camera target (see
+          `lightRef`/`shadowTarget`'s own comment above). Byte-identical to
+          THREE's own implicit default (world origin) while nothing is
+          actively moving it, so this addition alone changes nothing about
+          normal `/v2/range` rendering. */}
+      <primitive object={shadowTarget} />
       <hemisphereLight args={[STORM.skyMid, STORM.abyss, 0.4]} />
 
       <Physics>
@@ -149,6 +172,8 @@ export default function RangeScene({ inputRef }: { inputRef: React.MutableRefObj
           <>
             <KaelShadowReviewCamera />
             {receiverEnabled && <KaelShadowReceiver />}
+            <KaelPlayerCenteredShadowController light={lightRef} target={shadowTarget} />
+            {showFrustumHelper && <KaelShadowFrustumHelper light={lightRef} />}
           </>
         )}
       </Suspense>
