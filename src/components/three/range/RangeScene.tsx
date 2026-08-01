@@ -17,7 +17,7 @@ import KaelFirstPersonShadowWeapon from '@/components/three/operators/KaelFirstP
 import KaelShadowArmDebugMarkers from '@/components/three/operators/debug/KaelShadowArmDebugMarkers';
 import KaelShadowReviewCamera from '@/components/three/operators/KaelShadowReviewCamera';
 import KaelShadowReceiver from '@/components/three/operators/KaelShadowReceiver';
-import KaelPlayerCenteredShadowController from '@/components/three/operators/KaelPlayerCenteredShadowController';
+import KaelPlayerCenteredShadowController, { type ShadowRouteConfiguration } from '@/components/three/operators/KaelPlayerCenteredShadowController';
 import KaelShadowFrustumHelper from '@/components/three/operators/debug/KaelShadowFrustumHelper';
 import { useAnimDebugEnabled } from '@/lib/v2/weapons/useAnimDebugEnabled';
 import { useGripDebugEnabled } from '@/lib/v2/weapons/useGripDebugEnabled';
@@ -25,7 +25,8 @@ import { useIkDebugEnabled } from '@/lib/v2/weapons/useIkDebugEnabled';
 import { useShadowDebugEnabled } from '@/lib/v2/operators/useShadowDebugEnabled';
 import { useShadowReviewEnabled } from '@/lib/v2/operators/useShadowReviewEnabled';
 import { useShadowReviewStore } from '@/lib/v2/operators/shadowReviewStore';
-import { EFFECTIVE_RANGE_SHADOW_CASTER_POLICY, resolveRangeShadowCasterDecision } from '@/lib/v2/operators/shadowCasterPolicy';
+import { EFFECTIVE_RANGE_SHADOW_CASTER_POLICY, resolveShadowCasterDecision } from '@/lib/v2/operators/shadowCasterPolicy';
+import { PLAYER_CENTERED_SHADOW_FRUSTUM_CONFIG, STATIC_FULL_FLOOR_SHADOW_FRUSTUM_CONFIG } from '@/lib/v2/operators/playerCenteredShadowFrustum';
 import { RANGE_SHADOW_CAMERA_BOUNDS } from '@/lib/v2/range/rangeEnvironmentBounds';
 import type { RangeInputSnapshot } from '@/lib/v2/range/useRangeKeyboardInput';
 import RangeController from './RangeController';
@@ -40,6 +41,23 @@ import VortexFireSystem from './VortexFireSystem';
  * `/play` and from the V2 landing page's `StormBackdrop`; nothing here is
  * imported by, or imports from, either.
  */
+
+/**
+ * Step 8F — range's own `ShadowRouteConfiguration`, module-level so the
+ * reference is stable across every render (the parameterized controller's
+ * `useMemo`-built basis depends on this object's identity, not its
+ * contents — see that component's own doc comment). Byte-identical to the
+ * canonical geometry this controller always used before Step 8F's
+ * generalization: `(12,22,8)` looking at `(0,0,0)`, `3.5 × 6` player-centered
+ * / `130 × 130` static, `near 20/far 27` / `near 1/far 100`.
+ */
+const RANGE_SHADOW_ROUTE_CONFIG: ShadowRouteConfiguration = {
+  canonicalLightPosition: [12, 22, 8],
+  canonicalTargetPosition: [0, 0, 0],
+  staticFrustum: STATIC_FULL_FLOOR_SHADOW_FRUSTUM_CONFIG,
+  playerCenteredFrustum: PLAYER_CENTERED_SHADOW_FRUSTUM_CONFIG,
+  groundAnchorY: 0,
+};
 export default function RangeScene({ inputRef }: { inputRef: React.MutableRefObject<RangeInputSnapshot> }) {
   const gripDebugEnabled = useGripDebugEnabled();
   const ikDebugEnabled = useIkDebugEnabled();
@@ -58,9 +76,9 @@ export default function RangeScene({ inputRef }: { inputRef: React.MutableRefObj
   // site. Debug-only children (arm markers, receiver, review camera,
   // frustum helper) stay strictly behind their own existing flags below,
   // deliberately NOT folded into this decision.
-  const rangeShadowCasterDecision = resolveRangeShadowCasterDecision({
-    shadowDebugEnabled,
-    shadowReviewEnabled,
+  const rangeShadowCasterDecision = resolveShadowCasterDecision({
+    debugFullBodyRequested: shadowDebugEnabled,
+    debugControllerRequested: shadowReviewEnabled,
     policy: EFFECTIVE_RANGE_SHADOW_CASTER_POLICY,
   });
   // Step 8E-D: reactive selectors (not getState() snapshots) so editing
@@ -211,7 +229,7 @@ export default function RangeScene({ inputRef }: { inputRef: React.MutableRefObj
             `shadowReviewStore` can never leak into a flag-free production
             session (see that prop's own doc comment on the controller). */}
         {rangeShadowCasterDecision.playerCenteredControllerActive && (
-          <KaelPlayerCenteredShadowController light={lightRef} target={shadowTarget} allowDevModeOverride={shadowReviewEnabled} />
+          <KaelPlayerCenteredShadowController light={lightRef} target={shadowTarget} configuration={RANGE_SHADOW_ROUTE_CONFIG} allowDevModeOverride={shadowReviewEnabled} />
         )}
         {shadowReviewEnabled && showFrustumHelper && <KaelShadowFrustumHelper light={lightRef} />}
       </Suspense>

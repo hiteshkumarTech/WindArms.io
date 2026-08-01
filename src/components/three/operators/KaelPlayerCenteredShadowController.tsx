@@ -4,98 +4,99 @@ import { useEffect, useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { getFirstPersonBodyWorldPose } from '@/lib/v2/operators/firstPersonBodyPose';
-import { RANGE_SHADOW_CAMERA_BOUNDS } from '@/lib/v2/range/rangeEnvironmentBounds';
-import { PLAYER_CENTERED_SHADOW_FRUSTUM_CONFIG, snapToTexelGrid, type ShadowFrustumTrackingOutput } from '@/lib/v2/operators/playerCenteredShadowFrustum';
+import { snapToTexelGrid, type ShadowFrustumConfig, type ShadowFrustumTrackingOutput } from '@/lib/v2/operators/playerCenteredShadowFrustum';
 import { buildFixedLightSpaceBasis, projectWorldToLightSpace, reconstructWorldFromLightSpace } from '@/lib/v2/operators/playerCenteredShadowFrustumBasis';
 import { useShadowReviewStore, type ShadowFrustumMode } from '@/lib/v2/operators/shadowReviewStore';
 import { playerCenteredShadowFrustumDebugState } from '@/lib/v2/operators/playerCenteredShadowFrustumDebugState';
 
 /**
- * Step 8E-D.1 — imperative controller for the player-centered, texel-
- * stabilized shadow frustum. Originally dev-only (mounted only while
- * `shadowReviewEnabled`); Step 8E-E additionally mounts this SAME component
- * (never a second implementation) whenever `RangeScene.tsx`'s caster policy
- * resolves to `'full-body'`, so production shadow tracking works with no
- * query flags at all — see `allowDevModeOverride` below for the one
- * production-specific behavior difference this required. Sole owner of
- * the directional light's `position` and its explicit `target`'s `position`
- * while mounted — `RangeScene.tsx`'s own JSX `position={[12,22,8]}` literal
- * on `<directionalLight>` is what's in effect the instant this component is
- * NOT mounted (normal gameplay), and is exactly what this controller itself
- * restores (frame-by-frame in static mode, and unconditionally on unmount)
- * — so the two can never drift apart.
+ * Step 8E-D.1 / Step 8F — imperative controller for the player-centered,
+ * texel-stabilized shadow frustum. Originally range-only and dev-gated;
+ * Step 8E-E additionally mounted this SAME component in range's production
+ * path, and Step 8F generalized it to a ROUTE-AGNOSTIC controller — every
+ * light-position/target/frustum-size number that used to be a hardcoded
+ * range constant is now the caller-supplied `configuration` prop, so
+ * `/v2/play` reuses this exact implementation with its OWN measured
+ * geometry (Step 8F.0's measurement report) rather than a second component.
+ * No route name, no URL parsing, and no range/play conditional branch exists
+ * anywhere in this file — `RangeScene.tsx` and `V2PlayScene.tsx` each build
+ * their own stable, module-level `ShadowRouteConfiguration` object and pass
+ * it in; this controller never knows which route it's running under.
+ *
+ * Sole owner of the directional light's `position` and its explicit
+ * `target`'s `position` while mounted — the caller's own JSX
+ * `<directionalLight position={...}>` literal is what's in effect the
+ * instant this component is NOT mounted (normal gameplay under the
+ * `'fp-arms'` policy), and is exactly what this controller itself restores
+ * (frame-by-frame in static mode, and unconditionally on unmount) — so the
+ * two can never drift apart, for either route.
  *
  * FIXED LIGHT-SPACE BASIS: `basis` (`playerCenteredShadowFrustumBasis.ts`,
- * unit-tested there — see that module's own doc comment for why it must use
- * a detached `THREE.Camera`, not a plain `Object3D`) is built ONCE from the
- * canonical light/target geometry — `(12,22,8)` looking at `(0,0,0)`, the
- * same values `docs/decisions.md`'s Step 8E-D entry confirmed empirically.
- * Its world matrix and that matrix's inverse (view matrix) are the FIXED
- * reference frame every frame's tracking math projects into/out of. This is
- * deliberately NOT the live `light.shadow.camera`'s own matrices — those
- * move with the tracked target every frame, which would make the texel grid
- * itself move with the thing it's meant to stabilize.
+ * unit-tested there) is built ONCE per mount from `configuration`'s
+ * canonical light/target geometry. Its world matrix and that matrix's
+ * inverse (view matrix) are the FIXED reference frame every frame's
+ * tracking math projects into/out of. This is deliberately NOT the live
+ * `light.shadow.camera`'s own matrices — those move with the tracked target
+ * every frame, which would make the texel grid itself move with the thing
+ * it's meant to stabilize.
  *
- * GROUND ANCHOR: `(player.x, GROUND_ANCHOR_FIXED_Y, player.z)` — world Y is
- * FIXED at 0 (the canonical target's own original Y), never the player's
- * live/airborne Y, so a jump/fall/landing arc never drags the whole light
- * rig vertically. `GROUND_ANCHOR_FIXED_Y = 0` was chosen specifically
- * because it's the existing original target Y (per this pass's own brief:
- * "prefer the existing original target Y when safe") — it preserves the
- * canonical light-to-target geometry exactly along the vertical axis, only
- * translating horizontally (in light-space X/Y, which are NOT world X/Y —
- * see `playerCenteredShadowFrustum.ts`'s own doc comment) to follow the
- * player.
+ * GROUND ANCHOR: `(player.x, configuration.groundAnchorY, player.z)` — world
+ * Y is FIXED per route (range: 0; play: 0 — see `playShadowFrustumConfig.ts`
+ * for why play also chose its light's own implicit target Y), never the
+ * player's live/airborne Y, so a jump/fall/landing arc — or play's much
+ * larger Wind Lift rise — never drags the whole light rig vertically. The
+ * taller frustum a route supplies (play's `12m` vs range's `6m` height) is
+ * what actually absorbs that elevation instead.
  */
+
+export interface ShadowRouteConfiguration {
+  /** Canonical (unmoving-reference) light position this route's frustum basis is built from. */
+  canonicalLightPosition: readonly [number, number, number];
+  /** Canonical (unmoving-reference) target position — what the light looks at. */
+  canonicalTargetPosition: readonly [number, number, number];
+  /** Frustum applied when tracking mode is `'static-full-floor'` (or on unmount/rollback). */
+  staticFrustum: ShadowFrustumConfig;
+  /** Frustum applied when tracking mode is `'player-centered'`. */
+  playerCenteredFrustum: ShadowFrustumConfig;
+  /** Fixed world Y the ground anchor tracks at — never the player's live/airborne Y. */
+  groundAnchorY: number;
+}
 
 interface KaelPlayerCenteredShadowControllerProps {
   light: React.RefObject<THREE.DirectionalLight>;
   target: THREE.Object3D;
+  /** Route-specific light/target/frustum/anchor geometry — see `ShadowRouteConfiguration`. Must be a stable (module-level or memoized) object reference; a fresh literal every render would defeat this controller's own change-detection gating. */
+  configuration: ShadowRouteConfiguration;
   /**
-   * Step 8E-E — when `true` (the dev review harness, `shadowReviewEnabled`),
-   * this controller reads `shadowReviewStore`'s `frustumMode` every frame,
-   * exactly as it always has, so the review panel's static/player-centered
-   * A/B toggle keeps working. When `false` (production full-body caster
-   * active with no query flags), the tracking mode is ALWAYS
-   * `'player-centered'`, ignoring the store entirely — a stale dev-session
-   * value (e.g. left on `'static-full-floor'` after an earlier A/B session
-   * in the same browser tab, since the store is a module singleton that
-   * survives route navigation) must never leak into a normal production
-   * session. This is the one thing a real production activation needs that
-   * the dev-only version never had to worry about.
+   * Step 8E-E — when `true` (range's dev review harness,
+   * `shadowReviewEnabled`), this controller reads `shadowReviewStore`'s
+   * `frustumMode` every frame, exactly as it always has, so the review
+   * panel's static/player-centered A/B toggle keeps working. When `false`
+   * (every production activation — range's flag-free production, and
+   * `/v2/play` always, which has no review harness in this milestone), the
+   * tracking mode is ALWAYS `'player-centered'`, ignoring the store
+   * entirely — a stale dev-session value (e.g. left on `'static-full-floor'`
+   * after an earlier A/B session in the same browser tab, since the store is
+   * a module singleton that survives route navigation) must never leak into
+   * a normal production session on EITHER route.
    */
   allowDevModeOverride: boolean;
 }
 
-const CANONICAL_LIGHT_POSITION: readonly [number, number, number] = [12, 22, 8];
-const CANONICAL_TARGET_POSITION: readonly [number, number, number] = [0, 0, 0];
-/** `lightPos - targetPos`, preserved EXACTLY every frame in player-centered mode so the light's angle/distance relative to its target never changes — only translates. */
-const LIGHT_TARGET_OFFSET = new THREE.Vector3(...CANONICAL_LIGHT_POSITION);
-/** See this file's own doc comment — the canonical target's original Y, deliberately never the player's live/airborne Y. */
-const GROUND_ANCHOR_FIXED_Y = 0;
-
-function applyFrustumBounds(camera: THREE.OrthographicCamera, mode: ShadowFrustumMode): void {
-  if (mode === 'player-centered') {
-    const cfg = PLAYER_CENTERED_SHADOW_FRUSTUM_CONFIG;
-    camera.left = -cfg.width / 2;
-    camera.right = cfg.width / 2;
-    camera.top = cfg.height / 2;
-    camera.bottom = -cfg.height / 2;
-    camera.near = cfg.near;
-    camera.far = cfg.far;
-  } else {
-    camera.left = RANGE_SHADOW_CAMERA_BOUNDS.left;
-    camera.right = RANGE_SHADOW_CAMERA_BOUNDS.right;
-    camera.top = RANGE_SHADOW_CAMERA_BOUNDS.top;
-    camera.bottom = RANGE_SHADOW_CAMERA_BOUNDS.bottom;
-    camera.near = RANGE_SHADOW_CAMERA_BOUNDS.near;
-    camera.far = RANGE_SHADOW_CAMERA_BOUNDS.far;
-  }
+function applyFrustumBounds(camera: THREE.OrthographicCamera, mode: ShadowFrustumMode, configuration: ShadowRouteConfiguration): void {
+  const cfg = mode === 'player-centered' ? configuration.playerCenteredFrustum : configuration.staticFrustum;
+  camera.left = -cfg.width / 2;
+  camera.right = cfg.width / 2;
+  camera.top = cfg.height / 2;
+  camera.bottom = -cfg.height / 2;
+  camera.near = cfg.near;
+  camera.far = cfg.far;
   camera.updateProjectionMatrix();
 }
 
-function writeStaticDebugState(): void {
+function writeStaticDebugState(configuration: ShadowRouteConfiguration): void {
   const debug = playerCenteredShadowFrustumDebugState;
+  const cfg = configuration.staticFrustum;
   debug.active = false;
   debug.groundAnchorWorld[0] = 0;
   debug.groundAnchorWorld[1] = 0;
@@ -104,28 +105,43 @@ function writeStaticDebugState(): void {
   debug.snappedLightSpace[1] = 0;
   debug.texelSizeX = 0;
   debug.texelSizeY = 0;
-  debug.activeWidth = RANGE_SHADOW_CAMERA_BOUNDS.right - RANGE_SHADOW_CAMERA_BOUNDS.left;
-  debug.activeHeight = RANGE_SHADOW_CAMERA_BOUNDS.top - RANGE_SHADOW_CAMERA_BOUNDS.bottom;
-  debug.activeNear = RANGE_SHADOW_CAMERA_BOUNDS.near;
-  debug.activeFar = RANGE_SHADOW_CAMERA_BOUNDS.far;
-  debug.lightWorldPosition[0] = CANONICAL_LIGHT_POSITION[0];
-  debug.lightWorldPosition[1] = CANONICAL_LIGHT_POSITION[1];
-  debug.lightWorldPosition[2] = CANONICAL_LIGHT_POSITION[2];
-  debug.targetWorldPosition[0] = CANONICAL_TARGET_POSITION[0];
-  debug.targetWorldPosition[1] = CANONICAL_TARGET_POSITION[1];
-  debug.targetWorldPosition[2] = CANONICAL_TARGET_POSITION[2];
+  debug.activeWidth = cfg.width;
+  debug.activeHeight = cfg.height;
+  debug.activeNear = cfg.near;
+  debug.activeFar = cfg.far;
+  debug.lightWorldPosition[0] = configuration.canonicalLightPosition[0];
+  debug.lightWorldPosition[1] = configuration.canonicalLightPosition[1];
+  debug.lightWorldPosition[2] = configuration.canonicalLightPosition[2];
+  debug.targetWorldPosition[0] = configuration.canonicalTargetPosition[0];
+  debug.targetWorldPosition[1] = configuration.canonicalTargetPosition[1];
+  debug.targetWorldPosition[2] = configuration.canonicalTargetPosition[2];
 }
 
-export default function KaelPlayerCenteredShadowController({ light, target, allowDevModeOverride }: KaelPlayerCenteredShadowControllerProps) {
-  // Fixed light-space basis — built ONCE, from the canonical geometry only.
-  // See `playerCenteredShadowFrustumBasis.ts` (unit-tested in plain Node —
-  // this controller itself has no test harness, see that module's own doc
-  // comment) for why this stays a truly fixed reference frame for the
-  // lifetime of this component instance, never recomputed from the live
-  // shadow camera or the external review camera.
-  const basis = useMemo(() => buildFixedLightSpaceBasis(new THREE.Vector3(...CANONICAL_LIGHT_POSITION), new THREE.Vector3(...CANONICAL_TARGET_POSITION)), []);
+export default function KaelPlayerCenteredShadowController({ light, target, configuration, allowDevModeOverride }: KaelPlayerCenteredShadowControllerProps) {
+  // Fixed light-space basis — built ONCE per mount, from the supplied
+  // canonical geometry only. See `playerCenteredShadowFrustumBasis.ts`
+  // (unit-tested in plain Node — this controller itself has no test harness)
+  // for why this stays a truly fixed reference frame for the lifetime of
+  // this component instance, never recomputed from the live shadow camera or
+  // the external review camera. Depends only on `configuration` (a stable
+  // reference per the caller contract above), so this never recomputes
+  // across ordinary re-renders.
+  const basis = useMemo(
+    () => buildFixedLightSpaceBasis(new THREE.Vector3(...configuration.canonicalLightPosition), new THREE.Vector3(...configuration.canonicalTargetPosition)),
+    [configuration],
+  );
+  // `lightPos - targetPos`, preserved EXACTLY every frame in player-centered
+  // mode so the light's angle/distance relative to its target never
+  // changes — only translates. Computed generically (not assumed to equal
+  // the raw light position) so a future route with a non-origin target still
+  // gets a correct offset; both range and play use an origin target today.
+  const lightTargetOffset = useMemo(
+    () => new THREE.Vector3(...configuration.canonicalLightPosition).sub(new THREE.Vector3(...configuration.canonicalTargetPosition)),
+    [configuration],
+  );
 
   const lastAppliedModeRef = useRef<ShadowFrustumMode | null>(null);
+  const lastAppliedConfigurationRef = useRef<ShadowRouteConfiguration | null>(null);
 
   // Preallocated scratch — no per-frame Vector3/allocation on the hot path.
   const groundAnchorScratchRef = useRef(new THREE.Vector3());
@@ -148,50 +164,52 @@ export default function KaelPlayerCenteredShadowController({ light, target, allo
   // Route-leave / flag-disable restoration — unconditional, independent of
   // whatever R3F's own prop diffing does or doesn't reapply. Guarantees no
   // stale light/target translation or stale frustum bounds survive this
-  // component unmounting, regardless of which mode was active at the time.
+  // component unmounting, regardless of which mode was active at the time,
+  // for either route.
   useEffect(() => {
     // Captured at effect-setup time (not re-read from `light.current` inside
     // the cleanup) per the exhaustive-deps rule's own guidance — in practice
     // this is the same instance throughout, since `light` is a SIBLING ref
-    // owned by `RangeScene.tsx`'s always-mounted `<directionalLight>`, never
-    // this component's own ref, so it's never nulled by this component's own
+    // owned by the caller's always-mounted `<directionalLight>`, never this
+    // component's own ref, so it's never nulled by this component's own
     // unmount.
     const lightAtMount = light.current;
     return () => {
-      target.position.set(...CANONICAL_TARGET_POSITION);
+      target.position.set(...configuration.canonicalTargetPosition);
       if (lightAtMount) {
-        lightAtMount.position.set(...CANONICAL_LIGHT_POSITION);
-        applyFrustumBounds(lightAtMount.shadow.camera, 'static-full-floor');
+        lightAtMount.position.set(...configuration.canonicalLightPosition);
+        applyFrustumBounds(lightAtMount.shadow.camera, 'static-full-floor', configuration);
       }
-      writeStaticDebugState();
+      writeStaticDebugState(configuration);
     };
-  }, [light, target]);
+  }, [light, target, configuration]);
 
   useFrame(() => {
     const lightObj = light.current;
     if (!lightObj) return;
 
     const mode: ShadowFrustumMode = allowDevModeOverride ? useShadowReviewStore.getState().frustumMode : 'player-centered';
-    if (mode !== lastAppliedModeRef.current) {
-      applyFrustumBounds(lightObj.shadow.camera, mode);
+    if (mode !== lastAppliedModeRef.current || configuration !== lastAppliedConfigurationRef.current) {
+      applyFrustumBounds(lightObj.shadow.camera, mode, configuration);
       lastAppliedModeRef.current = mode;
+      lastAppliedConfigurationRef.current = configuration;
     }
 
     if (mode !== 'player-centered') {
-      target.position.set(...CANONICAL_TARGET_POSITION);
-      lightObj.position.set(...CANONICAL_LIGHT_POSITION);
-      writeStaticDebugState();
+      target.position.set(...configuration.canonicalTargetPosition);
+      lightObj.position.set(...configuration.canonicalLightPosition);
+      writeStaticDebugState(configuration);
       return;
     }
 
     const pose = getFirstPersonBodyWorldPose();
     if (!pose.ready) return;
 
-    const groundAnchor = groundAnchorScratchRef.current.set(pose.worldPosition.x, GROUND_ANCHOR_FIXED_Y, pose.worldPosition.z);
+    const groundAnchor = groundAnchorScratchRef.current.set(pose.worldPosition.x, configuration.groundAnchorY, pose.worldPosition.z);
     const lightSpace = projectWorldToLightSpace(groundAnchor, basis, lightSpaceScratchRef.current);
 
     const snapOutput = snapToTexelGrid(
-      { anchorLightSpaceX: lightSpace.x, anchorLightSpaceY: lightSpace.y, config: PLAYER_CENTERED_SHADOW_FRUSTUM_CONFIG },
+      { anchorLightSpaceX: lightSpace.x, anchorLightSpaceY: lightSpace.y, config: configuration.playerCenteredFrustum },
       snapOutputRef.current,
     );
 
@@ -201,7 +219,7 @@ export default function KaelPlayerCenteredShadowController({ light, target, allo
     const newTargetWorld = reconstructWorldFromLightSpace(snappedLightSpace, basis, targetWorldScratchRef.current);
 
     target.position.copy(newTargetWorld);
-    lightObj.position.copy(newTargetWorld).add(LIGHT_TARGET_OFFSET);
+    lightObj.position.copy(newTargetWorld).add(lightTargetOffset);
 
     const debug = playerCenteredShadowFrustumDebugState;
     debug.active = true;
@@ -212,10 +230,10 @@ export default function KaelPlayerCenteredShadowController({ light, target, allo
     debug.snappedLightSpace[1] = snapOutput.snappedLightSpaceY;
     debug.texelSizeX = snapOutput.texelSizeX;
     debug.texelSizeY = snapOutput.texelSizeY;
-    debug.activeWidth = PLAYER_CENTERED_SHADOW_FRUSTUM_CONFIG.width;
-    debug.activeHeight = PLAYER_CENTERED_SHADOW_FRUSTUM_CONFIG.height;
-    debug.activeNear = PLAYER_CENTERED_SHADOW_FRUSTUM_CONFIG.near;
-    debug.activeFar = PLAYER_CENTERED_SHADOW_FRUSTUM_CONFIG.far;
+    debug.activeWidth = configuration.playerCenteredFrustum.width;
+    debug.activeHeight = configuration.playerCenteredFrustum.height;
+    debug.activeNear = configuration.playerCenteredFrustum.near;
+    debug.activeFar = configuration.playerCenteredFrustum.far;
     debug.lightWorldPosition[0] = lightObj.position.x;
     debug.lightWorldPosition[1] = lightObj.position.y;
     debug.lightWorldPosition[2] = lightObj.position.z;

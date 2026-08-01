@@ -1281,3 +1281,63 @@ Rejected: calling `resetCalibration()` automatically whenever the review flags t
 Chosen: `allowDevModeOverride` — the production path never touches the dev-session store at all, so there is no state for a stale session to leak through.
 
 ---
+
+**2026-08-01 — Step 8F: `shadowCasterPolicy.ts` generalized to a route-agnostic resolver rather than writing a second, near-duplicate policy module for `/v2/play`**
+
+Decision: `resolveRangeShadowCasterDecision()` became `resolveShadowCasterDecision()` — the exact same exclusivity math, with no route name anywhere inside it — and a second policy constant (`PLAY_SHADOW_CASTER_POLICY`) was added alongside `RANGE_SHADOW_CASTER_POLICY`, both consumed through the one shared function.
+
+Reason: Step 8F's own audit and this milestone's brief both explicitly called for "one route-agnostic pure resolver," and the alternative — copy `shadowCasterPolicy.ts` into a `play`-scoped module with `PLAY_`-prefixed names — would have reproduced exactly the "same logic in two places, provably able to drift apart" problem Step 8E-E's own original design (one pure function instead of three inline booleans) existed to avoid, just one level up. The exclusivity invariant (never both casters active, never both inactive) is identical regardless of which route is asking; only the INPUTS (which policy, which debug flags) differ per route, and those were already parameters, not hardcoded, in the pre-8F version.
+
+Rejected: a second `playShadowCasterPolicy.ts` module duplicating `resolveRangeShadowCasterDecision()`'s body under a new name — the two copies would pass their own respective test suites independently, but nothing would catch them drifting apart if a future edit fixed a bug in one copy and not the other (this is precisely the failure mode Step 8E-E's own decision entry above warned against for inline booleans, and duplicating a whole module is the same problem at a larger scale). Rejected: keeping `resolveRangeShadowCasterDecision()`'s exact old parameter names (`shadowDebugEnabled`, `shadowReviewEnabled`) and just calling it from play with those same range-flavored names — technically works (the function never inspected the names, only the values), but reads as though play has a `shadowReviewEnabled` concept it does not; renamed to `debugFullBodyRequested`/`debugControllerRequested` to describe what each flag actually does, not which route historically needed it.
+
+Chosen: one resolver, two independent policy constants (`RANGE_SHADOW_CASTER_POLICY`, `PLAY_SHADOW_CASTER_POLICY`), each route's own scene file supplying its own debug-flag values (play's are always `false`, since this milestone deliberately ships no play review UI — see the next entry). A route-independence test asserts identical inputs from either route's policy produce identical decisions, i.e. the resolver itself cannot be told which route is calling it.
+
+---
+
+**2026-08-01 — Step 8F: no shadow-review/debug UI shipped for `/v2/play` this milestone — the player-centered controller's `allowDevModeOverride` is unconditionally `false` on that route**
+
+Decision: `/v2/play` never mounts anything resembling `KaelShadowReviewPanel`/`useShadowReviewEnabled`/`shadowReviewStore` — the full-body caster's activation there is a pure function of the compile-time `PLAY_SHADOW_CASTER_POLICY` constant alone, with no query-flag path at all.
+
+Reason: the Step 8F brief was explicit that a play review UI was out of scope for this pass, and range's own review harness (camera presets, calibration sliders, frustum helper, receiver toggle) represents real, non-trivial UI surface built up over Steps 8E-C through 8E-D.1 specifically for range's own tuning needs — reusing it as-is for play would mean either a second copy of that whole harness (rejected for the same duplication reason as the policy resolver above) or awkwardly parameterizing every one of its camera presets/receiver assumptions for a completely different arena, neither of which this milestone's brief asked for or budgeted time against. Since play's approved frustum configuration was already fully measured and finalized by Step 8F.0 before any implementation began, there was no open tuning question a review UI would need to answer live.
+
+Rejected: building a play-specific review harness "for completeness" alongside range's — unbudgeted scope, and the exact configuration values it would exist to tune were already locked in by Step 8F.0's measurement pass, leaving no real tuning task to perform with it. Rejected: reusing `shadowReviewStore` directly on `/v2/play` (e.g. gating on the same `?shadow=1&shadowReview=1` query flags) — that store's `frustumMode`/calibration fields are a module singleton shared across the whole browser tab; letting `/v2/play` read it would reopen exactly the cross-session-leakage risk the `allowDevModeOverride` prop (see the Step 8E-E entry above) was built to prevent, for a UI surface play doesn't even expose a way to change.
+
+Chosen: `V2PlayScene.tsx` always passes `debugFullBodyRequested: false`, `debugControllerRequested: false` to the shared resolver and `allowDevModeOverride={false}` to the shared controller — the decision reduces to a pure function of the policy constant, and the controller can never read `shadowReviewStore` on this route at all.
+
+---
+
+**2026-08-01 — Step 8F: `/v2/play`'s player-centered frustum is a genuinely different size from `/v2/range`'s (3.5×12 vs 3.5×6, near 24/far 44 vs near 20/far 27) — not a copy-paste inconsistency**
+
+Decision: `PLAY_PLAYER_CENTERED_SHADOW_CONFIG` (`playShadowFrustumConfig.ts`) uses its own Step 8F.0-measured values, deliberately never reusing `PLAYER_CENTERED_SHADOW_FRUSTUM_CONFIG`'s range numbers.
+
+Reason: Step 8F's own audit flagged this as the single most important risk of a naive rollout — range's near/far were measured against range's own light-to-target distance (~26.3m) and its own (Wind-Lift-free) movement envelope; play's light sits at a measurably different distance (~32.1m to the deck) and, critically, Wind Lift can carry the player's body mesh to roughly 10.6m of world-space elevation, an outlier with no range equivalent. Step 8F.0's real per-frame measurement (140 captured frames, real deformed-mesh sampling, real light-space projection) found play's single-frame worst case at 2.557m width / 9.427m height / near-floor 25.916 / far-ceiling 42.043 — reusing range's 6m-tall frustum against a 9.427m real requirement would have clipped the shadow at Wind Lift's apex on every single ascent, silently, the first time a real player used it.
+
+Rejected: reusing range's config outright "since they're the same character and similar light angle" — this is exactly the assumption Step 8F's audit existed to catch before it shipped; the two routes' light geometry and movement envelopes are close enough to look interchangeable at a glance but are not, in fact, interchangeable at the precision a fixed-size shadow frustum requires. Rejected: widening range's own frustum to cover both routes' worst cases in one shared config — would have made range's own texel density permanently worse (its objects/shadows are already validated and human-approved at the current size) to accommodate an outlier (Wind Lift) that range doesn't even have.
+
+Chosen: two independently-measured, independently-configured `ShadowFrustumConfig` values, one per route, each pinned by its own tests against its own measured worst case — a future change to either route's numbers cannot silently affect the other.
+
+---
+
+**2026-08-01 — Step 8F: play's shadow-map resolution is derived per-policy (2048² static / 1024² player-centered) — a genuine new per-route difference, not an oversight versus range's fixed 1024²**
+
+Decision: `V2PlayScene.tsx` computes its `shadow-mapSize` JSX prop from `playShadowCasterDecision.fullBodyCasterActive` (`PLAY_PLAYER_CENTERED_SHADOW_CONFIG.mapWidth` vs `PLAY_STATIC_SHADOW_CONFIG.mapWidth`), rather than a single hardcoded map-size constant the way `RangeScene.tsx` effectively has today.
+
+Reason: range's own static and player-centered configs happen to BOTH use 1024² (`STATIC_FULL_FLOOR_SHADOW_FRUSTUM_CONFIG.mapWidth === PLAYER_CENTERED_SHADOW_FRUSTUM_CONFIG.mapWidth === 1024`), which is why `RangeScene.tsx`'s existing `shadowMapSize` variable never needed to depend on caster policy at all — it was already correct for both modes by coincidence. Play's pre-existing static fallback ships at 2048² (the original, unmodified `V2PlayScene.tsx` literal, now named `PLAY_STATIC_SHADOW_CONFIG`), while the approved player-centered candidate is 1024² (matching range's own resolution) — genuinely different values this time, so the JSX prop has to actually branch on which mode is in effect. No live A/B toggle exists on `/v2/play` (see the review-UI entry above), so this is a per-mount-constant derived from the compile-time policy, never a value that changes while the scene is mounted — the same "resolution requires route re-entry to apply live" limitation range's own review panel already documents.
+
+Rejected: picking one resolution for both play modes (e.g. always 1024², dropping the static fallback's map size) — would have silently changed the ALREADY-SHIPPED static fallback's visual behavior as a side effect of this rollout, which the brief's own "static rollback restores ±30/1-80/2048²" requirement explicitly forbids.
+
+Chosen: policy-derived map size, matching the two pre-existing/approved values exactly, with the derivation living at the one JSX call site rather than inside the shared controller (which never touches renderer-level map size at all, on either route — see the controller's own doc comment).
+
+---
+
+**2026-08-01 — Step 8F: a naive same-endpoint ping-pong detector flagged 5 "unexplained" texel-snap transitions during rapid direction reversal — investigated and found to be correctly-explained real motion, not a defect, rather than either suppressed or reported as a false alarm**
+
+Decision: the flagged transitions are documented here as an investigated-and-cleared methodology finding, not treated as evidence of frustum instability requiring hysteresis.
+
+Reason: the temporary texel-stability probe's detector compared only the FIRST and THIRD sample of every 3-sample window, flagging a transition when the snapped light-space position returned to its earlier value with the endpoints' own straight-line distance below a 1cm epsilon. During a rapid-reversal sequence (alternating 'a'/'d' every 150ms), 5 such windows were flagged. Manually inspecting the underlying ground-anchor data for each flag showed the INTERMEDIATE sample (the middle of the three) sat roughly 14-15cm away from both its neighbors — a real, substantial strafe displacement in one direction, immediately reversed by the next input flip, netting a small displacement between the outer two samples while the middle one legitimately reflects a different position. The detector's own endpoint-only comparison could not distinguish "two real, opposite 15cm movements that happen to cancel out" from "spurious jitter with no real movement at all" — only reading the actual anchor positions (not just the pass/fail flag) revealed which one this was.
+
+Rejected: silently omitting the flags from the report because they turned out to be explainable — the milestone's own instruction is that shimmer findings must be disclosed, and a reader independently re-running this same detector would reproduce the same 5 flags; documenting the investigation is what makes that reproducible result not look like a missed defect. Rejected: reporting the flags at face value as "5 instances of texel-snap ping-pong" without the underlying-data investigation — would have overstated the finding (stationary and mouse-look-while-stationary sequences, the actual "shimmer" concern this gate exists to catch, both showed zero flags and a byte-identical snapped position across every sample) and could have triggered unnecessary hysteresis work against a detector artifact rather than a real problem.
+
+Chosen: disclosed with the full investigation; no hysteresis added (matches this milestone's own "do not add hysteresis unless the test reproduces a real failure" instruction — this test reproduced a detector limitation, not a frustum failure).
+
+---

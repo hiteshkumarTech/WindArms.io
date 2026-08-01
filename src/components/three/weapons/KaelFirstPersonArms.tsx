@@ -16,7 +16,7 @@ import { kaelArmDebugState } from '@/lib/v2/weapons/kaelArmDebugState';
 import { useGripTunerStore } from '@/lib/v2/weapons/gripTunerStore';
 import { useIkTunerStore } from '@/lib/v2/weapons/ikTunerStore';
 import { useShadowDebugEnabled } from '@/lib/v2/operators/useShadowDebugEnabled';
-import type { RangeShadowCasterPolicy } from '@/lib/v2/operators/shadowCasterPolicy';
+import type { ShadowCasterPolicy } from '@/lib/v2/operators/shadowCasterPolicy';
 
 /**
  * Kael first-person arms — weapon-authoritative IK consumer (Milestone 7,
@@ -50,7 +50,7 @@ import type { RangeShadowCasterPolicy } from '@/lib/v2/operators/shadowCasterPol
  *          finger bones: restrained additive grip-curl pose (temporary)
  */
 
-function KaelArmsInner({ casterPolicy }: { casterPolicy: RangeShadowCasterPolicy }) {
+function KaelArmsInner({ casterPolicy }: { casterPolicy: ShadowCasterPolicy }) {
   // The V2 range/play Canvases both configure a `PerspectiveCamera` (see
   // `RangeScene.tsx`'s `camera={{ fov, near, far, position }}` prop) —
   // cast once here rather than threading `THREE.Camera` through every
@@ -84,15 +84,18 @@ class KaelArmsErrorBoundary extends Component<{ children: ReactNode }, { failed:
 }
 
 /**
- * Step 8E-E — `casterPolicy` is OPTIONAL and defaults to `'fp-arms'` (this
- * component's own byte-identical pre-8E-E casting behavior). Only
- * `RangeScene.tsx` ever passes a non-default value (its own
- * `resolveRangeShadowCasterDecision()` result); `/v2/play`'s
- * `V2PlayScene.tsx` never passes this prop at all — that omission, not a
- * runtime check, is what keeps the production caster-ownership switch
- * scoped to `/v2/range` only. See `shadowCasterPolicy.ts`'s own doc comment.
+ * Step 8E-E / Step 8F — `casterPolicy` is OPTIONAL and defaults to
+ * `'fp-arms'` (this component's own byte-identical pre-8E-E casting
+ * behavior). `RangeScene.tsx` passes its own `resolveShadowCasterDecision()`
+ * result (`EFFECTIVE_RANGE_SHADOW_CASTER_POLICY`-derived);
+ * `V2PlayScene.tsx` passes its OWN, independent
+ * `resolveShadowCasterDecision()` result (`EFFECTIVE_PLAY_SHADOW_CASTER_POLICY`-derived)
+ * — two separate policy constants, so flipping one route's rollback never
+ * touches the other. V1 `/play` never imports `shadowCasterPolicy` at all —
+ * that absence, not a runtime check, is what keeps this entirely V2-scoped.
+ * See `shadowCasterPolicy.ts`'s own doc comment.
  */
-export default function KaelFirstPersonArms({ casterPolicy = 'fp-arms' }: { casterPolicy?: RangeShadowCasterPolicy } = {}) {
+export default function KaelFirstPersonArms({ casterPolicy = 'fp-arms' }: { casterPolicy?: ShadowCasterPolicy } = {}) {
   return (
     <KaelArmsErrorBoundary>
       <KaelArmsInner casterPolicy={casterPolicy} />
@@ -100,7 +103,7 @@ export default function KaelFirstPersonArms({ casterPolicy = 'fp-arms' }: { cast
   );
 }
 
-function LoadedKaelArms({ url, lod, camera, casterPolicy }: { url: string; lod: number; camera: THREE.PerspectiveCamera; casterPolicy: RangeShadowCasterPolicy }) {
+function LoadedKaelArms({ url, lod, camera, casterPolicy }: { url: string; lod: number; camera: THREE.PerspectiveCamera; casterPolicy: ShadowCasterPolicy }) {
   const result = useLoadedPipelineAsset(operatorArmsSlot('kael'), url, lod as 0 | 1 | 2);
   const scene = useThree((state) => state.scene);
   // Step 8E-C — authoritative shadow-caster ownership: while the dev-only
