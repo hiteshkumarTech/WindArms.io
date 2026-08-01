@@ -1245,3 +1245,39 @@ Rejected: catching this only via visual/real-browser inspection — a mirrored-b
 Chosen: `buildFixedLightSpaceBasis()` uses `THREE.Camera` and is covered by 9 unit tests (`playerCenteredShadowFrustumBasis.test.ts`) including the round-trip proof above, a proof that translation purely along the light's forward axis changes only light-space Z (never X/Y — the same fact 8E-D.1A's own measurement pass relied on), and a non-canonical (non-hardcoded) basis check.
 
 ---
+
+**2026-08-01 — Step 8E-E: production shadow-caster ownership implemented as one typed, source-controlled policy read by a single pure decision function, not scattered inline booleans**
+
+Decision: `shadowCasterPolicy.ts`'s `RANGE_SHADOW_CASTER_POLICY` (`'fp-arms' | 'full-body'`) is the sole switch; `resolveRangeShadowCasterDecision()` is the one place that turns `(shadowDebugEnabled, shadowReviewEnabled, policy)` into the three booleans `RangeScene.tsx` actually mounts from.
+
+Reason: the Step 8E-E audit's own explicit preference was "minimal branches in existing components, one typed caster-ownership policy module" — writing the exclusivity logic three separate times (once for the FP-arms `castShadow` gate, once for the full-body mount condition, once for the controller's mount condition) would have created three independent places that could drift out of sync under a future edit, exactly the kind of bug class this milestone's own predecessor steps (8E-C's weapon-forward-axis bug, 8E-C.3.2's camera-preset bug) kept finding. A pure function is also the only way to get REAL unit-test coverage of the exclusivity invariant in a codebase with no React/R3F rendering test harness (established since Step 8E-C.3's own scoping note) — `resolveRangeShadowCasterDecision()` is exhaustively tested across all 8 input combinations, proving `fpArmsCastShadow` and `fullBodyCasterActive` are never both true and never both false, which a component-level integration test could not have proven at all in this codebase.
+
+Rejected: inlining `shadowDebugEnabled || policy === 'full-body'`-style expressions directly at each of the three JSX/effect call sites — works today, but has no single point of truth and no way to unit-test the CROSS-cutting invariant (that the three sites' conditions actually compose into "exactly one active caster") short of reading all three sites side by side on every future change.
+
+Chosen: one pure decision function, called once per `RangeScene.tsx` render, destructured into the three consumers.
+
+---
+
+**2026-08-01 — Step 8E-E: `KaelFirstPersonArms.tsx` gained an optional `casterPolicy` prop rather than reading the policy module directly, to keep the production switch provably scoped to `/v2/range`**
+
+Decision: `KaelFirstPersonArms` accepts `casterPolicy?: RangeShadowCasterPolicy = 'fp-arms'` as a prop; it does not import or read `shadowCasterPolicy.ts` internally.
+
+Reason: this component is SHARED between `/v2/range` (`RangeScene.tsx`) and `/v2/play` (`V2PlayScene.tsx`) — the exact same component instance type, mounted in two different scene trees. If the component read the policy module's exported constant directly (module-level, evaluated identically regardless of which scene imported it), the production caster switch would silently apply to `/v2/play` too, violating this milestone's own explicit "route-scoped to `/v2/range`" requirement — `/v2/play` has death/respawn/pause/restart lifecycle states the full-body shadow system has never been validated against (Step 8E-E's own audit, Section 5/6). Making the prop OPTIONAL with a default equal to the historical unconditional behavior means `V2PlayScene.tsx`, which never passes this prop at all, is provably unaffected — not by a runtime route check (which could be gotten wrong or bypassed), but by the simple absence of a prop value anywhere in its render tree. A new source-text regression test (`shadowCasterPolicy.test.ts`) asserts neither `V2PlayScene.tsx`, the `/v2/play` `PlayerController.tsx`, nor V1's `PlayerController.tsx` reference `shadowCasterPolicy` at all, so a future accidental import would fail a test immediately rather than silently widening scope.
+
+Rejected: reading `EFFECTIVE_RANGE_SHADOW_CASTER_POLICY` directly inside `KaelFirstPersonArms.tsx` — simpler at the call site, but ties a shared, route-agnostic component to a route-specific policy, and would have required an explicit `if (route === '/v2/range')` runtime check to un-apply it in `/v2/play` — strictly worse than never being able to apply it there in the first place.
+
+Chosen: an optional prop, default-safe, threaded through the existing `castShadow` `useEffect`'s dependency array — no other change to the component's own logic.
+
+---
+
+**2026-08-01 — Step 8E-E: the player-centered controller must ignore `shadowReviewStore`'s `frustumMode` entirely when activated by the production policy, not just default it to player-centered**
+
+Decision: `KaelPlayerCenteredShadowController` gained an `allowDevModeOverride` prop. When `true` (the dev review harness is active), it reads `shadowReviewStore.getState().frustumMode` every frame, exactly as Step 8E-D.1 always did. When `false` (production `'full-body'` policy, no query flags), the tracking mode is hardcoded to `'player-centered'`, and the store is never consulted at all.
+
+Reason: found during implementation, before any browser testing — `shadowReviewStore` is a Zustand module singleton that, by Step 8E-D's own established convention, deliberately PERSISTS across route navigation within one browser session (so a dev reviewer's calibration settings survive a route leave/re-entry during one work session). If a developer opened the review harness, switched to `'static-full-floor'` for an A/B comparison, then navigated to a plain `/v2/range` URL in the SAME browser tab, the store's `frustumMode` field would still read `'static-full-floor'` — and since the production controller (now active without any flags, per this milestone's own requirement) was, before this fix, unconditionally reading that same store field, a real player's session could have silently rendered the STATIC full-floor frustum instead of the intended player-centered one, with no flag or code change that caused it — a classic dev-tooling-state-leaking-into-production bug. This was reasoned out from the store's own documented persistence behavior, not observed as a live symptom — exactly the kind of thing a careful pre-implementation read of the existing code should catch before it ships, rather than after a bug report.
+
+Rejected: calling `resetCalibration()` automatically whenever the review flags turn off — fragile (depends on catching every possible flag-off transition, including a raw URL navigation with no in-app "disable" action to hook), and still leaves a window where a mid-session production activation (if that were ever possible without a route change) would read a stale value. Rejected: leaving the risk undocumented on the theory that "a real developer would remember to reset" — this milestone's own instruction explicitly warned "review-panel changes must not leak into normal production range sessions," and an assumption about developer memory is not a guarantee.
+
+Chosen: `allowDevModeOverride` — the production path never touches the dev-session store at all, so there is no state for a stale session to leak through.
+
+---

@@ -16,6 +16,7 @@ import { kaelArmDebugState } from '@/lib/v2/weapons/kaelArmDebugState';
 import { useGripTunerStore } from '@/lib/v2/weapons/gripTunerStore';
 import { useIkTunerStore } from '@/lib/v2/weapons/ikTunerStore';
 import { useShadowDebugEnabled } from '@/lib/v2/operators/useShadowDebugEnabled';
+import type { RangeShadowCasterPolicy } from '@/lib/v2/operators/shadowCasterPolicy';
 
 /**
  * Kael first-person arms — weapon-authoritative IK consumer (Milestone 7,
@@ -49,7 +50,7 @@ import { useShadowDebugEnabled } from '@/lib/v2/operators/useShadowDebugEnabled'
  *          finger bones: restrained additive grip-curl pose (temporary)
  */
 
-function KaelArmsInner() {
+function KaelArmsInner({ casterPolicy }: { casterPolicy: RangeShadowCasterPolicy }) {
   // The V2 range/play Canvases both configure a `PerspectiveCamera` (see
   // `RangeScene.tsx`'s `camera={{ fov, near, far, position }}` prop) —
   // cast once here rather than threading `THREE.Camera` through every
@@ -62,7 +63,7 @@ function KaelArmsInner() {
 
   return (
     <Suspense fallback={null}>
-      <LoadedKaelArms url={url} lod={lod} camera={camera} />
+      <LoadedKaelArms url={url} lod={lod} camera={camera} casterPolicy={casterPolicy} />
     </Suspense>
   );
 }
@@ -82,15 +83,24 @@ class KaelArmsErrorBoundary extends Component<{ children: ReactNode }, { failed:
   }
 }
 
-export default function KaelFirstPersonArms() {
+/**
+ * Step 8E-E — `casterPolicy` is OPTIONAL and defaults to `'fp-arms'` (this
+ * component's own byte-identical pre-8E-E casting behavior). Only
+ * `RangeScene.tsx` ever passes a non-default value (its own
+ * `resolveRangeShadowCasterDecision()` result); `/v2/play`'s
+ * `V2PlayScene.tsx` never passes this prop at all — that omission, not a
+ * runtime check, is what keeps the production caster-ownership switch
+ * scoped to `/v2/range` only. See `shadowCasterPolicy.ts`'s own doc comment.
+ */
+export default function KaelFirstPersonArms({ casterPolicy = 'fp-arms' }: { casterPolicy?: RangeShadowCasterPolicy } = {}) {
   return (
     <KaelArmsErrorBoundary>
-      <KaelArmsInner />
+      <KaelArmsInner casterPolicy={casterPolicy} />
     </KaelArmsErrorBoundary>
   );
 }
 
-function LoadedKaelArms({ url, lod, camera }: { url: string; lod: number; camera: THREE.PerspectiveCamera }) {
+function LoadedKaelArms({ url, lod, camera, casterPolicy }: { url: string; lod: number; camera: THREE.PerspectiveCamera; casterPolicy: RangeShadowCasterPolicy }) {
   const result = useLoadedPipelineAsset(operatorArmsSlot('kael'), url, lod as 0 | 1 | 2);
   const scene = useThree((state) => state.scene);
   // Step 8E-C — authoritative shadow-caster ownership: while the dev-only
@@ -102,6 +112,15 @@ function LoadedKaelArms({ url, lod, camera }: { url: string; lod: number; camera
   // `KaelFirstPersonShadowBody.tsx`'s own doc comment for the full
   // ownership rule and the correction of Step 8E-B's own report, which
   // described this as already wired when it had not actually been.
+  //
+  // Step 8E-E extends this SAME rule with `casterPolicy`: when
+  // `RangeScene.tsx` resolves the production caster to `'full-body'`, the
+  // visible arms stop casting even with NO query flags present — the mesh
+  // itself stays fully visible/IK-driven/rendered exactly as always, only
+  // its own shadow contribution turns off, handed to the full-body system.
+  // `casterPolicy` defaults to `'fp-arms'` (this component's own doc
+  // comment), so `/v2/play` — which never passes this prop — is
+  // byte-for-byte unaffected by this change.
   const shadowDebugActive = useShadowDebugEnabled();
   const containerRef = useRef<THREE.Group>(null);
   const containerWorldQuatRef = useRef(new THREE.Quaternion());
@@ -263,12 +282,12 @@ function LoadedKaelArms({ url, lod, camera }: { url: string; lod: number; camera
     if (instance) {
       instance.traverse((node) => {
         if (node instanceof THREE.Mesh) {
-          node.castShadow = !shadowDebugActive;
+          node.castShadow = !shadowDebugActive && casterPolicy !== 'full-body';
           node.frustumCulled = false;
         }
       });
     }
-  }, [instance, shadowDebugActive]);
+  }, [instance, shadowDebugActive, casterPolicy]);
 
   // Diagnostic-group cleanup (Step 6E) — if the component unmounts while
   // DIRECT CAMERA MOUNT is still active (route change, Suspense retry),

@@ -12,8 +12,12 @@ import { playerCenteredShadowFrustumDebugState } from '@/lib/v2/operators/player
 
 /**
  * Step 8E-D.1 — imperative controller for the player-centered, texel-
- * stabilized shadow frustum. Dev-only: mounted by `RangeScene.tsx` ONLY
- * while `shadowReviewEnabled` (`?shadow=1&shadowReview=1`). Sole owner of
+ * stabilized shadow frustum. Originally dev-only (mounted only while
+ * `shadowReviewEnabled`); Step 8E-E additionally mounts this SAME component
+ * (never a second implementation) whenever `RangeScene.tsx`'s caster policy
+ * resolves to `'full-body'`, so production shadow tracking works with no
+ * query flags at all — see `allowDevModeOverride` below for the one
+ * production-specific behavior difference this required. Sole owner of
  * the directional light's `position` and its explicit `target`'s `position`
  * while mounted — `RangeScene.tsx`'s own JSX `position={[12,22,8]}` literal
  * on `<directionalLight>` is what's in effect the instant this component is
@@ -47,6 +51,20 @@ import { playerCenteredShadowFrustumDebugState } from '@/lib/v2/operators/player
 interface KaelPlayerCenteredShadowControllerProps {
   light: React.RefObject<THREE.DirectionalLight>;
   target: THREE.Object3D;
+  /**
+   * Step 8E-E — when `true` (the dev review harness, `shadowReviewEnabled`),
+   * this controller reads `shadowReviewStore`'s `frustumMode` every frame,
+   * exactly as it always has, so the review panel's static/player-centered
+   * A/B toggle keeps working. When `false` (production full-body caster
+   * active with no query flags), the tracking mode is ALWAYS
+   * `'player-centered'`, ignoring the store entirely — a stale dev-session
+   * value (e.g. left on `'static-full-floor'` after an earlier A/B session
+   * in the same browser tab, since the store is a module singleton that
+   * survives route navigation) must never leak into a normal production
+   * session. This is the one thing a real production activation needs that
+   * the dev-only version never had to worry about.
+   */
+  allowDevModeOverride: boolean;
 }
 
 const CANONICAL_LIGHT_POSITION: readonly [number, number, number] = [12, 22, 8];
@@ -98,7 +116,7 @@ function writeStaticDebugState(): void {
   debug.targetWorldPosition[2] = CANONICAL_TARGET_POSITION[2];
 }
 
-export default function KaelPlayerCenteredShadowController({ light, target }: KaelPlayerCenteredShadowControllerProps) {
+export default function KaelPlayerCenteredShadowController({ light, target, allowDevModeOverride }: KaelPlayerCenteredShadowControllerProps) {
   // Fixed light-space basis — built ONCE, from the canonical geometry only.
   // See `playerCenteredShadowFrustumBasis.ts` (unit-tested in plain Node —
   // this controller itself has no test harness, see that module's own doc
@@ -153,7 +171,7 @@ export default function KaelPlayerCenteredShadowController({ light, target }: Ka
     const lightObj = light.current;
     if (!lightObj) return;
 
-    const mode = useShadowReviewStore.getState().frustumMode;
+    const mode: ShadowFrustumMode = allowDevModeOverride ? useShadowReviewStore.getState().frustumMode : 'player-centered';
     if (mode !== lastAppliedModeRef.current) {
       applyFrustumBounds(lightObj.shadow.camera, mode);
       lastAppliedModeRef.current = mode;

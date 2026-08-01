@@ -25,6 +25,7 @@ import { useIkDebugEnabled } from '@/lib/v2/weapons/useIkDebugEnabled';
 import { useShadowDebugEnabled } from '@/lib/v2/operators/useShadowDebugEnabled';
 import { useShadowReviewEnabled } from '@/lib/v2/operators/useShadowReviewEnabled';
 import { useShadowReviewStore } from '@/lib/v2/operators/shadowReviewStore';
+import { EFFECTIVE_RANGE_SHADOW_CASTER_POLICY, resolveRangeShadowCasterDecision } from '@/lib/v2/operators/shadowCasterPolicy';
 import { RANGE_SHADOW_CAMERA_BOUNDS } from '@/lib/v2/range/rangeEnvironmentBounds';
 import type { RangeInputSnapshot } from '@/lib/v2/range/useRangeKeyboardInput';
 import RangeController from './RangeController';
@@ -47,6 +48,21 @@ export default function RangeScene({ inputRef }: { inputRef: React.MutableRefObj
   const shadowReviewEnabled = useShadowReviewEnabled();
   const receiverEnabled = useShadowReviewStore((s) => s.receiverEnabled);
   const showFrustumHelper = useShadowReviewStore((s) => s.showFrustumHelper);
+  // Step 8E-E — the single source of truth for exclusive shadow-caster
+  // ownership (see `shadowCasterPolicy.ts`'s own doc comment). Recomputed
+  // every render from the current flags + the source-controlled policy
+  // constant; never duplicated as separate inline booleans across the three
+  // JSX conditionals below. `fullBodyCasterActive` mounts the SAME shared
+  // `KaelFirstPersonShadowBody`/`Weapon` instance the dev review harness
+  // already used — never a second implementation, never a second mount
+  // site. Debug-only children (arm markers, receiver, review camera,
+  // frustum helper) stay strictly behind their own existing flags below,
+  // deliberately NOT folded into this decision.
+  const rangeShadowCasterDecision = resolveRangeShadowCasterDecision({
+    shadowDebugEnabled,
+    shadowReviewEnabled,
+    policy: EFFECTIVE_RANGE_SHADOW_CASTER_POLICY,
+  });
   // Step 8E-D: reactive selectors (not getState() snapshots) so editing
   // calibration via the review panel actually re-renders this component and
   // updates the light's props live. Production values are LITERAL,
@@ -144,38 +160,60 @@ export default function RangeScene({ inputRef }: { inputRef: React.MutableRefObj
             the Step 8E-C.3 review artifact — the visible lower body was
             originally left OUTSIDE this group, an oversight now fixed).
             Hidden (not unmounted — `visible` only) while shadow-review mode
-            is active; `castShadow` gating for arms (already `false` while
-            `useShadowDebugEnabled()` is true, from Step 8E-C) and for the
-            lower body (already `false` unconditionally, pre-existing) is
-            untouched and unaffected by this — this is a render-visibility
-            change only, not an ownership change. Real gameplay input/state,
-            including the SHARED locomotion pose the shadow legs read from,
-            keeps running underneath regardless. */}
+            is active; `castShadow` gating for arms (Step 8E-C, extended
+            Step 8E-E to also depend on the caster policy — see
+            `rangeShadowCasterDecision`/`KaelFirstPersonArms.tsx`'s own doc
+            comment) and for the lower body (already `false`
+            unconditionally, pre-existing) is untouched and unaffected by
+            this — this is a render-visibility change only, not an
+            ownership change. Real gameplay input/state, including the
+            SHARED locomotion pose the shadow legs read from, keeps running
+            underneath regardless. The visible arms mesh itself stays fully
+            rendered/IK-driven either way — Step 8E-E only ever turns off
+            its OWN shadow contribution, never its visibility. */}
         <group visible={!shadowReviewEnabled}>
           <VortexViewmodel />
           {gripDebugEnabled && <VortexGripAnchorDebug />}
-          <KaelFirstPersonArms />
+          <KaelFirstPersonArms casterPolicy={EFFECTIVE_RANGE_SHADOW_CASTER_POLICY} />
           {ikDebugEnabled && <KaelArmIkDebug />}
           {animDebugEnabled && <ActionTargetDebugMarkers />}
           <KaelFirstPersonLowerBody />
         </group>
-        {/* Step 8E-B/8E-C — dev-only, /v2/range?shadow=1 only, never /v2/play, never production. See KaelFirstPersonShadowBody.tsx's own doc comment for the full scope/limitation list. */}
-        {shadowDebugEnabled && (
+        {/* Step 8E-B/8E-C — the shared full-body shadow body+weapon. Mounted
+            for `?shadow=1` (dev pose calibration) OR whenever the Step 8E-E
+            caster policy resolves to `'full-body'` (production, no flags
+            required) — ONE mount site serves both reasons, so opening the
+            dev review harness while the production policy is active reuses
+            this exact instance rather than creating a second clone. See
+            `KaelFirstPersonShadowBody.tsx`'s own doc comment for the full
+            scope/limitation list. `KaelShadowArmDebugMarkers` stays
+            strictly `shadowDebugEnabled`-only — a debug marker overlay must
+            never render in a flag-free production session. */}
+        {rangeShadowCasterDecision.fullBodyCasterActive && (
           <>
             <KaelFirstPersonShadowBody />
             <KaelFirstPersonShadowWeapon />
-            <KaelShadowArmDebugMarkers />
           </>
         )}
-        {/* Step 8E-C.3 — external review-only camera + neutral ground receiver, `/v2/range?shadow=1&shadowReview=1` only (the hook's own dual-flag gate — see useShadowReviewEnabled.ts). Never touches RangeController.tsx or the main camera; see KaelShadowReviewCamera.tsx's own doc comment for the manual-render mechanism that makes removal a clean, automatic restore. */}
+        {shadowDebugEnabled && <KaelShadowArmDebugMarkers />}
+        {/* Step 8E-C.3 — external review-only camera + neutral ground receiver, `/v2/range?shadow=1&shadowReview=1` only (the hook's own dual-flag gate — see useShadowReviewEnabled.ts). Never touches RangeController.tsx or the main camera; see KaelShadowReviewCamera.tsx's own doc comment for the manual-render mechanism that makes removal a clean, automatic restore. Strictly review-only — Step 8E-E's production activation never mounts the camera/receiver/helper, only the tracking controller below. */}
         {shadowReviewEnabled && (
           <>
             <KaelShadowReviewCamera />
             {receiverEnabled && <KaelShadowReceiver />}
-            <KaelPlayerCenteredShadowController light={lightRef} target={shadowTarget} />
-            {showFrustumHelper && <KaelShadowFrustumHelper light={lightRef} />}
           </>
         )}
+        {/* Step 8E-D.1/8E-E — the player-centered tracking controller. Active
+            for the dev review harness (`shadowReviewEnabled`, same as
+            before) OR whenever the production caster policy is
+            `'full-body'` — `allowDevModeOverride` tells it which case it's
+            in, so a stale dev-session `frustumMode` value left in
+            `shadowReviewStore` can never leak into a flag-free production
+            session (see that prop's own doc comment on the controller). */}
+        {rangeShadowCasterDecision.playerCenteredControllerActive && (
+          <KaelPlayerCenteredShadowController light={lightRef} target={shadowTarget} allowDevModeOverride={shadowReviewEnabled} />
+        )}
+        {shadowReviewEnabled && showFrustumHelper && <KaelShadowFrustumHelper light={lightRef} />}
       </Suspense>
       <RangeEffectsPools />
     </Canvas>
