@@ -1,5 +1,7 @@
 /** WindArms V2 — Skyfront Trial match types (Milestone 6, 2026-07-17). */
 
+import type { DroneAiRuntimeState } from '../ai/droneAiTypes';
+
 /** The one authoritative match phase — no scattered isPlaying/isDead/isPaused booleans anywhere. */
 export type MatchPhase =
   | 'booting'
@@ -12,8 +14,18 @@ export type MatchPhase =
   | 'paused'
   | 'restarting';
 
-/** Drone AI states — deterministic, per DroneEnemy's frame loop (never React state). */
-export type DroneAiState = 'inactive' | 'spawning' | 'searching' | 'engaging' | 'attacking' | 'stunned' | 'destroyed';
+/**
+ * Drone AI states — deterministic, per DroneEnemy's frame loop (never React
+ * state). Milestone 9C: this now ALIASES `lib/v2/ai/droneAiTypes.ts`'s
+ * `DroneAiRuntimeState` directly rather than declaring its own separate
+ * union — that pure-core file is the one authoritative source, per this
+ * phase's own "no duplicate state unions across production modules"
+ * requirement. The pre-9C union also declared `'inactive'` (never assigned
+ * at runtime) and `'stunned'` (a timed overlay, never a discrete state
+ * value) — both dropped by this alias; see `droneAiTypes.ts`'s own doc
+ * comment for the full history.
+ */
+export type DroneAiState = DroneAiRuntimeState;
 
 export interface MatchStats {
   dronesDestroyed: number;

@@ -45,10 +45,13 @@ const BASE = {
   destroyShrinkMs: 260,
   stunMs: 240,
   aimSpreadDeg: 4.5,
+  // Milestone 9C — mirrors DRONE_PERCEPTION_MEMORY's own selected values.
+  losLossConfirmMs: 250,
+  investigateDurationMs: 4500,
 };
 
 function obs(overrides: Partial<LegacyDroneAiObservation> = {}): LegacyDroneAiObservation {
-  return { nowMs: 0, distance: 15, canSeePlayer: true, destroyedAtMs: 0, hitFlashUntilMs: 0, ...BASE, ...overrides };
+  return { nowMs: 0, distance: 15, canSeePlayer: true, targetPosition: { x: 0, y: 0, z: 15 }, playerGeneration: 0, destroyedAtMs: 0, hitFlashUntilMs: 0, ...BASE, ...overrides };
 }
 
 describe('droneAiLegacyParity — formula parity (tape-in / value-out against hand-transcribed legacy formulas)', () => {
@@ -158,11 +161,25 @@ describe('droneAiLegacyParity — formula parity (tape-in / value-out against ha
  * (see docs/decisions.md's Step 9B entry for the capture method and full
  * numbers). Only the qualitative, reproducible FACTS below are checked into
  * the fixture.
+ *
+ * MILESTONE 9C — `engagingRevertsToSearchingBeyondDetectRadius` records a
+ * historical fact about the ORIGINAL (pre-9C) captured trace and the 9B code
+ * that produced it; it is deliberately NOT re-asserted against the current
+ * core below. 9C intentionally replaces that immediate distance-triggered
+ * revert with a unified, confirmation-gated `investigating` detour — see
+ * `droneAiStateMachine.ts`'s own doc comment and `docs/decisions.md`'s Step
+ * 9C entry. The dedicated 9C transition tests further down this file
+ * (`describe('droneAiLegacyParity — Milestone 9C intentional behaviour
+ * change')`) are the current, authoritative behavioural proof for this
+ * scenario; the historical fixture value below is kept only as a record of
+ * what the ORIGINAL trace showed, per this phase's own "do not leave
+ * contradictory tests asserting both outcomes" instruction — no test
+ * anywhere in this file asserts the old immediate-revert behaviour anymore.
  */
 const LEGACY_TRACE_FIXTURE = {
   spawnCompletesAndCanCascadeIntoEngagingSameTick: true, // confirmed: by the 4th post-deploy sample (~700ms in), state was already 'engaging' with scale=1.0 — the player's own default spawn point already has clear LOS to deck-a, so acquisition can follow spawn-completion within the same observed window.
-  engagingPersistsThroughBlockedLosInsideDetectRadius: true, // confirmed twice (scenario B and scenario L): teleporting the player behind cover while still within DETECT_RADIUS left state=='engaging', never reverting to 'searching'.
-  engagingRevertsToSearchingBeyondDetectRadius: true, // confirmed (scenario M): teleporting beyond 42m flipped state to 'searching' on the very next sample.
+  engagingPersistsThroughBlockedLosInsideDetectRadius: true, // confirmed twice (scenario B and scenario L): teleporting the player behind cover while still within DETECT_RADIUS left state=='engaging', never reverting to 'searching'. Still true under 9C for the FIRST blocked tick (the confirmation window hasn't elapsed yet) — see the dedicated 9C describe block below for what happens once it does.
+  engagingRevertsToSearchingBeyondDetectRadius: true, // HISTORICAL (pre-9C) fact only, see this const's own doc comment above: confirmed (scenario M) against the ORIGINAL 9B code — teleporting beyond 42m flipped state to 'searching' on the very next sample. 9C intentionally replaces this immediate revert with a confirmation-gated `investigating` detour; no test below asserts this value against the current core.
   stunDuringEngageHoldsStateAsEngaging: true, // confirmed (scenario J): forcing a hit while state=='engaging' set stunnedUntil in the future while state remained 'engaging'.
   stunDuringWindupAbortsToEngagingWithStaleWindupUntil: true, // confirmed (scenario K): forcing a hit while state=='attacking' produced a sample with state=='engaging' and windupUntil UNCHANGED from its pre-abort value (not reset to 0) — the legacy quirk this phase deliberately preserves.
   destroyIsTerminalAndVisibleFalseEventually: true, // confirmed (scenario N/O): state=='destroyed' persisted, visible flipped false within the sampling window (headless fixed-step catch-up completed the 260ms shrink within very few real-time samples — an established environment artifact, not a logic concern).
@@ -177,7 +194,7 @@ describe('droneAiLegacyParity — sequence/shape parity against the captured bas
     assert.strictEqual(d.state, 'engaging');
   });
 
-  it('engaging persists through blocked LOS while still inside detectRadius (matches the captured trace\'s scenario B/L)', () => {
+  it('engaging persists through blocked LOS while still inside detectRadius, on the first blocked tick (matches the captured trace\'s scenario B/L — still true under 9C before confirmation elapses)', () => {
     assert.strictEqual(LEGACY_TRACE_FIXTURE.engagingPersistsThroughBlockedLosInsideDetectRadius, true);
     let runtime = createLegacyDroneRuntime(createTapeRandomSource([0, 0, 0, 0]), 0, BASE.fireIntervalMs, 1).runtime;
     runtime = decideLegacyDroneAi(runtime, obs({ nowMs: 700, canSeePlayer: true, distance: 12 }), createTapeRandomSource([])).runtime;
@@ -185,12 +202,11 @@ describe('droneAiLegacyParity — sequence/shape parity against the captured bas
     assert.strictEqual(blocked.state, 'engaging');
   });
 
-  it('engaging reverts to searching once beyond detectRadius (matches the captured trace\'s scenario M)', () => {
-    assert.strictEqual(LEGACY_TRACE_FIXTURE.engagingRevertsToSearchingBeyondDetectRadius, true);
+  it('Milestone 9C: a single blocked-and-beyond-detectRadius tick no longer immediately reverts to searching (supersedes the captured trace\'s old scenario M — see this file\'s LEGACY_TRACE_FIXTURE doc comment)', () => {
     let runtime = createLegacyDroneRuntime(createTapeRandomSource([0, 0, 0, 0]), 0, BASE.fireIntervalMs, 1).runtime;
     runtime = decideLegacyDroneAi(runtime, obs({ nowMs: 700, canSeePlayer: true, distance: 12 }), createTapeRandomSource([])).runtime;
     const gone = decideLegacyDroneAi(runtime, obs({ nowMs: 800, canSeePlayer: false, distance: 45 }), createTapeRandomSource([]));
-    assert.strictEqual(gone.state, 'searching');
+    assert.strictEqual(gone.state, 'engaging', '9C: distance no longer triggers an immediate revert — the unified confirmation window applies regardless of why LOS was lost');
   });
 
   it('a stun landing during engage holds the state as engaging (matches the captured trace\'s scenario J)', () => {
@@ -445,16 +461,36 @@ describe('droneAiLegacyOracle — full deterministic sequence parity (Milestone 
     const oracle = new LegacyOracleDrone(oracleRng, 0, BASE.fireIntervalMs);
 
     // One continuous, monotonically-increasing synthetic timeline covering
-    // all 21 required phases. Assertions compare core vs oracle directly —
-    // deliberately NOT against hand-computed absolute expected values (that
-    // would just relocate the risk of a hand-arithmetic mistake into the
-    // test itself); the exhaustive absolute-value unit tests in
+    // every phase PROVEN UNCHANGED since 9B (spawn, search/acquire, distance
+    // bands, strafe flip, cooldown, windup, firing, post-fire, stun-during-
+    // engage, stun-during-windup-abort). Assertions compare core vs oracle
+    // directly — deliberately NOT against hand-computed absolute expected
+    // values (that would just relocate the risk of a hand-arithmetic mistake
+    // into the test itself); the exhaustive absolute-value unit tests in
     // `droneAiStateMachine.test.ts` already cover that ground independently.
     // The tape above was chosen so the events named in each label actually
     // occur at that tick — but even if a future core change shifted exactly
     // WHEN an event fires, the tick-by-tick oracle-vs-core comparison below
     // stays a valid parity proof; only the final sanity floor (coreRng.count
     // >= 8) would need revisiting.
+    //
+    // MILESTONE 9C — this timeline DELIBERATELY STOPS before any LOS-loss
+    // scenario (the original 9B.1 version continued through "blocked LOS
+    // inside detect radius" and "out-of-range loss," both of which relied on
+    // the pre-9C quirk `LegacyOracleDrone` still hardcodes — see its own doc
+    // comment: it is a FROZEN reference to pre-9C behaviour and is
+    // intentionally never updated to model `investigating`). Continuing this
+    // shared oracle-vs-core comparison past that point would now report a
+    // false "mismatch" for an INTENTIONAL, disclosed behaviour change, not a
+    // real defect. Destruction and reset parity — also originally exercised
+    // via steps past this point — remain independently, thoroughly proven
+    // elsewhere in this same file (the formula-parity reset test above; the
+    // "destruction is terminal..." sequence test above) and in
+    // `droneAiStateMachine.test.ts`'s own destruction/reset describe blocks,
+    // so truncating here loses no real coverage. The dedicated
+    // `describe('droneAiLegacyParity — Milestone 9C intentional behaviour
+    // change')` block further down proves the two REQUIRED 9C transition
+    // flows directly against the real core.
     const steps: Array<Partial<LegacyDroneAiObservation> & { label: string }> = [
       { label: '1. spawning (before boundary)', nowMs: 300, distance: 100, canSeePlayer: false },
       { label: '2. spawn boundary (exact)', nowMs: 700, distance: 100, canSeePlayer: false },
@@ -472,10 +508,6 @@ describe('droneAiLegacyOracle — full deterministic sequence parity (Milestone 
       { label: '14. stun during engage', nowMs: 3150, distance: 15, canSeePlayer: true, hitFlashUntilMs: 3200 },
       { label: '15. second cooldown completion', nowMs: 5450, distance: 15, canSeePlayer: true },
       { label: '16. stun during windup -> abort', nowMs: 5500, distance: 15, canSeePlayer: true, hitFlashUntilMs: 5550 },
-      { label: '17. blocked LOS inside detect radius (quirk)', nowMs: 6000, distance: 30, canSeePlayer: false },
-      { label: '18. out-of-range loss', nowMs: 6050, distance: 50, canSeePlayer: false },
-      { label: '19. destruction', nowMs: 6100, distance: 50, canSeePlayer: false, destroyedAtMs: 6100 },
-      { label: '20. shrink completion', nowMs: 6360, distance: 50, canSeePlayer: false, destroyedAtMs: 6100 },
     ];
 
     let tickCount = 0;
@@ -505,21 +537,22 @@ describe('droneAiLegacyOracle — full deterministic sequence parity (Milestone 
       if (step.label.startsWith('1.') || step.label.startsWith('2.')) {
         assert.strictEqual(decision.spawnProgress, oracle.spawnProgress, `spawnProgress mismatch ${at}`);
       }
-      if (step.label.startsWith('19.') || step.label.startsWith('20.')) {
-        assert.strictEqual(decision.destroyProgress, oracle.destroyProgress, `destroyProgress mismatch ${at}`);
-      }
     }
 
-    assert.strictEqual(tickCount, 20, 'sanity: all 20 timeline steps ran');
+    assert.strictEqual(tickCount, 16, 'sanity: all 16 (unchanged-since-9B) timeline steps ran');
     // Sanity checkpoints — trivially true regardless of exact random values,
     // guarding against the sequence-parity assertions above vacuously
-    // passing because both implementations independently do nothing.
-    assert.strictEqual(coreRuntime.state, 'destroyed');
-    assert.strictEqual(oracle.state, 'destroyed');
+    // passing because both implementations independently do nothing. Final
+    // state is 'engaging' (step 16 aborted an in-progress windup back to
+    // engaging) rather than 'destroyed' — destruction/reset parity is
+    // separately, thoroughly proven elsewhere (see this block's own doc
+    // comment above).
+    assert.strictEqual(coreRuntime.state, 'engaging');
+    assert.strictEqual(oracle.state, 'engaging');
     assert.strictEqual(coreRng.count, oracleRng.count, 'random CALL COUNT must match exactly across the whole synthetic run — any divergence in consumption order or count would have shown up here');
     assert.ok(coreRng.count >= 8, 'sanity: the timeline above must have actually exercised spawn + at least one strafe flip + at least one fire to be a meaningful test');
 
-    // --- 21. reset / second-life random reseed ---
+    // --- reset / second-life random reseed (still proven via this same oracle-vs-core pair, from whatever live state the truncated timeline above left them in) ---
     const coreRng2 = countingRandomSource(createTapeRandomSource(TAPE_LIFE_2));
     const oracleRng2 = countingRandomSource(createTapeRandomSource(TAPE_LIFE_2));
     const resolvedFireIntervalMs = 1800; // simulated difficulty-resolved value, deliberately different from the base constant
@@ -548,5 +581,211 @@ describe('droneAiLegacyOracle — full deterministic sequence parity (Milestone 
     const otherDroneRng = createSeededRandomSource(deriveDroneSeed({ matchSeed: 0x9b_d20e, droneId: 'deck-b', lifeGeneration: 1 }));
     const thisDroneRng = createSeededRandomSource(deriveDroneSeed({ matchSeed: 0x9b_d20e, droneId: 'deck-a', lifeGeneration: 1 }));
     assert.notStrictEqual(otherDroneRng.nextFloat(), thisDroneRng.nextFloat());
+  });
+});
+
+/**
+ * Milestone 9C — the two REQUIRED transition flows, driven as one continuous
+ * synthetic timeline against the REAL core (`decideLegacyDroneAi`), no
+ * frozen oracle involved (there is no pre-9C reference behaviour for a
+ * brand-new state — `investigating` did not exist before this phase, so
+ * there is nothing to cross-check it against; the 9B oracle above is
+ * deliberately never extended to model it, per this file's own truncated-
+ * timeline comment). Every tick's expected values are asserted directly.
+ */
+describe('droneAiLegacyParity — Milestone 9C intentional behaviour change', () => {
+  it('flow A: engage -> confirmed LOS loss -> investigate -> move toward memory -> reacquire', () => {
+    const tape = createTapeRandomSource([0, 0, 0, 0, 0.5]); // spawn (4) + one strafe-flip re-roll headroom, never actually needed here but keeps the tape generously long
+    let runtime = createLegacyDroneRuntime(tape, 0, BASE.fireIntervalMs, 1).runtime;
+
+    const lastKnownPosition = { x: 5, y: 0, z: 12 };
+    // 1. spawn completes, LOS clear -> engaging (same-tick cascade, unchanged since 9B).
+    const acquire = decideLegacyDroneAi(runtime, obs({ nowMs: BASE.spawnDurationMs, canSeePlayer: true, distance: 13, targetPosition: lastKnownPosition }), createTapeRandomSource([]));
+    assert.strictEqual(acquire.state, 'engaging');
+    assert.deepStrictEqual(acquire.runtime.lastKnownTargetPosition, lastKnownPosition);
+    runtime = acquire.runtime;
+
+    // 2. LOS lost (cover) — must NOT immediately transition; attack permission gone immediately.
+    const lossStart = BASE.spawnDurationMs + 50;
+    const lost = decideLegacyDroneAi(runtime, obs({ nowMs: lossStart, canSeePlayer: false, distance: 13 }), createTapeRandomSource([]));
+    assert.strictEqual(lost.state, 'engaging', 'no immediate transition on first blocked tick');
+    assert.strictEqual(lost.runtime.losLostStartedAtMs, lossStart);
+    runtime = lost.runtime;
+
+    // 3. one ms before the confirmation boundary — still engaging.
+    const justBefore = decideLegacyDroneAi(runtime, obs({ nowMs: lossStart + BASE.losLossConfirmMs - 1, canSeePlayer: false, distance: 13 }), createTapeRandomSource([]));
+    assert.strictEqual(justBefore.state, 'engaging');
+
+    // 4. exact confirmation boundary — enters investigating, remembers the position, cannot fire.
+    const confirmed = decideLegacyDroneAi(runtime, obs({ nowMs: lossStart + BASE.losLossConfirmMs, canSeePlayer: false, distance: 13 }), createTapeRandomSource([]));
+    assert.strictEqual(confirmed.state, 'investigating');
+    assert.strictEqual(confirmed.movementMode, 'investigate');
+    assert.deepStrictEqual(confirmed.movementTarget, lastKnownPosition);
+    assert.strictEqual(confirmed.fireExactlyOnce, false);
+    assert.strictEqual(confirmed.startWindup, false);
+    runtime = confirmed.runtime;
+
+    // 5. mid-investigation, still no fire, still moving toward memory.
+    const midInvestigate = decideLegacyDroneAi(runtime, obs({ nowMs: runtime.investigateUntilMs! - 2000, canSeePlayer: false, distance: 13 }), createTapeRandomSource([]));
+    assert.strictEqual(midInvestigate.state, 'investigating');
+    assert.deepStrictEqual(midInvestigate.movementTarget, lastKnownPosition);
+
+    // 6. player re-emerges before timeout -> immediate reacquire, no free shot.
+    // Reacquisition ITSELF consumes zero RNG, but by this point in the
+    // timeline the ordinary (pre-existing, unrelated) strafe-flip deadline
+    // may independently have elapsed — that one incidental draw is
+    // legitimate and expected regardless of the investigate detour, so a
+    // short non-empty tape is supplied rather than an empty one (the
+    // dedicated zero-RNG proofs for investigate-specific mechanics live in
+    // `droneAiStateMachine.test.ts`'s own "memory timeout/updates consume
+    // zero RNG" tests, which avoid this same incidental overlap by design).
+    const reacquireTick = runtime.investigateUntilMs! - 1000;
+    // Cooldown pinned to "recently fired" so this reacquire tick lands
+    // cleanly in engaging, isolating THIS flow's own narrative (reacquire)
+    // from the SEPARATE, already-documented "reacquire may cascade into a
+    // fresh windup if the cooldown had already elapsed" behaviour — see
+    // `droneAiStateMachine.test.ts`'s own dedicated test for that case.
+    runtime = { ...runtime, lastFireAtMs: reacquireTick - 100 };
+    const reacquired = decideLegacyDroneAi(runtime, obs({ nowMs: reacquireTick, canSeePlayer: true, distance: 13, targetPosition: { x: 5.5, y: 0, z: 12.5 } }), createTapeRandomSource([0.5]));
+    assert.strictEqual(reacquired.state, 'engaging');
+    assert.strictEqual(reacquired.fireExactlyOnce, false);
+    assert.strictEqual(reacquired.runtime.investigateUntilMs, null);
+    assert.strictEqual(reacquired.runtime.lastFireAtMs, runtime.lastFireAtMs, 'the fire cooldown must be untouched by the whole investigate/reacquire detour');
+  });
+
+  it('flow B: engage -> investigate -> memory expiry (no reacquire) -> searching, memory fully cleared', () => {
+    let runtime = createLegacyDroneRuntime(createTapeRandomSource([0, 0, 0, 0]), 0, BASE.fireIntervalMs, 1).runtime;
+    const lastKnownPosition = { x: -8, y: 1, z: 20 };
+
+    const acquire = decideLegacyDroneAi(runtime, obs({ nowMs: BASE.spawnDurationMs, canSeePlayer: true, distance: 20, targetPosition: lastKnownPosition }), createTapeRandomSource([]));
+    assert.strictEqual(acquire.state, 'engaging');
+    runtime = acquire.runtime;
+
+    const lossStart = BASE.spawnDurationMs + 50;
+    runtime = decideLegacyDroneAi(runtime, obs({ nowMs: lossStart, canSeePlayer: false, distance: 20 }), createTapeRandomSource([])).runtime;
+    const confirmed = decideLegacyDroneAi(runtime, obs({ nowMs: lossStart + BASE.losLossConfirmMs, canSeePlayer: false, distance: 20 }), createTapeRandomSource([]));
+    assert.strictEqual(confirmed.state, 'investigating');
+    runtime = confirmed.runtime;
+    const investigateUntil = runtime.investigateUntilMs!;
+
+    // Never re-emerges. One tick before the deadline: still investigating.
+    const justBefore = decideLegacyDroneAi(runtime, obs({ nowMs: investigateUntil - 1, canSeePlayer: false, distance: 20 }), createTapeRandomSource([]));
+    assert.strictEqual(justBefore.state, 'investigating');
+
+    // Exact timeout boundary: gives up, returns to searching, memory fully cleared.
+    const timedOut = decideLegacyDroneAi(runtime, obs({ nowMs: investigateUntil, canSeePlayer: false, distance: 20 }), createTapeRandomSource([])); // empty tape — timeout consumes zero RNG
+    assert.strictEqual(timedOut.state, 'searching');
+    assert.strictEqual(timedOut.movementMode, 'search');
+    assert.strictEqual(timedOut.movementTarget, null);
+    assert.strictEqual(timedOut.runtime.lastKnownTargetPosition, null);
+    assert.strictEqual(timedOut.runtime.lastSeenTargetAtMs, null);
+    assert.strictEqual(timedOut.runtime.losLostStartedAtMs, null);
+    assert.strictEqual(timedOut.runtime.investigateUntilMs, null);
+
+    // Ambient searching resumes exactly as normal — a later acquisition still works.
+    // (Non-empty tape for the same reason as flow A's own reacquire tick — an
+    // incidental, unrelated strafe-flip draw may legitimately land here too;
+    // cooldown pinned recent so this reacquire tick isolates plain
+    // searching->engaging acquisition from the SEPARATE, already-documented
+    // "cascades into a fresh windup if the cooldown already elapsed" case.)
+    const reacquireLaterRuntime = { ...timedOut.runtime, lastFireAtMs: investigateUntil + 1000 - 100 };
+    const reacquireLater = decideLegacyDroneAi(reacquireLaterRuntime, obs({ nowMs: investigateUntil + 1000, canSeePlayer: true, distance: 18, targetPosition: { x: 0, y: 0, z: 18 } }), createTapeRandomSource([0.5]));
+    assert.strictEqual(reacquireLater.state, 'engaging');
+  });
+
+  it('RNG-consumption comparison: an identical combat sequence consumes the SAME random count whether or not a temporary LOS-loss/investigate detour occurs — except for the aim-spread draws a prevented shot legitimately never makes', () => {
+    // Baseline: continuous visibility, cooldown elapses, one shot fires (consumes 4 spawn + 3 aim-spread = 7, assuming no strafe-flip crosses in this short window).
+    const baselineRng = ((): { rng: ReturnType<typeof createSeededRandomSource>; count: () => number } => {
+      let n = 0;
+      const inner = createSeededRandomSource(900);
+      return { rng: { nextFloat: () => (n++, inner.nextFloat()), range: inner.range, choose: inner.choose }, count: () => n };
+    })();
+    let baseline = createLegacyDroneRuntime(baselineRng.rng, 0, BASE.fireIntervalMs, 1).runtime;
+    baseline = decideLegacyDroneAi(baseline, obs({ nowMs: BASE.spawnDurationMs, canSeePlayer: true, distance: 13 }), baselineRng.rng).runtime;
+    baseline = { ...baseline, lastFireAtMs: 0 };
+    let baselineFired = false;
+    for (let now = BASE.spawnDurationMs; now < BASE.spawnDurationMs + BASE.fireIntervalMs + BASE.attackWindupMs + 50; now += 50) {
+      const d = decideLegacyDroneAi(baseline, obs({ nowMs: now, canSeePlayer: true, distance: 13 }), baselineRng.rng);
+      baseline = d.runtime;
+      if (d.fireExactlyOnce) baselineFired = true;
+    }
+    assert.strictEqual(baselineFired, true, 'sanity: the baseline scenario must actually fire once');
+    const baselineDraws = baselineRng.count();
+
+    // Same total elapsed window, but with a brief LOS-loss/investigate/reacquire detour inserted BEFORE the cooldown would have elapsed — the detour itself must add zero draws, and since the shot is merely DELAYED (not skipped), the same eventual fire still consumes its 3 aim-spread draws once reacquired.
+    const detourRng = ((): { rng: ReturnType<typeof createSeededRandomSource>; count: () => number } => {
+      let n = 0;
+      const inner = createSeededRandomSource(900); // identical seed
+      return { rng: { nextFloat: () => (n++, inner.nextFloat()), range: inner.range, choose: inner.choose }, count: () => n };
+    })();
+    let withDetour = createLegacyDroneRuntime(detourRng.rng, 0, BASE.fireIntervalMs, 1).runtime;
+    withDetour = decideLegacyDroneAi(withDetour, obs({ nowMs: BASE.spawnDurationMs, canSeePlayer: true, distance: 13 }), detourRng.rng).runtime;
+    withDetour = { ...withDetour, lastFireAtMs: 0 };
+    // brief loss, well under confirmation — must NOT enter investigating, must NOT consume RNG.
+    withDetour = decideLegacyDroneAi(withDetour, obs({ nowMs: BASE.spawnDurationMs + 10, canSeePlayer: false, distance: 13 }), detourRng.rng).runtime;
+    withDetour = decideLegacyDroneAi(withDetour, obs({ nowMs: BASE.spawnDurationMs + 20, canSeePlayer: true, distance: 13 }), detourRng.rng).runtime;
+    let detourFired = false;
+    for (let now = BASE.spawnDurationMs + 20; now < BASE.spawnDurationMs + BASE.fireIntervalMs + BASE.attackWindupMs + 50; now += 50) {
+      const d = decideLegacyDroneAi(withDetour, obs({ nowMs: now, canSeePlayer: true, distance: 13 }), detourRng.rng);
+      withDetour = d.runtime;
+      if (d.fireExactlyOnce) detourFired = true;
+    }
+    assert.strictEqual(detourFired, true, 'sanity: the detour scenario must also eventually fire once (the shot was never prevented, only irrelevant to this path)');
+    const detourDraws = detourRng.count();
+
+    assert.strictEqual(detourDraws, baselineDraws, 'a sub-confirmation-threshold LOS flicker must consume EXACTLY as much RNG as an unbroken visible sequence — zero draws for the flicker itself');
+  });
+
+  it('RNG-consumption comparison: a fully-confirmed investigate detour that PREVENTS a shot legitimately consumes fewer draws than an unbroken sequence that fires — the exact difference is precisely accounted for (the skipped aim-spread draws, plus any strafe-flip re-rolls skipped because investigating runs no strafe-flip logic), never an unexplained remainder', () => {
+    const seed = 901;
+    const unbrokenRng = createSeededRandomSource(seed);
+    let unbroken = createLegacyDroneRuntime(unbrokenRng, 0, BASE.fireIntervalMs, 1).runtime;
+    unbroken = decideLegacyDroneAi(unbroken, obs({ nowMs: BASE.spawnDurationMs, canSeePlayer: true, distance: 13 }), unbrokenRng).runtime;
+    unbroken = { ...unbroken, lastFireAtMs: 0 };
+    let unbrokenFireCount = 0;
+    let unbrokenStrafeFlipCount = 0;
+    let unbrokenDraws = 0;
+    const countingUnbroken = { nextFloat: () => (unbrokenDraws++, unbrokenRng.nextFloat()), range: unbrokenRng.range, choose: unbrokenRng.choose };
+    for (let now = BASE.spawnDurationMs; now < BASE.spawnDurationMs + BASE.fireIntervalMs + BASE.attackWindupMs + 50; now += 50) {
+      const d = decideLegacyDroneAi(unbroken, obs({ nowMs: now, canSeePlayer: true, distance: 13 }), countingUnbroken);
+      unbroken = d.runtime;
+      if (d.fireExactlyOnce) unbrokenFireCount++;
+      if (d.strafeFlipped) unbrokenStrafeFlipCount++;
+    }
+    assert.strictEqual(unbrokenFireCount, 1);
+
+    const preventedRng = createSeededRandomSource(seed); // identical seed
+    let prevented = createLegacyDroneRuntime(preventedRng, 0, BASE.fireIntervalMs, 1).runtime;
+    prevented = decideLegacyDroneAi(prevented, obs({ nowMs: BASE.spawnDurationMs, canSeePlayer: true, distance: 13 }), preventedRng).runtime;
+    prevented = { ...prevented, lastFireAtMs: 0 };
+    let preventedDraws = 0;
+    let preventedStrafeFlipCount = 0;
+    const countingPrevented = { nextFloat: () => (preventedDraws++, preventedRng.nextFloat()), range: preventedRng.range, choose: preventedRng.choose };
+    // Sustained loss starting well before the cooldown would elapse, through confirmation, into investigating, never reacquired within this same window.
+    let now = BASE.spawnDurationMs;
+    prevented = decideLegacyDroneAi(prevented, obs({ nowMs: now, canSeePlayer: false, distance: 13 }), countingPrevented).runtime;
+    now += BASE.losLossConfirmMs;
+    const confirmed = decideLegacyDroneAi(prevented, obs({ nowMs: now, canSeePlayer: false, distance: 13 }), countingPrevented);
+    assert.strictEqual(confirmed.state, 'investigating');
+    prevented = confirmed.runtime;
+    let preventedFireCount = 0;
+    for (; now < BASE.spawnDurationMs + BASE.fireIntervalMs + BASE.attackWindupMs + 50; now += 50) {
+      const d = decideLegacyDroneAi(prevented, obs({ nowMs: now, canSeePlayer: false, distance: 13 }), countingPrevented);
+      prevented = d.runtime;
+      if (d.fireExactlyOnce) preventedFireCount++;
+      if (d.strafeFlipped) preventedStrafeFlipCount++;
+    }
+    assert.strictEqual(preventedFireCount, 0, 'sanity: this scenario must genuinely prevent the shot (target never reacquired within the window)');
+    assert.strictEqual(preventedStrafeFlipCount, 0, 'investigating must never itself trigger a strafe-flip re-roll — the ones the unbroken run drew (if any) happened only because it stayed engaging/attacking through the same window');
+
+    // Exact accounting: 3 aim-spread draws for the shot the unbroken run
+    // fired and the prevented run never did, PLUS one draw for every
+    // strafe-flip re-roll the unbroken run made that the prevented run
+    // could not (because investigating runs no strafe-flip logic at all).
+    // A remainder outside this exact sum would mean some OTHER, unexplained
+    // RNG divergence — which this test exists to catch.
+    const expectedDiff = 3 * (unbrokenFireCount - preventedFireCount) + 1 * (unbrokenStrafeFlipCount - preventedStrafeFlipCount);
+    assert.ok(preventedDraws < unbrokenDraws, 'the prevented-shot scenario must consume strictly fewer draws than the unbroken sequence');
+    assert.strictEqual(unbrokenDraws - preventedDraws, expectedDiff, `unexplained RNG-count divergence: expected exactly ${expectedDiff} (3 per skipped shot + 1 per skipped strafe-flip), got ${unbrokenDraws - preventedDraws}`);
   });
 });

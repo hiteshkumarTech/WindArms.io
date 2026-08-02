@@ -7,11 +7,12 @@ import { DRONE } from '@/lib/v2/play/enemyConfig';
 import { createTargetUserData, type TargetUserData } from '@/lib/v2/combat/targets';
 import { resolveDroneConfig, type ResolvedDroneConfig } from '@/lib/v2/play/difficulty';
 import { useV2MatchStore } from '@/lib/v2/play/matchStore';
-import { segmentOccluded } from '@/lib/v2/play/spawnConfig';
+import { OCCLUDERS } from '@/lib/v2/play/spawnConfig';
 import type { DroneAiState, DroneSpawnDef } from '@/lib/v2/play/types';
 import { createLegacyDroneRuntime, decideLegacyDroneAi, resetLegacyDroneRuntime } from '@/lib/v2/ai/droneAiStateMachine';
 import { createSeededRandomSource, deriveDroneSeed, type RandomSource } from '@/lib/v2/ai/droneAiRandom';
-import type { LegacyDroneAiObservation, LegacyDroneAiRuntime } from '@/lib/v2/ai/droneAiTypes';
+import { evaluateDronePerception, DRONE_PERCEPTION_MEMORY } from '@/lib/v2/ai/droneAiPerception';
+import type { DroneTargetSnapshot, LegacyDroneAiObservation, LegacyDroneAiRuntime } from '@/lib/v2/ai/droneAiTypes';
 import type { DroneBoltHandle } from './DroneBoltPool';
 
 /**
@@ -29,26 +30,39 @@ import type { DroneBoltHandle } from './DroneBoltPool';
  * in order: (1) build an observation from the current Three.js/gameplay
  * state, (2) call `decideLegacyDroneAi()`, (3) apply the returned decision
  * using the exact same movement/presentation formulas this file always
- * used. No behaviour change is intended by this phase — see
+ * used. No behaviour change is intended by that phase — see
  * `docs/decisions.md`'s Step 9B entry for the full parity methodology
  * (a captured pre-refactor browser trace, formula-level tape-replay tests,
  * and sequence/shape parity tests all confirm this).
  *
+ * MILESTONE 9C — adds perception memory: `update()` now takes a single
+ * `DroneTargetSnapshot` (position/alive/generation — see `DroneSquad.tsx`,
+ * which builds ONE reusable snapshot per simulation tick and passes it to
+ * every drone, never a per-drone camera read) instead of a bare
+ * `THREE.Vector3` player position, and computes line-of-sight through the
+ * new pure `evaluateDronePerception()` (still the same canonical rule,
+ * still the same `segmentHitsBox` AABB algorithm, just factored out of this
+ * file's own inline computation). A NEW `'investigate'` movement mode is
+ * handled alongside the existing ones — the ONE intentional, disclosed
+ * behaviour change this phase makes: see `droneAiStateMachine.ts`'s own doc
+ * comment for the full design.
+ *
  * `position`/`home`/`phase` deliberately stay OWNED HERE, not in the pure
  * core — the pure core only ever decides WHICH movement mode applies;
  * the actual `THREE.Vector3` math (search wander, strafe cross-product,
- * hover bob) is Three.js-adjacent and stays in this adapter, exactly as
- * `droneAiStateMachine.ts`'s own doc comment describes. `phase` in
- * particular is never touched by a reset, matching a confirmed legacy quirk.
+ * hover bob, investigate steering) is Three.js-adjacent and stays in this
+ * adapter, exactly as `droneAiStateMachine.ts`'s own doc comment describes.
+ * `phase` in particular is never touched by a reset, matching a confirmed
+ * legacy quirk.
  *
- * AI is a deterministic state model — five real runtime states
- * (`LegacyDroneRuntimeState`): spawning → searching ⇄ engaging → attacking →
- * destroyed. "stunned" is a timed overlay, not a discrete state — see the
- * pure core's own doc comment. The wider `DroneAiState` type below (from
- * `types.ts`) also declares `inactive`/`stunned`, neither of which this
- * runtime ever produces — that migration is deferred to 9C.
+ * AI is a deterministic state model — six real runtime states
+ * (`DroneAiRuntimeState`): spawning → searching ⇄ engaging ⇄ investigating,
+ * engaging → attacking → destroyed. "stunned" is a timed overlay, not a
+ * discrete state — see the pure core's own doc comment. `types.ts`'s
+ * `DroneAiState` now directly ALIASES this same union (9C resolved the
+ * former mismatch — see that file's own comment).
  *
- * TIMING (Skyfront Trial timing cleanup, 2026-07-18 — unchanged by 9B): two
+ * TIMING (Skyfront Trial timing cleanup, 2026-07-18 — unchanged since): two
  * different kinds of time flow through `update()`. Every cooldown/duration
  * (fire interval, windup, stun, spawn scale-in, destroy shrink, strafe-flip)
  * is measured against `now` — an absolute `performance.now()` REAL
@@ -57,8 +71,8 @@ import type { DroneBoltHandle } from './DroneBoltPool';
  * frame-delta-accumulated, fed through DroneSquad's fixed-step accumulator.
  */
 export interface DroneHandle {
-  /** Called by DroneSquad, possibly several times per rendered frame (once per fixed-step substep — see fixedStep.ts), with the player position, the shared bolt pool, and the difficulty-resolved combat numbers (HP baked in at spawn/reset time; the rest read live here). `simulationDeltaS` is always exactly one fixed substep, never a raw/variable frame delta. Returns true once destroyed (for squad bookkeeping). */
-  update: (playerPos: THREE.Vector3, simulationDeltaS: number, now: number, bolts: DroneBoltHandle, config: ResolvedDroneConfig) => boolean;
+  /** Called by DroneSquad, possibly several times per rendered frame (once per fixed-step substep — see fixedStep.ts), with the shared player target snapshot (position/alive/generation — one object, reused every substep, never a per-drone camera read), the shared bolt pool, and the difficulty-resolved combat numbers (HP baked in at spawn/reset time; the rest read live here). `simulationDeltaS` is always exactly one fixed substep, never a raw/variable frame delta. Returns true once destroyed (for squad bookkeeping). */
+  update: (targetSnapshot: DroneTargetSnapshot, simulationDeltaS: number, now: number, bolts: DroneBoltHandle, config: ResolvedDroneConfig) => boolean;
   reset: () => void;
   getState: () => DroneAiState;
 }
@@ -159,7 +173,7 @@ const DroneEnemy = forwardRef<DroneHandle, { spawn: DroneSpawnDef }>(function Dr
   };
 
   useImperativeHandle(ref, () => ({
-    update(playerPos, simulationDeltaS, now, bolts, config) {
+    update(targetSnapshot, simulationDeltaS, now, bolts, config) {
       const group = groupRef.current;
       if (!group) return runtimeRef.current.state === 'destroyed';
 
@@ -173,18 +187,27 @@ const DroneEnemy = forwardRef<DroneHandle, { spawn: DroneSpawnDef }>(function Dr
       }
 
       const { toPlayer, strafe, desired, origin, aim, up } = scratch;
-      toPlayer.copy(playerPos).sub(positionRef.current);
-      const distance = toPlayer.length();
+      toPlayer.copy(targetSnapshot.position).sub(positionRef.current);
       toPlayer.normalize();
 
-      const canSeePlayer =
-        distance <= DRONE.DETECT_RADIUS &&
-        !segmentOccluded([positionRef.current.x, positionRef.current.y, positionRef.current.z], [playerPos.x, playerPos.y, playerPos.z]);
+      // Milestone 9C — line-of-sight now goes through the pure, reusable
+      // `evaluateDronePerception()` (same canonical rule, same `segmentHitsBox`
+      // AABB algorithm as before, just no longer duplicated inline here).
+      const perception = evaluateDronePerception({
+        dronePosition: positionRef.current,
+        targetPosition: targetSnapshot.position,
+        detectionRadius: DRONE.DETECT_RADIUS,
+        occluders: OCCLUDERS,
+      });
+      const distance = perception.distanceToTarget;
+      const canSeePlayer = perception.targetVisible;
 
       const observation: LegacyDroneAiObservation = {
         nowMs: now,
         distance,
         canSeePlayer,
+        targetPosition: targetSnapshot.position,
+        playerGeneration: targetSnapshot.generation,
         destroyedAtMs: userData.destroyedAt,
         hitFlashUntilMs: userData.hitFlashUntil,
         detectRadius: DRONE.DETECT_RADIUS,
@@ -194,6 +217,8 @@ const DroneEnemy = forwardRef<DroneHandle, { spawn: DroneSpawnDef }>(function Dr
         destroyShrinkMs: DRONE.DESTROY_SHRINK_MS,
         stunMs: DRONE.STUN_MS,
         aimSpreadDeg: config.aimSpreadDeg,
+        losLossConfirmMs: DRONE_PERCEPTION_MEMORY.losLossConfirmMs,
+        investigateDurationMs: DRONE_PERCEPTION_MEMORY.investigateDurationMs,
       };
 
       const decision = decideLegacyDroneAi(runtimeRef.current, observation, rngRef.current);
@@ -221,8 +246,14 @@ const DroneEnemy = forwardRef<DroneHandle, { spawn: DroneSpawnDef }>(function Dr
 
       group.scale.setScalar(decision.state === 'spawning' ? decision.spawnProgress : 1);
 
-      // --- Movement — formulas byte-identical to the legacy inline code,
-      // selected by the decided mode instead of a re-checked state string.
+      // --- Movement — formulas byte-identical to the legacy inline code
+      // for every pre-9C mode, selected by the decided mode instead of a
+      // re-checked state string. `investigate` is the one Milestone 9C
+      // addition: direct 3D steering toward the remembered position (same
+      // "never flattened to XZ" convention as approach/retreat), stopping
+      // once within `investigateArrivalRadiusM` — arrival is a MOVEMENT-only
+      // detail; it does not end the `investigating` STATE (see
+      // `droneAiStateMachine.ts`).
       desired.set(0, 0, 0);
       if (decision.movementMode === 'search') {
         desired.copy(homeRef.current).sub(positionRef.current);
@@ -233,6 +264,11 @@ const DroneEnemy = forwardRef<DroneHandle, { spawn: DroneSpawnDef }>(function Dr
         else if (distance > DRONE.RANGE_MAX) desired.copy(toPlayer).multiplyScalar(config.approachSpeed);
         strafe.crossVectors(up, toPlayer).multiplyScalar(decision.runtime.strafeDirection * config.strafeSpeed);
         desired.add(strafe);
+      } else if (decision.movementMode === 'investigate' && decision.movementTarget) {
+        desired.set(decision.movementTarget.x, decision.movementTarget.y, decision.movementTarget.z).sub(positionRef.current);
+        const distanceToMemory = desired.length();
+        if (distanceToMemory > DRONE_PERCEPTION_MEMORY.investigateArrivalRadiusM) desired.normalize().multiplyScalar(config.approachSpeed);
+        else desired.set(0, 0, 0);
       }
       // 'spawn-hold' / 'stunned-hold': desired stays (0,0,0), matching the
       // legacy code's own empty branches exactly.
@@ -241,11 +277,12 @@ const DroneEnemy = forwardRef<DroneHandle, { spawn: DroneSpawnDef }>(function Dr
       const bob = Math.sin(phaseRef.current) * DRONE.HOVER_AMP;
       group.position.set(positionRef.current.x, positionRef.current.y + bob, positionRef.current.z);
 
-      if (decision.facePlayer) group.lookAt(playerPos.x, playerPos.y, playerPos.z);
+      if (decision.facePlayer) group.lookAt(targetSnapshot.position.x, targetSnapshot.position.y, targetSnapshot.position.z);
+      else if (decision.movementMode === 'investigate' && decision.movementTarget) group.lookAt(decision.movementTarget.x, decision.movementTarget.y, decision.movementTarget.z);
 
       if (decision.fireExactlyOnce && decision.aimSpread) {
         origin.copy(positionRef.current).addScaledVector(toPlayer, 0.5);
-        aim.copy(playerPos).sub(origin).normalize();
+        aim.copy(targetSnapshot.position).sub(origin).normalize();
         aim.x += decision.aimSpread.x;
         aim.y += decision.aimSpread.y;
         aim.z += decision.aimSpread.z;

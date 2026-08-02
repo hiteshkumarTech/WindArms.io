@@ -10,12 +10,22 @@ import { fileURLToPath } from 'node:url';
  * repository linter" instruction). Mirrors the established convention this
  * codebase already uses for scoping regressions (see
  * `shadowCasterPolicy.test.ts`'s own route-scoping checks).
+ *
+ * Milestone 9C extends this file with `droneAiPerception.ts` (still subject
+ * to every existing pure-core guard below — it deliberately imports
+ * `segmentHitsBox`/`ArenaBox` from `lib/v2/play/spawnConfig.ts`/`types.ts`,
+ * neither of which pull in anything forbidden, see that module's own doc
+ * comment), plus new guards specific to this phase's own scope fence: no
+ * FOV/hearing/squad-awareness modules, no navigation/pathfinding
+ * dependency, and unchanged-reference checks for the additional protected
+ * files this phase's brief names (`WindLift.tsx`, a representative shadow
+ * file) alongside the ones 9B already checked.
  */
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
 const read = (rel: string) => fs.readFileSync(path.join(repoRoot, rel), 'utf8');
 
-const PURE_CORE_FILES = ['src/lib/v2/ai/droneAiTypes.ts', 'src/lib/v2/ai/droneAiRandom.ts', 'src/lib/v2/ai/droneAiStateMachine.ts'];
+const PURE_CORE_FILES = ['src/lib/v2/ai/droneAiTypes.ts', 'src/lib/v2/ai/droneAiRandom.ts', 'src/lib/v2/ai/droneAiStateMachine.ts', 'src/lib/v2/ai/droneAiPerception.ts'];
 
 const FORBIDDEN_IMPORTS: Record<string, RegExp> = {
   React: /from ['"]react['"]/,
@@ -60,6 +70,41 @@ describe('droneAiImportGuards — adapter/lifecycle boundaries', () => {
   it('DroneBoltPool.tsx is untouched by the 9B pure-core extraction — no import of any droneAi* module', () => {
     const src = read('src/components/three/play/DroneBoltPool.tsx');
     assert.ok(!src.includes('/ai/droneAi'), 'DroneBoltPool.tsx (the protected projectile path) must not reference the new pure AI core at all in 9B');
+  });
+
+  it('Milestone 9C — WindLift.tsx (protected) does not import any droneAi* module', () => {
+    const src = read('src/components/three/play/WindLift.tsx');
+    assert.ok(!src.includes('/ai/droneAi'), 'WindLift.tsx is an unrelated protected system — it must never reference the drone AI core');
+  });
+
+  it('Milestone 9C — shadowCasterPolicy.ts (protected shadow system) does not import any droneAi* module', () => {
+    const src = read('src/lib/v2/operators/shadowCasterPolicy.ts');
+    assert.ok(!src.includes('/ai/droneAi'), 'The shadow-casting system is unrelated and protected — it must never reference the drone AI core');
+  });
+});
+
+describe('droneAiImportGuards — Milestone 9C scope fence (no FOV/hearing/squad/navigation)', () => {
+  it('no file under src/lib/v2/ai/ has a name suggesting field-of-view, hearing, squad-shared perception, or navigation/pathfinding', () => {
+    const dir = path.join(repoRoot, 'src/lib/v2/ai');
+    const suspicious = fs
+      .readdirSync(dir)
+      .filter((name) => /fov|hearing|squadperception|squadaware|navmesh|pathfind|navigation/i.test(name));
+    assert.deepStrictEqual(suspicious, [], `unexpected out-of-scope file(s) found in lib/v2/ai/: ${suspicious.join(', ')} — FOV/hearing/squad-shared perception/navigation all remain explicitly out of scope for 9C`);
+  });
+
+  it('droneAiPerception.ts defines no field-of-view, hearing, partial-cover, visibility-scoring, or squad-shared-perception concept', () => {
+    const src = read('src/lib/v2/ai/droneAiPerception.ts');
+    const forbidden = ['fieldOfView', 'fovDeg', 'hearingRadius', 'partialCover', 'visibilityScore', 'squadShared', 'otherDrone'];
+    for (const term of forbidden) {
+      assert.ok(!src.includes(term), `droneAiPerception.ts must not introduce "${term}" — out of scope for this phase's own perception model`);
+    }
+  });
+
+  it('droneAiStateMachine.ts and droneAiPerception.ts do not import any pathfinding/navmesh dependency', () => {
+    for (const file of ['src/lib/v2/ai/droneAiStateMachine.ts', 'src/lib/v2/ai/droneAiPerception.ts']) {
+      const src = read(file);
+      assert.ok(!/navmesh|pathfind|astar|a-star/i.test(src), `${file} must not depend on any navigation/pathfinding system — movement stays direct-steering this phase`);
+    }
   });
 });
 

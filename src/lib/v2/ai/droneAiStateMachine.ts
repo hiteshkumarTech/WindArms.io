@@ -1,4 +1,4 @@
-import type { LegacyDroneAiDecision, LegacyDroneAiObservation, LegacyDroneAiRuntime, LegacyDroneMovementMode } from './droneAiTypes';
+import type { LegacyDroneAiDecision, LegacyDroneAiObservation, LegacyDroneAiRuntime, LegacyDroneMovementMode, Vec3Data } from './droneAiTypes';
 import type { RandomSource } from './droneAiRandom';
 
 /**
@@ -18,10 +18,28 @@ import type { RandomSource } from './droneAiRandom';
  * transition, cooldown, and random-consumption call independently testable
  * with plain data, with zero behaviour change to what ships.
  *
- * SCOPE FENCE (9B, deliberate): this file preserves the CURRENT five-state
- * behaviour byte-for-byte, including its own quirks — see each function's own
- * comments for the specific legacy behaviours intentionally NOT "cleaned up"
- * this phase (per `docs/decisions.md`'s Step 9B entry).
+ * SCOPE FENCE (9B, historical): originally preserved the five-state
+ * behaviour byte-for-byte, including its own quirks — see each function's
+ * own comments for the specific legacy behaviours intentionally NOT "cleaned
+ * up" that phase (per `docs/decisions.md`'s Step 9B entry).
+ *
+ * MILESTONE 9C — adds perception memory and the `investigating` state. This
+ * is the ONE intentional, disclosed behaviour change since 9B: an
+ * `engaging`/`attacking` drone that loses line-of-sight no longer either (a)
+ * stays awkwardly `engaging` forever while still inside `detectRadius` (the
+ * old quirk), or (b) instantly reverts to ambient `searching` the moment it
+ * exceeds `detectRadius`. Instead, after `losLossConfirmMs` of CONTINUOUS
+ * loss (any cause — cover or pure distance, no longer distinguished), it
+ * enters `investigating`: moves toward the last confirmed position, cannot
+ * fire, and either reacquires (LOS returns → back to `engaging` immediately)
+ * or times out (`investigateDurationMs` elapses → `searching`, memory
+ * cleared). See this file's own `decideLegacyDroneAi` doc comment for the
+ * full transition design and ordering, and `docs/decisions.md`'s Step 9C
+ * entry for why this specific ordering was chosen. Every OTHER path
+ * (spawning, normal search/acquire, visible engagement, distance bands,
+ * strafe timing, cooldown, windup, firing, stun, destruction, reset quirks)
+ * is unchanged from 9B — proven by `droneAiLegacyParity.test.ts`'s frozen
+ * legacy oracle, whose comparison timeline never exercises LOS loss.
  *
  * `phase` (the hover-bob/search-wander angle) deliberately stays OUTSIDE this
  * module's runtime, owned by the adapter exactly as it is today — the legacy
@@ -31,8 +49,12 @@ import type { RandomSource } from './droneAiRandom';
  * (`Math.sin(phase)*0.4`, etc.) is Three.js-adjacent position math that
  * belongs in the adapter per this phase's own "movement formulas stay in the
  * adapter" instruction. This module only tells the adapter WHICH movement
- * mode applies each tick.
+ * mode applies each tick (now including `'investigate'` — see
+ * `LegacyDroneAiDecision.movementTarget`).
  */
+
+/** A player-life generation no real `matchStore.respawnNonce` value can ever equal (it only ever counts up from 0) — see `LegacyDroneAiRuntime.observedPlayerGeneration`'s own doc comment. */
+const NEVER_OBSERVED_PLAYER_GENERATION = -1;
 
 /** Legacy strafe-flip re-roll window, ms — `1400 + rand()*1600`, unchanged from `DroneEnemy.tsx`. */
 const STRAFE_FLIP_MIN_MS = 1400;
@@ -81,6 +103,11 @@ export function createLegacyDroneRuntime(
       strafeFlipAtMs,
       destroyShrinkFromMs: 0,
       lifeGeneration,
+      lastKnownTargetPosition: null,
+      lastSeenTargetAtMs: null,
+      losLostStartedAtMs: null,
+      investigateUntilMs: null,
+      observedPlayerGeneration: NEVER_OBSERVED_PLAYER_GENERATION,
     },
   };
 }
@@ -109,6 +136,20 @@ export function resetLegacyDroneRuntime(previous: LegacyDroneAiRuntime, rng: Ran
     strafeFlipAtMs: previous.strafeFlipAtMs,
     destroyShrinkFromMs: 0,
     lifeGeneration: previous.lifeGeneration + 1,
+    // Milestone 9C — every perception-memory field clears on reset, exactly
+    // like every other verified 9B reset quirk it sits alongside: only
+    // `lastFireAtMs` is reseeded above; `strafeDirection`/`strafeFlipAtMs`
+    // carry over unchanged (existing quirk); memory is new state that has no
+    // pre-9B precedent, so it simply starts fresh every life, same as
+    // `windupUntilMs`/`stunnedUntilMs` above. `observedPlayerGeneration`
+    // resets to the "never observed" sentinel rather than trying to thread
+    // the caller's current generation through this call — see that field's
+    // own doc comment in `droneAiTypes.ts`.
+    lastKnownTargetPosition: null,
+    lastSeenTargetAtMs: null,
+    losLostStartedAtMs: null,
+    investigateUntilMs: null,
+    observedPlayerGeneration: NEVER_OBSERVED_PLAYER_GENERATION,
   };
 }
 
@@ -128,6 +169,7 @@ function destroyedDecision(runtime: LegacyDroneAiRuntime, observation: LegacyDro
     aimSpread: null,
     strafeFlipped: false,
     movementMode: 'destroyed-hold',
+    movementTarget: null,
     facePlayer: false,
   };
 }
@@ -139,11 +181,46 @@ function destroyedDecision(runtime: LegacyDroneAiRuntime, observation: LegacyDro
  * same tick can immediately continue into the searching→engaging check,
  * exactly as the original single linear function does) rather than an
  * early-return-per-phase structure.
+ *
+ * MILESTONE 9C block order (all new blocks marked below), and WHY this exact
+ * ordering — see `docs/decisions.md`'s Step 9C entry for the full trace-level
+ * justification, summarized here:
+ *
+ * 1. Destruction (unchanged, 9B).
+ * 2. Player-generation invalidation (NEW) — runs before anything else can
+ *    read/act on stale memory, so a drone can never carry a previous life's
+ *    last-known position into any decision this tick.
+ * 3. Hit-flash/stun (unchanged, 9B).
+ * 4. Spawn scale-in (unchanged, 9B).
+ * 5. Visible-target memory update (NEW) — unconditional on `canSeePlayer`,
+ *    independent of `state`, so the same-tick spawning→searching→engaging
+ *    cascade (9B) can still pick up fresh memory on its very first visible
+ *    tick.
+ * 6. Search/engage/investigate cascade (NEW, replaces 9B's 2-line quirk) —
+ *    reacquire (investigating→engaging) is immediate; the LOS-loss
+ *    confirmation timer STARTS the instant visibility is lost while
+ *    `engaging` OR `attacking` (so an `attacking` drone's confirmation
+ *    window begins on the exact tick loss occurs, not one tick later once
+ *    the attack-block abort below has already dropped it to `engaging`);
+ *    the actual transition to `investigating` still only fires from
+ *    `engaging` (an `attacking` drone must abort to `engaging` first, via
+ *    the existing 9B abort branch in the attack block below — the
+ *    RECOMMENDED design from this phase's own brief, chosen over an
+ *    immediate `attacking`→`investigating` shortcut because it reuses the
+ *    already-verified abort path instead of adding a second one).
+ * 7. Movement mode + strafe-flip (extended with an `investigate` branch —
+ *    no strafe-flip logic runs there, so investigating never consumes RNG).
+ * 8. Facing (unchanged, 9B — still `engaging`/`attacking` only; the adapter
+ *    derives investigate-facing from `movementTarget` itself).
+ * 9. Attack block (unchanged, 9B) — still the sole place `attacking` drops
+ *    to `engaging` on LOS loss/stun; still the sole place a shot can fire,
+ *    and its own `&& observation.canSeePlayer` guard already made "no fire
+ *    on an invisible-target tick" true even before this phase.
  */
 export function decideLegacyDroneAi(runtime: LegacyDroneAiRuntime, observation: LegacyDroneAiObservation, rng: RandomSource): LegacyDroneAiDecision {
   const now = observation.nowMs;
 
-  // --- Destruction — highest precedence, matches the legacy code's own
+  // --- 1. Destruction — highest precedence, matches the legacy code's own
   // early-return structure exactly. Once destroyed, nothing else in this
   // function ever runs again for this life (only `resetLegacyDroneRuntime`
   // can bring a drone back to a living state).
@@ -155,16 +232,46 @@ export function decideLegacyDroneAi(runtime: LegacyDroneAiRuntime, observation: 
     return destroyedDecision(newlyDestroyed, observation, true);
   }
 
-  // --- Hit flash / stun. A flash while ALREADY stunned does NOT extend the
-  // deadline — matches `if (flashing && state.stunnedUntil < now)` exactly:
-  // repeated hits during an active stun are absorbed, not stacked.
+  // --- 2. Milestone 9C — player-generation invalidation. A drone can never
+  // carry a previous player life's last-known position/investigation across
+  // a death+respawn. `spawning`/`destroyed` are untouched (nothing to
+  // invalidate yet/ever); `investigating`/`engaging`/`attacking` all
+  // collapse directly to `searching` — not merely `engaging` — because the
+  // memory that would have made `engaging` meaningful was just cleared, so
+  // there is nothing left to "engage" against until a fresh acquisition.
+  // Consumes zero RNG. Does not touch HP, position, strafe fields, RNG
+  // stream, or `lifeGeneration` (the DRONE's own life counter — a distinct
+  // concept from the PLAYER's life generation this block reacts to).
+  let state = runtime.state;
+  let lastKnownTargetPosition = runtime.lastKnownTargetPosition;
+  let lastSeenTargetAtMs = runtime.lastSeenTargetAtMs;
+  let losLostStartedAtMs = runtime.losLostStartedAtMs;
+  let investigateUntilMs = runtime.investigateUntilMs;
+  let observedPlayerGeneration = runtime.observedPlayerGeneration;
+  let generationInvalidatedAttack = false;
+
+  if (observation.playerGeneration !== observedPlayerGeneration) {
+    observedPlayerGeneration = observation.playerGeneration;
+    lastKnownTargetPosition = null;
+    lastSeenTargetAtMs = null;
+    losLostStartedAtMs = null;
+    investigateUntilMs = null;
+    if (state === 'investigating' || state === 'engaging' || state === 'attacking') {
+      if (state === 'attacking') generationInvalidatedAttack = true;
+      state = 'searching';
+    }
+  }
+
+  // --- 3. Hit flash / stun (unchanged, 9B). A flash while ALREADY stunned
+  // does NOT extend the deadline — matches `if (flashing && state.stunnedUntil
+  // < now)` exactly: repeated hits during an active stun are absorbed, not
+  // stacked.
   const flashing = now < observation.hitFlashUntilMs;
   let stunnedUntilMs = runtime.stunnedUntilMs;
   if (flashing && stunnedUntilMs < now) stunnedUntilMs = now + observation.stunMs;
   const stunned = now < stunnedUntilMs;
 
-  // --- Spawn scale-in / spawning->searching transition.
-  let state = runtime.state;
+  // --- 4. Spawn scale-in / spawning->searching transition (unchanged, 9B).
   let spawnProgress = 1;
   if (state === 'spawning') {
     const t = observation.spawnDurationMs > 0 ? (now - runtime.spawnedAtMs) / observation.spawnDurationMs : 1;
@@ -172,23 +279,75 @@ export function decideLegacyDroneAi(runtime: LegacyDroneAiRuntime, observation: 
     if (t >= 1) state = 'searching';
   }
 
-  // --- Search/engage state selection (uses the CURRENT, possibly
-  // just-transitioned `state` — a same-tick spawning->searching->engaging
-  // cascade is legacy-real and intentionally preserved).
-  if (state === 'searching' && observation.canSeePlayer) state = 'engaging';
-  // The legacy LOS quirk, preserved deliberately (see docs/decisions.md's
-  // Step 9B entry and the Step 9A audit's own Section 7): losing LOS while
-  // STILL inside detectRadius does NOT revert to searching — only losing
-  // LOS *and* exceeding detectRadius does. A drone can sit "engaging" with
-  // no real sightline, holding position/strafing, unable to fire, until one
-  // of those two conditions changes. 9C will replace this with deliberate
-  // investigate/target-memory behaviour; 9B must not "fix" it early.
-  if (state === 'engaging' && !observation.canSeePlayer && observation.distance > observation.detectRadius) state = 'searching';
+  // --- 5. Milestone 9C — visible-target memory update. Unconditional on
+  // `canSeePlayer`, independent of `state` — a fresh, in-place NUMERIC COPY
+  // every time (never a reference to `observation.targetPosition`, so later
+  // caller-side mutation of that object can never alter stored memory).
+  // Consumes zero RNG.
+  if (observation.canSeePlayer) {
+    lastKnownTargetPosition = { x: observation.targetPosition.x, y: observation.targetPosition.y, z: observation.targetPosition.z };
+    lastSeenTargetAtMs = now;
+    losLostStartedAtMs = null;
+  }
 
-  // --- Movement mode + strafe-flip timer. Stunned takes priority over
-  // EVERY other branch, exactly matching the legacy `if(stunned){}else if(...)`
-  // structure — a spawning-but-stunned drone (the hit-sphere is live even
-  // before scale-in completes) reports 'stunned-hold', not 'spawn-hold'.
+  // --- 6. Milestone 9C — search/engage/investigate cascade (replaces 9B's
+  // "stay engaging forever while still inside detectRadius" quirk — see
+  // docs/decisions.md's Step 9C entry for the full replacement rationale).
+  if (state === 'searching' && observation.canSeePlayer) state = 'engaging';
+  if (state === 'investigating' && observation.canSeePlayer) {
+    // Reacquisition — immediate, same tick. `lastKnownTargetPosition` was
+    // already refreshed to the current visible position in step 5 above;
+    // `lastFireAtMs` is untouched here (no free shot, no cooldown reset —
+    // time spent investigating still counts toward the next cooldown,
+    // exactly as if the drone had stayed `engaging` the whole time).
+    state = 'engaging';
+    investigateUntilMs = null;
+  }
+
+  // LOS-loss confirmation timer — starts the instant visibility is lost
+  // while `engaging` OR `attacking` (so an `attacking` drone's window begins
+  // on the true loss tick, not delayed until the attack-block abort below
+  // has already dropped it to `engaging`).
+  if (!observation.canSeePlayer && (state === 'engaging' || state === 'attacking')) {
+    if (losLostStartedAtMs === null) losLostStartedAtMs = now;
+  }
+
+  // The actual transition to `investigating` only fires from `engaging` —
+  // an `attacking` drone must abort to `engaging` first (the attack block
+  // below, unchanged from 9B). One-frame flicker never reaches here: the
+  // step-5 visible branch clears `losLostStartedAtMs` the instant sight
+  // returns, so a blip well under `losLossConfirmMs` never accumulates.
+  if (state === 'engaging' && losLostStartedAtMs !== null && now - losLostStartedAtMs >= observation.losLossConfirmMs) {
+    if (lastKnownTargetPosition !== null) {
+      state = 'investigating';
+      investigateUntilMs = now + observation.investigateDurationMs;
+    } else {
+      // Defensive: reaching a confirmed loss with no memory should not be
+      // possible (memory is set on every visible tick, and `engaging` is
+      // never entered without one), but fails safely to `searching` rather
+      // than an `investigating` state with nothing to investigate.
+      state = 'searching';
+    }
+    losLostStartedAtMs = null;
+  }
+
+  // Investigate timeout — gives up and returns to ambient searching,
+  // clearing all memory. Arrival-radius stopping is a MOVEMENT-only detail
+  // (see `DroneEnemy.tsx`) and deliberately does NOT end this state early —
+  // an arrived drone keeps waiting/investigating until reacquire or timeout.
+  if (state === 'investigating' && investigateUntilMs !== null && now >= investigateUntilMs) {
+    state = 'searching';
+    lastKnownTargetPosition = null;
+    lastSeenTargetAtMs = null;
+    losLostStartedAtMs = null;
+    investigateUntilMs = null;
+  }
+
+  // --- 7. Movement mode + strafe-flip timer (extended with `investigate`).
+  // Stunned takes priority over EVERY other branch, exactly matching the
+  // legacy `if(stunned){}else if(...)` structure — a spawning-but-stunned
+  // drone (the hit-sphere is live even before scale-in completes) reports
+  // 'stunned-hold', not 'spawn-hold'.
   let strafeFlipped = false;
   let strafeDirection = runtime.strafeDirection;
   let strafeFlipAtMs = runtime.strafeFlipAtMs;
@@ -199,6 +358,11 @@ export function decideLegacyDroneAi(runtime: LegacyDroneAiRuntime, observation: 
     movementMode = 'spawn-hold';
   } else if (state === 'searching') {
     movementMode = 'search';
+  } else if (state === 'investigating') {
+    // No strafe-flip logic here by design — investigating is direct
+    // steering toward memory, not combat positioning, and must consume
+    // zero RNG (per this phase's own "no arbitrary investigation RNG" gate).
+    movementMode = 'investigate';
   } else {
     // engaging or attacking — identical movement treatment, matching the
     // legacy `else if (engaging || attacking)` branch exactly.
@@ -210,21 +374,33 @@ export function decideLegacyDroneAi(runtime: LegacyDroneAiRuntime, observation: 
     }
   }
 
-  // Facing is independent of the stunned overlay — matches the legacy
-  // `if (engaging || attacking) group.lookAt(...)` check, which runs
-  // unconditionally on state alone, AFTER the movement block, never gated
-  // by `stunned`.
+  // Fresh copy for the adapter — never a reference to the runtime's own
+  // stored memory object, so adapter-side mutation (e.g. reusing a scratch
+  // Vector3) can never corrupt what this drone remembers.
+  const movementTarget: Vec3Data | null =
+    movementMode === 'investigate' && lastKnownTargetPosition
+      ? { x: lastKnownTargetPosition.x, y: lastKnownTargetPosition.y, z: lastKnownTargetPosition.z }
+      : null;
+
+  // --- 8. Facing (unchanged, 9B). Independent of the stunned overlay —
+  // matches the legacy `if (engaging || attacking) group.lookAt(...)` check,
+  // which runs unconditionally on state alone, AFTER the movement block,
+  // never gated by `stunned`. Still only `engaging`/`attacking` — while
+  // `investigating`, the adapter faces `movementTarget` instead (see
+  // `DroneEnemy.tsx`), not `facePlayer`.
   const facePlayer = state === 'engaging' || state === 'attacking';
 
-  // --- Attack. Two SEQUENTIAL `if`s (not else-if) between "start windup"
-  // and "complete windup", matching the legacy structure exactly — with the
-  // current WINDUP_MS constant this never fires same-tick, but the
-  // structure is preserved rather than collapsed, in case that constant
-  // ever changes.
+  // --- 9. Attack (unchanged, 9B). Two SEQUENTIAL `if`s (not else-if)
+  // between "start windup" and "complete windup", matching the legacy
+  // structure exactly — with the current WINDUP_MS constant this never
+  // fires same-tick, but the structure is preserved rather than collapsed,
+  // in case that constant ever changes. The `&& observation.canSeePlayer`
+  // guard on the first `if` already made "no fire on an invisible-target
+  // tick" true since 9B — unchanged, still true here.
   let windupUntilMs = runtime.windupUntilMs;
   let lastFireAtMs = runtime.lastFireAtMs;
   let startWindup = false;
-  let abortWindup = false;
+  let abortWindup = generationInvalidatedAttack;
   let fireExactlyOnce = false;
   let aimSpread: { x: number; y: number; z: number } | null = null;
 
@@ -261,6 +437,11 @@ export function decideLegacyDroneAi(runtime: LegacyDroneAiRuntime, observation: 
     strafeFlipAtMs,
     windupUntilMs,
     lastFireAtMs,
+    lastKnownTargetPosition,
+    lastSeenTargetAtMs,
+    losLostStartedAtMs,
+    investigateUntilMs,
+    observedPlayerGeneration,
   };
 
   return {
@@ -277,6 +458,7 @@ export function decideLegacyDroneAi(runtime: LegacyDroneAiRuntime, observation: 
     aimSpread,
     strafeFlipped,
     movementMode,
+    movementTarget,
     facePlayer,
   };
 }

@@ -1425,3 +1425,75 @@ Rejected: re-capturing more browser sessions hoping for a lucky match, or adding
 Chosen: both kinds of evidence are kept, with their roles now made explicit in `docs/changelog.md`'s Step 9B.1 entry — live-browser captures for qualitative/lifecycle confidence, the deterministic synthetic trace for exact-timing parity proof.
 
 ---
+
+**2026-08-02 — Step 9C: `LegacyDroneRuntimeState` renamed to `DroneAiRuntimeState` (the one required rename), but `LegacyDroneAiRuntime`/`LegacyDroneAiObservation`/`LegacyDroneAiDecision`/`decideLegacyDroneAi`/`createLegacyDroneRuntime`/`resetLegacyDroneRuntime` deliberately kept as-is**
+
+Decision: only the state UNION type is renamed (`LegacyDroneRuntimeState` → `DroneAiRuntimeState`, gaining `investigating`). Every other "Legacy"-prefixed type and function name in `droneAiTypes.ts`/`droneAiStateMachine.ts` is left unchanged.
+
+Reason: the phase brief explicitly required resolving the state-union mismatch ("Resolve the existing wider public DroneAiState mismatch deliberately... Do not leave two conflicting state definitions") but never asked for a broader rename sweep. The brief's own illustrative code sketches used non-"Legacy" names throughout (`DroneAiRuntime`, `DroneAiObservation`, etc.), which could be read as an implicit ask — but a full rename would touch every call site across `DroneEnemy.tsx` and all six drone-AI test files for zero behavioural benefit, which cuts against this project's own established "don't refactor beyond what's asked" discipline (CLAUDE.md). The runtime/observation/decision types and functions still legitimately describe "the pure extraction of the verified legacy decision logic" even with 9C's additions layered on top (the additions are new behaviour bolted onto a still-legacy-rooted core, not a wholesale replacement of it) — so keeping the names is accurate, not just conservative.
+
+Rejected: a full rename sweep (`LegacyDroneAiRuntime`→`DroneAiRuntime`, `decideLegacyDroneAi`→`decideDroneAi`, etc.) — would have produced a much larger diff for a phase whose own scope fence repeatedly emphasizes minimalism ("the smallest adapter extension," "do not create the full future DroneMovementIntent architecture yet"), and increases the risk of a careless miss during a mechanical find-and-replace across six files.
+
+Chosen: `DroneAiRuntimeState` is the one authoritative six-state union (`droneAiTypes.ts`), and `lib/v2/play/types.ts`'s `DroneAiState` now aliases it directly. Every other identifier keeps its 9B name. If a future phase (9D+) ever sheds enough "legacy-preserved" character that the prefix becomes actively misleading, that rename can be revisited on its own, separately justified merits.
+
+---
+
+**2026-08-02 — Step 9C: player-generation invalidation collapses `investigating`/`engaging`/`attacking` directly to `searching`, not to `engaging`**
+
+Decision: when `observation.playerGeneration` differs from `runtime.observedPlayerGeneration`, any of `investigating`/`engaging`/`attacking` is forced straight to `searching` (never merely to `engaging`), and all memory fields are cleared in the same step.
+
+Reason: the memory that would have made `engaging` meaningful (a specific remembered/confirmed position) belongs to the OLD player life and is being cleared in this exact same step — collapsing to `engaging` would leave the drone in a state whose own name implies active tracking of a target it no longer has any information about. Collapsing directly to `searching` (the state that means "no current target information, ambient patrol") is the accurate description of what the drone actually knows the instant a generation change is detected. If the new life happens to already be visible on this same tick, the EXISTING `searching`→`engaging` same-tick cascade (unchanged since 9B) picks it back up immediately anyway — so this costs nothing in the common case (respawn into view) and is more honest in the uncommon one (respawn where the new spawn point isn't immediately visible).
+
+Rejected: collapsing to `engaging` unconditionally — would have been a "hopeful" state that doesn't reflect the drone's actual (now-empty) knowledge, and would have required either (a) a special one-tick grace period before the normal LOS-loss-confirmation machinery could apply (extra complexity for no proven benefit), or (b) risking the drone briefly reporting `engaging` with a `movementTarget`/facing direction pointed at nothing meaningful.
+
+Chosen: direct collapse to `searching`, verified by a dedicated test proving the two realistic sub-cases separately: the new life not yet visible on the invalidation tick (lands cleanly in `searching`, no attack, no fire) and the new life already visible on that same tick (legitimately cascades straight into a fresh `engaging`/possibly-`attacking` acquisition — a genuine new acquisition of the new life, not a bug, since the old life's attack was still correctly aborted first).
+
+---
+
+**2026-08-02 — Step 9C: the LOS-loss confirmation timer starts the instant visibility is lost while EITHER `engaging` OR `attacking`, not only from `engaging`**
+
+Decision: `losLostStartedAtMs` is set on the first tick `canSeePlayer` is false while `runtime.state` is `engaging` OR `attacking`. The actual transition TO `investigating`, however, still only fires from `engaging` — an `attacking` drone must abort to `engaging` first, via the existing, already-verified 9B abort branch in the attack block.
+
+Reason: the phase brief itself offered two valid designs — either an `attacking`→`investigating` shortcut, or the "abort immediately, then confirm" flow it explicitly recommended, requiring the choice to be documented. The recommended flow was chosen because it reuses the abort path 9B already proved correct (windup-field staleness, no-fire guarantee) rather than adding a second, parallel abort mechanism. But a naive implementation of that flow (starting the timer only once state is ALREADY `engaging`, i.e. one tick after the abort) would measure the 250ms window from the wrong origin — the abort itself happens later in the SAME function call as the timer-start check, so if the timer only started once `state==='engaging'`, it would silently begin one tick late every time an `attacking` drone loses LOS, very slightly (one tick, ~16ms at 60fps) understating how long the drone had actually been unable to see the player before the window started. Broadening the timer-START condition to include `attacking` fixes this precisely, without changing which state can transition INTO `investigating`.
+
+Rejected: measuring the confirmation window only from the moment state reads as `engaging` — technically simpler (one less condition to reason about) but measurably (if trivially) less accurate, and would have made "the confirmation window is measured from the moment LOS is truly lost" a claim the code didn't quite keep.
+
+Chosen: broadened timer-start condition (`engaging` OR `attacking`), narrow transition condition (`engaging` only) — verified by a dedicated test asserting `losLostStartedAtMs` equals the exact tick LOS was lost even while the runtime was still nominally `attacking` at that instant.
+
+---
+
+**2026-08-02 — Step 9C: `observedPlayerGeneration` starts at a `-1` sentinel rather than threading the real starting generation through `createLegacyDroneRuntime`/`resetLegacyDroneRuntime` as a new parameter**
+
+Decision: both construction functions initialize `observedPlayerGeneration` to `-1` — a value no real `matchStore.respawnNonce` can ever equal, since that counter only ever increments from 0. Neither function's signature gained a new parameter for this.
+
+Reason: a fresh or just-reset drone always starts in `spawning` with no memory — the generation-invalidation branch's state-forcing logic only ever affects `investigating`/`engaging`/`attacking`, so a guaranteed-mismatching sentinel on the very first decision tick after construction/reset triggers a completely harmless no-op "invalidation" (nothing to clear, state stays `spawning`) that simply syncs the field to whatever the real current generation is. This is simpler and touches less call-site code than passing the caller's actual current generation into both functions (which would require `DroneEnemy.tsx`'s mount-time `useMemo` and `resetInternal()` to both read `targetSnapshot`/`matchStore` at a point where neither currently does).
+
+Rejected: adding an `initialPlayerGeneration`/`currentPlayerGeneration` parameter to `createLegacyDroneRuntime`/`resetLegacyDroneRuntime` — would have kept the runtime's starting value "correct" from tick zero instead of "harmlessly wrong for exactly one tick," but the value of that correctness is zero (nothing reads `observedPlayerGeneration` before the first decision tick anyway) against a real cost (wider function signatures, more call-site churn, one more thing every future caller must remember to supply correctly).
+
+Chosen: the `-1` sentinel, documented directly on the field itself (`droneAiTypes.ts`) and verified by a dedicated test.
+
+---
+
+**2026-08-02 — Step 9C: `droneAiPerception.ts` imports `segmentHitsBox`/`ArenaBox` from `lib/v2/play/spawnConfig.ts`/`types.ts` — a new, deliberate cross-directory dependency for the pure AI core**
+
+Decision: rather than re-implementing the AABB slab-intersection test inside `lib/v2/ai/`, the new perception module imports the existing `segmentHitsBox` function directly from `spawnConfig.ts` (a `lib/v2/play/` file), plus the plain `ArenaBox` type from `types.ts`.
+
+Reason: the phase brief explicitly required reuse ("do not duplicate the slab-intersection algorithm"), and `spawnConfig.ts` itself has zero React/R3F/Three.js/Rapier/Zustand import (verified: it's plain arithmetic and data) — so importing its one pure geometry function does not compromise the "no React/R3F/Three.js/Rapier/Zustand/system-clock/built-in-random" guarantee `droneAiImportGuards.test.ts` enforces, which is the actual property that matters for this module's renderer-independence and testability. The OCCLUDER DATA itself (the real arena's cover/wall boxes) is never hardcoded into the perception module — it's supplied by the caller (`occluders: readonly ArenaBox[]`), keeping the module free of any specific arena's geometry.
+
+Rejected: duplicating a second copy of the slab-intersection algorithm inside `lib/v2/ai/` to keep that directory importing nothing outside itself — explicitly forbidden by the brief, and would have created exactly the kind of "two implementations of the same geometry test, now free to drift apart" risk the "reuse, don't duplicate" instruction exists to prevent.
+
+Chosen: the one cross-directory import, scoped to a single pure function and a single plain data type, both independently verified dependency-free — a slightly wider "pure" than 9B's own core had, but not a compromise of the actual guarantee that guard test enforces.
+
+---
+
+**2026-08-02 — Step 9C: live-browser scenario validation uses distance-based (not precise cover-geometry) invisibility, after a real-latency root-cause investigation**
+
+Decision: the Playwright validation scenarios move the (camera-position-overridden) player far outside `DETECT_RADIUS` to force `targetVisible=false`, rather than positioning it behind a specific `COVERS` box.
+
+Reason: an early version of the harness pre-computed a visible/occluded coordinate pair relative to each drone's SPAWN position (`DRONE_SPAWNS`), but drones actively move (approach/retreat/strafe) once engaging — by the time the scenario ran, drones had already drifted meters away from their spawn coordinates (they'd been engaging the player's default spawn position from the moment the match went active, well before the harness took over), silently invalidating the precomputed geometry. A second attempt recomputed the pair dynamically against each drone's LIVE position at the start of the scenario — closer, but drones kept moving throughout the multi-step scenario (steering toward wherever the harness last placed the player), so even a freshly-computed pair could go stale a few seconds later. Root-caused by adding a temporary `lastPerception` field (the real `evaluateDronePerception()` output, not a guess) directly to the debug snapshot and reading it as ground truth — this showed a "visible" candidate the harness's own hand-copied geometry constants had gotten wrong, confirming the issue was drone movement plus a real risk of transcription error in a hand-copied constant set, not a production defect. Since `targetVisible` folds `withinDetectionRadius` and `lineOfSightClear` into the identical boolean the pure core consumes either way — and cover-specific occlusion (multiple occluders, vertical offsets) is already proven directly and thoroughly by `droneAiPerception.test.ts`'s own deterministic suite — using plain distance for the LIVE scenario is not a loss of real coverage, only a loss of "looks like hiding behind a wall" visual authenticity in the screenshots.
+
+Rejected: continuing to fight cover-geometry precision (e.g. re-deriving the pair on every single scenario step, or constraining the drone's own movement during the test) — would have added meaningful harness complexity to re-prove a fact (cover occlusion works) the deterministic suite already proves exactly, for a live-scenario goal (prove the STATE MACHINE integration works end-to-end in a real browser) that doesn't actually need cover specifically to be demonstrated.
+
+Chosen: distance-based visible/invisible toggling for all live scenarios (A/B/C/D/E), documented here and in the Step 9C changelog entry; the deterministic `droneAiPerception.test.ts` suite remains the authoritative, exact proof of cover-geometry correctness.
+
+---

@@ -2,10 +2,10 @@
 
 import { useMemo, useRef } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
-import * as THREE from 'three';
 import { resolveDroneConfig, resolveDroneSpawns } from '@/lib/v2/play/difficulty';
 import { createStepAccumulator, stepFixed } from '@/lib/v2/play/fixedStep';
 import { useV2MatchStore } from '@/lib/v2/play/matchStore';
+import type { DroneTargetSnapshot } from '@/lib/v2/ai/droneAiTypes';
 import DroneEnemy, { type DroneHandle } from './DroneEnemy';
 import DroneBoltPool, { type DroneBoltHandle } from './DroneBoltPool';
 
@@ -26,13 +26,27 @@ import DroneBoltPool, { type DroneBoltHandle } from './DroneBoltPool';
  * frame's substeps (cooldowns/windup/stun/destroy all key off the one
  * `now` timestamp passed in, not off substep count — see DroneEnemy.tsx),
  * so calling it multiple times per frame is safe and does not double-fire.
+ *
+ * MILESTONE 9C — this component now owns building the single
+ * `DroneTargetSnapshot` every drone reads: camera position read ONCE per
+ * frame (unchanged from 9B — still `playerPos.copy(camera.position)`, just
+ * written into the snapshot's own plain `position` field instead of a bare
+ * `THREE.Vector3`), plus `matchStore.respawnNonce` as the player's current
+ * life generation. ONE reusable object (`targetSnapshotRef`, never
+ * reallocated), passed to every drone's `update()` call this frame — never a
+ * per-drone camera read, never a second player-position bridge alongside
+ * this one. `alive` is populated for the snapshot's own self-documentation
+ * even though every consumer already only runs while `match.phase ===
+ * 'active'` (this function returns before ever reaching the drone-update
+ * loop otherwise) — see `droneAiTypes.ts`'s own doc comment on
+ * `DroneTargetSnapshot`.
  */
 export default function DroneSquad() {
   const camera = useThree((state) => state.camera);
   const droneRefs = useRef<Array<DroneHandle | null>>([]);
   const boltRef = useRef<DroneBoltHandle>(null);
   const lastRestartNonce = useRef(0);
-  const playerPos = useMemo(() => new THREE.Vector3(), []);
+  const targetSnapshot = useMemo<DroneTargetSnapshot>(() => ({ position: { x: 0, y: 0, z: 0 }, alive: false, generation: 0 }), []);
   const stepAcc = useRef(createStepAccumulator());
 
   // Reactive to the selected difficulty so switching Low↔Medium↔Max during
@@ -49,6 +63,7 @@ export default function DroneSquad() {
 
   useFrame((_, rawDelta) => {
     const match = useV2MatchStore.getState();
+
     if (match.phase === 'paused') return; // fully frozen
 
     // Restart: reset every drone + clear bolts, no remount.
@@ -63,7 +78,11 @@ export default function DroneSquad() {
     if (match.phase !== 'active') return;
 
     const now = performance.now();
-    playerPos.copy(camera.position);
+    targetSnapshot.position.x = camera.position.x;
+    targetSnapshot.position.y = camera.position.y;
+    targetSnapshot.position.z = camera.position.z;
+    targetSnapshot.alive = true; // match.phase === 'active', already gated above
+    targetSnapshot.generation = match.respawnNonce;
     const bolts = boltRef.current;
     if (!bolts) return;
 
@@ -72,7 +91,7 @@ export default function DroneSquad() {
     const droneConfig = resolveDroneConfig(match.selectedDifficulty);
     stepFixed(stepAcc.current, rawDelta, (simulationDeltaS) => {
       for (const drone of droneRefs.current) {
-        drone?.update(playerPos, simulationDeltaS, now, bolts, droneConfig);
+        drone?.update(targetSnapshot, simulationDeltaS, now, bolts, droneConfig);
       }
     });
   });
