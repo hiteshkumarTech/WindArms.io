@@ -1341,3 +1341,87 @@ Rejected: silently omitting the flags from the report because they turned out to
 Chosen: disclosed with the full investigation; no hysteresis added (matches this milestone's own "do not add hysteresis unless the test reproduces a real failure" instruction — this test reproduced a detector limitation, not a frustum failure).
 
 ---
+
+**2026-08-02 — Step 9B: the two fixed-step accumulators (DroneSquad, DroneBoltPool) stay separate this phase, deliberately not merged for "conceptual neatness"**
+
+Decision: `DroneSquad.tsx` and `DroneBoltPool.tsx` keep their own independent `createStepAccumulator()` instances, unchanged from before Step 9B.
+
+Reason: the Step 9A audit noted this as a minor observation, not a defect — both accumulators are pure functions of the same `rawDelta` each receives from the same R3F frame loop, so they stay in lockstep in practice; there was never a demonstrated bug here. The user's own explicit instruction before implementation began was to keep them separate specifically because merging would touch `DroneBoltPool.tsx` — the protected projectile path — for a purely cosmetic consolidation, which cuts directly against this phase's own "behaviour-neutral extraction" mandate: any touch to the protected file widens the diff of a phase whose entire point is to be provably inert.
+
+Rejected: merging them into one shared accumulator passed to both components — would have been a real, if small, architectural improvement, but at the cost of modifying `DroneBoltPool.tsx` (explicitly protected, "remains untouched unless a compilation issue proves an absolutely unavoidable type-only adjustment is necessary" — no such issue existed) during a phase whose acceptance gate requires zero protected-file changes.
+
+Chosen: left separate, recorded here as a deliberate, revisit-later decision — the user's own instruction was to reconsider only in 9D or later, if movement-architecture work or profiling gives a concrete reason.
+
+---
+
+**2026-08-02 — Step 9B: models exactly the five states the runtime actually produces today, not the seven the public `DroneAiState` type declares**
+
+Decision: the new pure core's `LegacyDroneRuntimeState` union is `'spawning' | 'searching' | 'engaging' | 'attacking' | 'destroyed'` — five values. `lib/v2/play/types.ts`'s existing `DroneAiState` (seven values, also declaring `'inactive'` and `'stunned'`) is untouched.
+
+Reason: Step 9A's audit found, by direct source inspection, that `'inactive'` is never assigned anywhere and `'stunned'` is never assigned as a state value either — it is a timed boolean overlay (`now < stunnedUntil`) layered on top of whichever of the five real states is active. Modelling all seven in the new pure core would mean either inventing behaviour for two values the legacy code never produces (a real, if small, behaviour change — exactly what this phase forbids) or adding dead code paths that could never execute, neither of which serves "byte-identical to production." The user's own instruction, given before implementation began, was explicit on this point: do not introduce the future seven-state union yet, and do not rename the live states to `patrol`/`engage`/`attack`/`dead` (the 9C-onward vocabulary) prematurely.
+
+Rejected: modelling the full seven-state `DroneAiState` union in the pure core "for forward compatibility" — would have made the new code's own type surface lie about what states are actually reachable, and `docs/decisions.md`'s own established pattern (see the Step 8E-E/8F entries) is to fix a doc/code mismatch by recording it and correcting it deliberately, not by quietly widening the implementation to match a stale-looking declaration without evidence the wider declaration was ever intentional. Rejected: silently migrating `lib/v2/play/types.ts`'s `DroneAiState` down to five values as part of this same commit — that file is a wider public type Step 9A didn't audit for other consumers, and narrowing a shared type is exactly the kind of change a "behaviour-neutral extraction" phase should not bundle in.
+
+Chosen: a new, narrower, 9B-scoped type (`LegacyDroneRuntimeState`) lives entirely inside `lib/v2/ai/droneAiTypes.ts`; `DroneEnemy.tsx`'s `getState(): DroneAiState` still typechecks correctly against it via ordinary structural subtyping (five literals are a valid subset of seven), so no consumer-facing signature needed to change. The `DroneAiState`/documentation mismatch itself is now explicitly recorded (this entry, plus the doc comments in `droneAiTypes.ts`/`DroneEnemy.tsx`) rather than left as a silent discrepancy — full migration is deferred to Step 9C, per the user's own explicit instruction.
+
+---
+
+**2026-08-02 — Step 9B: two confirmed legacy quirks — aborted-windup staleness and reset's phase/strafe carry-over — preserved exactly as found, contradicting the phase brief's own assumption about one of them**
+
+Decision: an aborted attack windup leaves `windupUntilMs` at its stale pre-abort value (never reset to 0); `resetLegacyDroneRuntime` reseeds only `lastFireAtMs` and leaves `strafeDirection`/`strafeFlipAtMs` (and, in the adapter, `phase`) completely untouched.
+
+Reason: both are directly confirmed by two independent kinds of evidence — reading `DroneEnemy.tsx`'s actual source (the abort branch reassigns only `state.state`; `resetInternal()`'s body never references `strafeDir`/`strafeFlipAt`/`phase` at all) and the captured pre-refactor browser trace (a sample taken immediately after a forced mid-windup hit showed `state==='engaging'` with `windupUntil` still holding its pre-abort value; deck-a's `strafeDir`/`strafeFlipAt` fields were unchanged across the captured restart). The phase 9B brief's own Section 5 test-list text assumed the opposite for the first one ("aborted windup clears its runtime field") — this is a genuine discrepancy between the brief's assumption and the verified real behaviour, not a matter of interpretation. Per this project's own established precedent (code is ground truth for "what is," per `CLAUDE.md`'s documentation-hierarchy rule, and per this same milestone's own repeated instruction not to "clean up" legacy quirks), the VERIFIED behaviour wins over the brief's unverified assumption.
+
+Rejected: silently implementing the brief's assumed "clears windupUntil on abort" behaviour without flagging the conflict — would have been an actual, if small, behaviour change smuggled into a phase whose entire acceptance gate is zero behaviour change, and would have contradicted the phase's own captured trace evidence. Rejected: "fixing" the reset's phase/strafe carry-over to also reseed those fields "for consistency" — tempting, since it looks like an oversight, but the brief is explicit that even known-awkward legacy quirks stay exactly as found in 9B, with actual cleanup deferred to a later, deliberately-scoped phase.
+
+Chosen: both quirks preserved exactly, each with a dedicated passing unit test (`droneAiStateMachine.test.ts`'s "aborted windup does NOT clear windupUntilMs" and "reset does NOT re-roll strafeDirection or strafeFlipAtMs" tests) and a `droneAiLegacyParity.test.ts` sequence-parity test tying the abort case directly back to the captured trace sample. The discrepancy with the brief's own assumption is disclosed here and in the Step 9B final report, not silently corrected.
+
+---
+
+**2026-08-02 — Step 9B: drone random seeding uses a fixed source-controlled namespace, not a `matchStore.ts`-sourced per-match seed**
+
+Decision: `deriveDroneSeed({ matchSeed, droneId, lifeGeneration })` is fed a fixed constant (`DRONE_AI_SEED_NAMESPACE` in `DroneEnemy.tsx`) as its `matchSeed` input this phase, not a real value drawn from `matchStore.ts`.
+
+Reason: the phase brief explicitly rules out modifying `matchStore.ts` "merely to add a match seed" — that file is on this phase's own protected list. A genuine per-match seed (a fresh value each session, so two different matches produce two different decision traces even for the same drone/generation) is a reasonable future enhancement, but the reproducibility contract THIS phase actually needs — a given drone's Nth life always produces the same trace given the same inputs, so a captured baseline can be replayed and diffed — is already fully satisfied by namespace + drone ID + life generation alone. Each drone still gets its own independent, uncorrelated stream (verified: `deriveDroneSeed` with 8 different drone IDs produces 8 distinct seeds), and restarts still avoid replaying a prior life's sub-sequence (life generation increments on every reset).
+
+Rejected: adding a `matchSeed` field to `matchStore.ts` anyway, reasoning that it's a small, additive, low-risk change — rejected specifically because the brief's protected-systems list exists precisely to keep a "pure extraction, zero behaviour change" phase from quietly growing scope into an adjacent system, however small the addition looks in isolation.
+
+Chosen: a fixed namespace constant now; a real per-match seed is left as an explicit, disclosed future enhancement (not a blocker) for whichever later phase actually needs match-to-match trace variation.
+
+---
+
+**2026-08-02 — Step 9B.1: the Step 9B final report's test count was arithmetically wrong — root cause, and why the reconciliation is trustworthy**
+
+Decision: the Step 9B report's "107 new tests (63 state-machine, 15 legacy-parity, 17 random, 27 import guards)" and "617/617" claims are corrected here. Reconciled, runner-verified counts: `droneAiRandom.test.ts` 17, `droneAiStateMachine.test.ts` 46, `droneAiLegacyParity.test.ts` 15 (at the time of the original Step 9B report), `droneAiImportGuards.test.ts` 27, `playShadowFrustumConfig.test.ts` 12 (not 13). 500 (baseline) + 12 + 105 (17+46+15+27) = 617, which is what `npm test` actually reported — the total itself was right, only the per-file breakdown text was wrong.
+
+Reason: an earlier combined test run (`npx tsx --test droneAiRandom.test.ts droneAiStateMachine.test.ts`) reported "tests 63" as the two files' COMBINED total (17 + 46 = 63). The Step 9B report mistakenly attributed that 63 to `droneAiStateMachine.test.ts` alone, while ALSO separately listing "17 random" as its own line — silently double-counting `droneAiRandom.test.ts`. `playShadowFrustumConfig.test.ts`'s count was independently off by one from a similar manual-tallying slip. Caught only because the user did the arithmetic on the reported numbers and found they didn't sum to the reported total (500 + 122 + 13 ≠ 635, and 63+15+17+27=122≠107) — a direct example of why a reported count must be re-derived from the runner, not summarized from a prior summarization.
+
+Rejected: trusting the original per-file breakdown and only patching the arithmetic to make it "add up" — would have fixed the presentation without fixing the underlying error (an actual double-count), and could have hidden a similar mistake in the NEXT report. Rejected: silently editing the historical Step 9B changelog entry in place with no note — the correction is disclosed as a correction (both here and inline in the changelog) so a reader who saw the original wrong numbers can find out why they changed, rather than the history quietly rewriting itself.
+
+Chosen: every file's count re-verified individually against the real test runner (`npx tsx --test <file>`), cross-checked with a source-level `describe`/`it` counting script (which itself needed a regex fix mid-verification — an early version undercounted `droneAiStateMachine.test.ts` at 44 due to mixed quote styles), and the "500 baseline" independently re-derived by extracting the EXACT pre-9B `package.json` test-file list via `git show d7c22ed:package.json` and running exactly those 32 files against current file contents. `droneAiImportGuards.test.ts`'s own count (9 literal `it(` call sites, 27 actual runtime tests) is explained explicitly rather than left as an apparent discrepancy — its first `describe` block uses nested `for` loops over `PURE_CORE_FILES × FORBIDDEN_IMPORTS`, generating `3 × 7 = 21` tests at runtime plus 3+3 from two static blocks.
+
+---
+
+**2026-08-02 — Step 9B.1: sequence-parity test switched from a live seeded PRNG to a literal random tape, after the seeded version silently failed to exercise its own scenario**
+
+Decision: the full deterministic sequence-parity test in `droneAiLegacyParity.test.ts` feeds the legacy oracle and the pure core an identical literal tape (`createTapeRandomSource`), not two `createSeededRandomSource` instances built from the same numeric seed.
+
+Reason: the first version of this test used `createSeededRandomSource(SAME_SEED)` for both the oracle and the core, reasoning that "same seed, two objects" was the more realistic analogue of two independent per-drone RNG streams. It compiled and the tick-by-tick oracle-vs-core assertions all passed — but a final sanity check (`coreRng.count >= 8`, guarding against the whole test vacuously passing because neither implementation did anything) FAILED. Root cause: the seeded generator's actual float outputs are opaque at test-authoring time, so whether a fire-cooldown had elapsed by a given hand-picked synthetic timestamp depended on an unobserved jitter draw — in the run that failed, the fire-desync jitter happened to push the cooldown past the end of the 6.1-second synthetic timeline entirely, so no shot ever fired and the "meaningful test" floor wasn't met. The tick-by-tick equality assertions were never wrong (oracle and core always agreed, since they consumed the identical stream) — the test just wasn't exercising what it was built to exercise.
+
+Rejected: deleting or loosening the `>= 8` sanity floor to make the failure go away — that floor exists specifically to prevent a sequence-parity test from passing vacuously; removing it would have hidden exactly the kind of silent under-testing this closure pass exists to close. Rejected: hand-computing the seed's actual float outputs in advance to pick a "lucky" seed that happens to trigger the right events — fragile (any future change to `mulberry32`'s internals, however unlikely, would silently break the test with no explanation) and defeats the purpose of a readable, self-documenting timeline.
+
+Chosen: a literal tape (the same technique already used by every formula-parity test in this file) with hand-chosen values that deterministically guarantee the fire/flip events occur at the labelled ticks (e.g. a `0.0` fire-jitter draw so `lastFireAtMs` starts at the spawn timestamp, making the cooldown-elapsed timing fully predictable). The correctness assertions themselves remain purely relative (oracle output === core output at every tick) — never a hand-computed absolute expected value — so this change only affects WHICH events the timeline is guaranteed to exercise, not what property the test proves.
+
+---
+
+**2026-08-02 — Step 9B.1: live-browser fire-event counts (38 vs 20) are lifecycle evidence, not parity evidence — and are not "fixed" to match**
+
+Decision: the differing fire-event counts between Step 9B's two independently-timed live-browser captures (38 in the pre-refactor baseline, 20 in the post-refactor validation run) are left as-is and explicitly reframed as qualitative/lifecycle evidence, not exact-timing parity evidence — no attempt was made to force them to match.
+
+Reason: two live browser sessions, each driven by real wall-clock `performance.now()` timestamps and real frame-timing jitter, cannot be expected to reach the same fire-cooldown boundaries at the same real-world instant even with an identical deterministic random tape underneath — the SEQUENCE of decisions is deterministic given identical inputs, but the actual wall-clock arrival at each decision point is not, because the two sessions' frame delivery timing itself differs. Treating the 38-vs-20 gap as something to explain away or force into agreement would have been chasing an artifact of session timing, not a logic defect. The property that actually matters — does the new pure core make the same decisions, in the same order, consuming the same random values, as the verified legacy behaviour — is proven exactly by the deterministic synthetic-trace test instead (see the sequence-parity entry above), which needs no real-time browser capture at all.
+
+Rejected: re-capturing more browser sessions hoping for a lucky match, or adding artificial timing synchronization to the Playwright harness to force two sessions to reach identical wall-clock fire counts — both would have produced a fragile, misleading "parity" number without actually strengthening the real evidence. Rejected: removing the browser captures from the evidence package entirely — they still prove real things (zero console errors, correct drone-count bookkeeping across restarts/remounts, the same qualitative behaviour shape) that the deterministic unit tests, running with no renderer at all, cannot prove.
+
+Chosen: both kinds of evidence are kept, with their roles now made explicit in `docs/changelog.md`'s Step 9B.1 entry — live-browser captures for qualitative/lifecycle confidence, the deterministic synthetic trace for exact-timing parity proof.
+
+---

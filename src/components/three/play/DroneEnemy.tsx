@@ -9,32 +9,52 @@ import { resolveDroneConfig, type ResolvedDroneConfig } from '@/lib/v2/play/diff
 import { useV2MatchStore } from '@/lib/v2/play/matchStore';
 import { segmentOccluded } from '@/lib/v2/play/spawnConfig';
 import type { DroneAiState, DroneSpawnDef } from '@/lib/v2/play/types';
+import { createLegacyDroneRuntime, decideLegacyDroneAi, resetLegacyDroneRuntime } from '@/lib/v2/ai/droneAiStateMachine';
+import { createSeededRandomSource, deriveDroneSeed, type RandomSource } from '@/lib/v2/ai/droneAiRandom';
+import type { LegacyDroneAiObservation, LegacyDroneAiRuntime } from '@/lib/v2/ai/droneAiTypes';
 import type { DroneBoltHandle } from './DroneBoltPool';
 
 /**
  * One hostile wind training-drone (Milestone 6). TEMPORARY gameplay target,
  * not character canon. Deliberately split: this file owns geometry +
- * per-frame AI/movement (all via refs — zero React re-renders per frame),
- * DroneBoltPool owns projectiles, matchStore owns score. The Vortex fire
- * system damages it through the shared TargetUserData contract on its
- * hit-sphere — no drone-specific weapon code.
+ * per-frame visual presentation + side effects (all via refs — zero React
+ * re-renders per frame), DroneBoltPool owns projectiles, matchStore owns
+ * score. The Vortex fire system damages it through the shared
+ * TargetUserData contract on its hit-sphere — no drone-specific weapon code.
  *
- * AI is a deterministic state model (types.ts DroneAiState):
- *   inactive → spawning → searching ⇄ engaging → attacking → (stunned) → destroyed
- * "engaging" = seen the player, holding the preferred range band and
- * strafing; "attacking" = winding up + firing a bolt when it has LOS.
+ * MILESTONE 9B — this component is now a THIN ADAPTER around the pure,
+ * renderer-independent decision core (`lib/v2/ai/droneAiStateMachine.ts`).
+ * All state-transition/timing/randomness logic that used to live inline
+ * here has moved there — this file's own `update()` now does three things,
+ * in order: (1) build an observation from the current Three.js/gameplay
+ * state, (2) call `decideLegacyDroneAi()`, (3) apply the returned decision
+ * using the exact same movement/presentation formulas this file always
+ * used. No behaviour change is intended by this phase — see
+ * `docs/decisions.md`'s Step 9B entry for the full parity methodology
+ * (a captured pre-refactor browser trace, formula-level tape-replay tests,
+ * and sequence/shape parity tests all confirm this).
  *
- * TIMING (Skyfront Trial timing cleanup, 2026-07-18): two different kinds
- * of time flow through `update()`, and they are NOT the same thing. Every
- * cooldown/duration below (fire interval, windup, stun, spawn scale-in,
- * destroy shrink, strafe-flip) is measured against `now` — an absolute
- * `performance.now()` REAL timestamp DroneSquad reads once per rendered
- * frame and passes in unchanged — so these were already correct before
- * this pass and needed no fix; a threshold comparison against a real
- * timestamp can't be time-dilated by a movement delta clamp. Only
- * `simulationDeltaS` (translation, hover phase) is frame-delta-accumulated,
- * and DroneSquad now feeds it through a fixed-step accumulator rather than
- * a single clamped step — see fixedStep.ts and DroneSquad.tsx.
+ * `position`/`home`/`phase` deliberately stay OWNED HERE, not in the pure
+ * core — the pure core only ever decides WHICH movement mode applies;
+ * the actual `THREE.Vector3` math (search wander, strafe cross-product,
+ * hover bob) is Three.js-adjacent and stays in this adapter, exactly as
+ * `droneAiStateMachine.ts`'s own doc comment describes. `phase` in
+ * particular is never touched by a reset, matching a confirmed legacy quirk.
+ *
+ * AI is a deterministic state model — five real runtime states
+ * (`LegacyDroneRuntimeState`): spawning → searching ⇄ engaging → attacking →
+ * destroyed. "stunned" is a timed overlay, not a discrete state — see the
+ * pure core's own doc comment. The wider `DroneAiState` type below (from
+ * `types.ts`) also declares `inactive`/`stunned`, neither of which this
+ * runtime ever produces — that migration is deferred to 9C.
+ *
+ * TIMING (Skyfront Trial timing cleanup, 2026-07-18 — unchanged by 9B): two
+ * different kinds of time flow through `update()`. Every cooldown/duration
+ * (fire interval, windup, stun, spawn scale-in, destroy shrink, strafe-flip)
+ * is measured against `now` — an absolute `performance.now()` REAL
+ * timestamp DroneSquad reads once per rendered frame and passes in
+ * unchanged. Only `simulationDeltaS` (translation, hover phase) is
+ * frame-delta-accumulated, fed through DroneSquad's fixed-step accumulator.
  */
 export interface DroneHandle {
   /** Called by DroneSquad, possibly several times per rendered frame (once per fixed-step substep — see fixedStep.ts), with the player position, the shared bolt pool, and the difficulty-resolved combat numbers (HP baked in at spawn/reset time; the rest read live here). `simulationDeltaS` is always exactly one fixed substep, never a raw/variable frame delta. Returns true once destroyed (for squad bookkeeping). */
@@ -59,6 +79,20 @@ function createMaterials(): DroneMaterials {
   };
 }
 
+/**
+ * Step 9B seed-ownership pattern — a fixed, source-controlled namespace
+ * combined with each drone's own stable ID and its current life generation
+ * (see `deriveDroneSeed`'s own doc comment). Deliberately NOT a per-match
+ * seed drawn from `matchStore.ts` — this phase's own brief explicitly rules
+ * out modifying that protected file just to add one. A real per-match seed
+ * (a fresh value each session) is a reasonable future enhancement, but is
+ * not required for THIS phase's own reproducibility contract: what matters
+ * now is that a given drone's Nth life always produces the same decision
+ * trace given the same inputs, which this namespace + id + generation
+ * combination already guarantees.
+ */
+const DRONE_AI_SEED_NAMESPACE = 0x9b_d20e;
+
 const DroneEnemy = forwardRef<DroneHandle, { spawn: DroneSpawnDef }>(function DroneEnemy({ spawn }, ref) {
   const groupRef = useRef<THREE.Group>(null);
   const rotorRef = useRef<THREE.Mesh>(null);
@@ -66,24 +100,24 @@ const DroneEnemy = forwardRef<DroneHandle, { spawn: DroneSpawnDef }>(function Dr
   const materials = useMemo(createMaterials, []);
 
   const scratch = useMemo(
-    () => ({ toPlayer: new THREE.Vector3(), strafe: new THREE.Vector3(), origin: new THREE.Vector3(), aim: new THREE.Vector3(), up: new THREE.Vector3(0, 1, 0) }),
+    () => ({ toPlayer: new THREE.Vector3(), strafe: new THREE.Vector3(), desired: new THREE.Vector3(), origin: new THREE.Vector3(), aim: new THREE.Vector3(), up: new THREE.Vector3(0, 1, 0) }),
     [],
   );
 
-  // All AI lives in a ref — never React state (per the performance rule).
-  const ai = useRef({
-    state: 'spawning' as DroneAiState,
-    position: new THREE.Vector3(...spawn.position),
-    home: new THREE.Vector3(...spawn.position),
-    phase: Math.random() * Math.PI * 2,
-    spawnAt: performance.now(),
-    lastFireAt: performance.now() + Math.random() * DRONE.FIRE_INTERVAL_MS, // desync jitter only — the real interval used to gate attacks is the per-frame `config.fireIntervalMs` passed into update()
-    windupUntil: 0,
-    stunnedUntil: 0,
-    strafeDir: Math.random() < 0.5 ? 1 : -1,
-    strafeFlipAt: performance.now() + 1500 + Math.random() * 1500,
-    destroyShrinkFrom: 0,
-  });
+  // Adapter-owned movement/presentation state — never part of the pure
+  // core's own runtime (see this file's own doc comment above).
+  const positionRef = useRef(new THREE.Vector3(...spawn.position));
+  const homeRef = useRef(new THREE.Vector3(...spawn.position));
+
+  // Pure-core state — built once at mount via `createLegacyDroneRuntime`,
+  // replaced wholesale (never mutated in place) by every `decideLegacyDroneAi`/
+  // `resetLegacyDroneRuntime` call. `rngRef` holds this drone's own private
+  // `RandomSource` stream, reseeded (a fresh instance, never reused) on
+  // every reset — see `resetInternal` below.
+  const rngRef = useRef<RandomSource>(createSeededRandomSource(deriveDroneSeed({ matchSeed: DRONE_AI_SEED_NAMESPACE, droneId: spawn.id, lifeGeneration: 1 })));
+  const initial = useMemo(() => createLegacyDroneRuntime(rngRef.current, performance.now(), DRONE.FIRE_INTERVAL_MS, 1), []); // eslint-disable-line react-hooks/exhaustive-deps
+  const runtimeRef = useRef<LegacyDroneAiRuntime>(initial.runtime);
+  const phaseRef = useRef<number>(initial.initialPhase);
 
   // Shared damage contract — the fire system mutates this in place. Seeded
   // with the CURRENTLY selected difficulty's HP; corrected to the locked-in
@@ -103,15 +137,17 @@ const DroneEnemy = forwardRef<DroneHandle, { spawn: DroneSpawnDef }>(function Dr
   );
 
   const resetInternal = () => {
-    const state = ai.current;
     const config = resolveDroneConfig(useV2MatchStore.getState().selectedDifficulty);
-    state.state = 'spawning';
-    state.position.copy(state.home);
-    state.spawnAt = performance.now();
-    state.lastFireAt = performance.now() + Math.random() * config.fireIntervalMs;
-    state.windupUntil = 0;
-    state.stunnedUntil = 0;
-    state.destroyShrinkFrom = 0;
+    const nowMs = performance.now();
+    const newGeneration = runtimeRef.current.lifeGeneration + 1;
+    const newRng = createSeededRandomSource(deriveDroneSeed({ matchSeed: DRONE_AI_SEED_NAMESPACE, droneId: spawn.id, lifeGeneration: newGeneration }));
+    rngRef.current = newRng;
+    runtimeRef.current = resetLegacyDroneRuntime(runtimeRef.current, newRng, nowMs, config.fireIntervalMs);
+    // `phase`/`strafeDirection`/`strafeFlipAtMs` deliberately untouched — a
+    // confirmed legacy quirk (the original `resetInternal()` never re-rolls
+    // them either), preserved exactly per this phase's own "do not clean up
+    // legacy quirks" instruction.
+    positionRef.current.copy(homeRef.current);
     userData.hp = config.maxHp;
     userData.isTarget = true;
     userData.hitFlashUntil = 0;
@@ -125,118 +161,101 @@ const DroneEnemy = forwardRef<DroneHandle, { spawn: DroneSpawnDef }>(function Dr
   useImperativeHandle(ref, () => ({
     update(playerPos, simulationDeltaS, now, bolts, config) {
       const group = groupRef.current;
-      const state = ai.current;
-      if (!group) return state.state === 'destroyed';
+      if (!group) return runtimeRef.current.state === 'destroyed';
 
-      // Spin rotor + bob regardless of AI state (until destroyed).
-      if (state.state !== 'destroyed') {
+      // Spin rotor + bob regardless of AI state (until destroyed) — gated on
+      // the PRE-tick state, matching the legacy code exactly: a same-tick
+      // newly-destroyed transition still gets one more phase/rotor advance
+      // this frame, since this check runs before the decision call below.
+      if (runtimeRef.current.state !== 'destroyed') {
         if (rotorRef.current) rotorRef.current.rotation.y += simulationDeltaS * 6;
-        state.phase += simulationDeltaS * DRONE.HOVER_HZ * Math.PI * 2;
+        phaseRef.current += simulationDeltaS * DRONE.HOVER_HZ * Math.PI * 2;
       }
 
-      // --- Destruction (driven by the shared userData the weapon mutates) ---
-      if (userData.destroyedAt !== 0 && state.state !== 'destroyed') {
-        state.state = 'destroyed';
-        state.destroyShrinkFrom = now;
-        useV2MatchStore.getState().recordDroneDestroyed();
-      }
-      if (state.state === 'destroyed') {
-        const t = (now - state.destroyShrinkFrom) / DRONE.DESTROY_SHRINK_MS;
-        if (t >= 1) {
-          group.visible = false;
-          return true;
-        }
-        group.scale.setScalar(Math.max(0.001, 1 - t));
-        group.rotation.y += simulationDeltaS * 10;
-        return false;
-      }
-
-      // Hit flash + stun (userData.hitFlashUntil set by the fire system).
-      const flashing = now < userData.hitFlashUntil;
-      if (eyeRef.current) (eyeRef.current.material as THREE.MeshStandardMaterial).emissiveIntensity = flashing ? 3.2 : state.state === 'attacking' ? 2.6 : 1.4;
-      if (flashing && state.stunnedUntil < now) state.stunnedUntil = now + DRONE.STUN_MS;
-      const stunned = now < state.stunnedUntil;
-
-      // --- Spawn scale-in ---
-      if (state.state === 'spawning') {
-        const t = (now - state.spawnAt) / DRONE.SPAWN_SCALE_MS;
-        group.scale.setScalar(Math.min(1, t));
-        if (t >= 1) state.state = 'searching';
-      } else {
-        group.scale.setScalar(1);
-      }
-
-      const { toPlayer, strafe, origin, aim, up } = scratch;
-      toPlayer.copy(playerPos).sub(state.position);
+      const { toPlayer, strafe, desired, origin, aim, up } = scratch;
+      toPlayer.copy(playerPos).sub(positionRef.current);
       const distance = toPlayer.length();
       toPlayer.normalize();
 
       const canSeePlayer =
         distance <= DRONE.DETECT_RADIUS &&
-        !segmentOccluded([state.position.x, state.position.y, state.position.z], [playerPos.x, playerPos.y, playerPos.z]);
+        !segmentOccluded([positionRef.current.x, positionRef.current.y, positionRef.current.z], [playerPos.x, playerPos.y, playerPos.z]);
 
-      // --- State selection ---
-      if (state.state === 'searching' && canSeePlayer) state.state = 'engaging';
-      if (state.state === 'engaging' && !canSeePlayer && distance > DRONE.DETECT_RADIUS) state.state = 'searching';
+      const observation: LegacyDroneAiObservation = {
+        nowMs: now,
+        distance,
+        canSeePlayer,
+        destroyedAtMs: userData.destroyedAt,
+        hitFlashUntilMs: userData.hitFlashUntil,
+        detectRadius: DRONE.DETECT_RADIUS,
+        fireIntervalMs: config.fireIntervalMs,
+        spawnDurationMs: DRONE.SPAWN_SCALE_MS,
+        attackWindupMs: DRONE.WINDUP_MS,
+        destroyShrinkMs: DRONE.DESTROY_SHRINK_MS,
+        stunMs: DRONE.STUN_MS,
+        aimSpreadDeg: config.aimSpreadDeg,
+      };
 
-      // --- Movement ---
-      const desired = new THREE.Vector3();
-      if (stunned) {
-        // hold position (stagger)
-      } else if (state.state === 'searching') {
-        // Idle patrol around home.
-        desired.copy(state.home).sub(state.position);
+      const decision = decideLegacyDroneAi(runtimeRef.current, observation, rngRef.current);
+      runtimeRef.current = decision.runtime;
+
+      if (decision.requestRecordDestroyed) {
+        useV2MatchStore.getState().recordDroneDestroyed();
+      }
+
+      // Hit flash (a SHORTER, separate window from the pure core's own
+      // `stunned` overlay) drives the eye material directly — read here
+      // exactly as the legacy code did, since this is presentation-only.
+      const flashing = now < userData.hitFlashUntil;
+      if (eyeRef.current) (eyeRef.current.material as THREE.MeshStandardMaterial).emissiveIntensity = flashing ? 3.2 : decision.state === 'attacking' ? 2.6 : 1.4;
+
+      if (decision.state === 'destroyed') {
+        if (decision.completeDestroyedPresentation) {
+          group.visible = false;
+          return true;
+        }
+        group.scale.setScalar(decision.destroyProgress);
+        group.rotation.y += simulationDeltaS * 10;
+        return false;
+      }
+
+      group.scale.setScalar(decision.state === 'spawning' ? decision.spawnProgress : 1);
+
+      // --- Movement — formulas byte-identical to the legacy inline code,
+      // selected by the decided mode instead of a re-checked state string.
+      desired.set(0, 0, 0);
+      if (decision.movementMode === 'search') {
+        desired.copy(homeRef.current).sub(positionRef.current);
         if (desired.length() > spawn.patrolRadius) desired.normalize().multiplyScalar(DRONE.STRAFE_SPEED);
-        else desired.set(Math.sin(state.phase) * 0.4, 0, Math.cos(state.phase * 0.7) * 0.4);
-      } else if (state.state === 'engaging' || state.state === 'attacking') {
-        // Hold the preferred range band; strafe sideways.
+        else desired.set(Math.sin(phaseRef.current) * 0.4, 0, Math.cos(phaseRef.current * 0.7) * 0.4);
+      } else if (decision.movementMode === 'engage' || decision.movementMode === 'attack') {
         if (distance < DRONE.RANGE_MIN) desired.copy(toPlayer).multiplyScalar(-config.retreatSpeed);
         else if (distance > DRONE.RANGE_MAX) desired.copy(toPlayer).multiplyScalar(config.approachSpeed);
-        if (now > state.strafeFlipAt) {
-          state.strafeDir *= -1;
-          state.strafeFlipAt = now + 1400 + Math.random() * 1600;
-        }
-        strafe.crossVectors(up, toPlayer).multiplyScalar(state.strafeDir * config.strafeSpeed);
+        strafe.crossVectors(up, toPlayer).multiplyScalar(decision.runtime.strafeDirection * config.strafeSpeed);
         desired.add(strafe);
       }
+      // 'spawn-hold' / 'stunned-hold': desired stays (0,0,0), matching the
+      // legacy code's own empty branches exactly.
 
-      state.position.addScaledVector(desired, simulationDeltaS);
-      // Hover bob on top of planar movement.
-      const bob = Math.sin(state.phase) * DRONE.HOVER_AMP;
-      group.position.set(state.position.x, state.position.y + bob, state.position.z);
+      positionRef.current.addScaledVector(desired, simulationDeltaS);
+      const bob = Math.sin(phaseRef.current) * DRONE.HOVER_AMP;
+      group.position.set(positionRef.current.x, positionRef.current.y + bob, positionRef.current.z);
 
-      // Face the player when engaged, else drift-face travel direction.
-      if (state.state === 'engaging' || state.state === 'attacking') {
-        group.lookAt(playerPos.x, playerPos.y, playerPos.z);
-      }
+      if (decision.facePlayer) group.lookAt(playerPos.x, playerPos.y, playerPos.z);
 
-      // --- Attack ---
-      if ((state.state === 'engaging' || state.state === 'attacking') && !stunned && canSeePlayer) {
-        if (state.state === 'engaging' && now - state.lastFireAt >= config.fireIntervalMs) {
-          state.state = 'attacking';
-          // Windup (the readable pre-shot telegraph) is NOT difficulty-scaled — every shot stays equally dodgeable regardless of preset.
-          state.windupUntil = now + DRONE.WINDUP_MS;
-        }
-        if (state.state === 'attacking' && now >= state.windupUntil) {
-          origin.copy(state.position).addScaledVector(toPlayer, 0.5);
-          // Aim with modest spread toward the player's chest.
-          aim.copy(playerPos).sub(origin).normalize();
-          const spread = (config.aimSpreadDeg * Math.PI) / 180;
-          aim.x += (Math.random() - 0.5) * spread;
-          aim.y += (Math.random() - 0.5) * spread;
-          aim.z += (Math.random() - 0.5) * spread;
-          bolts.spawn(origin, aim, config.boltSpeed, config.boltDamage);
-          state.lastFireAt = now;
-          state.state = 'engaging';
-        }
-      } else if (state.state === 'attacking' && (stunned || !canSeePlayer)) {
-        state.state = 'engaging'; // abort wind-up if LOS lost or staggered
+      if (decision.fireExactlyOnce && decision.aimSpread) {
+        origin.copy(positionRef.current).addScaledVector(toPlayer, 0.5);
+        aim.copy(playerPos).sub(origin).normalize();
+        aim.x += decision.aimSpread.x;
+        aim.y += decision.aimSpread.y;
+        aim.z += decision.aimSpread.z;
+        bolts.spawn(origin, aim, config.boltSpeed, config.boltDamage);
       }
 
       return false;
     },
     reset: resetInternal,
-    getState: () => ai.current.state,
+    getState: () => runtimeRef.current.state,
   }));
 
   // Initial scale-in start.
