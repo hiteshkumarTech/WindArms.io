@@ -6,6 +6,7 @@ import { resolveDroneConfig, resolveDroneSpawns } from '@/lib/v2/play/difficulty
 import { createStepAccumulator, stepFixed } from '@/lib/v2/play/fixedStep';
 import { useV2MatchStore } from '@/lib/v2/play/matchStore';
 import type { DroneTargetSnapshot } from '@/lib/v2/ai/droneAiTypes';
+import type { DroneSpatialSnapshot } from '@/lib/v2/ai/droneAiMovementIntent';
 import DroneEnemy, { type DroneHandle } from './DroneEnemy';
 import DroneBoltPool, { type DroneBoltHandle } from './DroneBoltPool';
 
@@ -40,6 +41,26 @@ import DroneBoltPool, { type DroneBoltHandle } from './DroneBoltPool';
  * 'active'` (this function returns before ever reaching the drone-update
  * loop otherwise) — see `droneAiTypes.ts`'s own doc comment on
  * `DroneTargetSnapshot`.
+ *
+ * MILESTONE 9D — the fixed-step substep callback below is now TWO PASSES,
+ * not one: PASS 1 calls every mounted drone's `writeSpatialSnapshot()` into
+ * one shared, preallocated `DroneSpatialSnapshot[]` (reused every substep,
+ * resized only when `spawns` itself changes — i.e. on a difficulty switch —
+ * never per-frame); PASS 2 then calls every drone's `update()`, passing that
+ * SAME just-captured array as its `neighbours` input. Both passes re-run
+ * every fixed substep (not once per rendered frame) so a slow-frame catch-up
+ * burst still gives each substep its own correct pre-movement snapshot,
+ * never a stale one from an earlier substep. This is what makes local
+ * separation (`droneAiMovementIntent.ts`) order-independent: without it, a
+ * drone earlier in `droneRefs.current` would always see the LATER drones'
+ * stale pre-tick positions while later drones would see the earlier ones'
+ * already-moved positions — a systematic bias this two-pass split removes
+ * entirely. `spatialSnapshots` is rebuilt (via `useMemo` keyed on `spawns`)
+ * exactly when the mounted `<DroneEnemy>` roster itself changes, so its
+ * length always matches `droneRefs.current`'s current length 1:1 by index —
+ * no stale entries are possible after a difficulty switch, restart, death,
+ * or route remount (a remount discards this whole component instance and
+ * its refs/memos together).
  */
 export default function DroneSquad() {
   const camera = useThree((state) => state.camera);
@@ -57,6 +78,14 @@ export default function DroneSquad() {
   // the locked-in difficulty's stats before any damage can be dealt.
   const selectedDifficulty = useV2MatchStore((state) => state.selectedDifficulty);
   const spawns = useMemo(() => resolveDroneSpawns(selectedDifficulty), [selectedDifficulty]);
+
+  // Milestone 9D — one shared, reused spatial-snapshot collection sized 1:1
+  // to `spawns`, rebuilt only when `spawns` itself changes (never per
+  // frame/substep) — see this component's own doc comment above.
+  const spatialSnapshots = useMemo<DroneSpatialSnapshot[]>(
+    () => spawns.map((spawn) => ({ id: spawn.id, position: { x: 0, y: 0, z: 0 }, state: 'spawning', participatesInSeparation: false })),
+    [spawns],
+  );
 
   // Match lifecycle (session init → countdown) is owned by V2PlayView +
   // MatchDirector, not here — this component only spawns and drives drones.
@@ -90,8 +119,22 @@ export default function DroneSquad() {
     // consumer uses, so drone AI, bolts and the HUD can never disagree.
     const droneConfig = resolveDroneConfig(match.selectedDifficulty);
     stepFixed(stepAcc.current, rawDelta, (simulationDeltaS) => {
+      // Milestone 9D — PASS 1: capture every mounted drone's pre-movement
+      // spatial snapshot BEFORE any drone in PASS 2 moves this substep (see
+      // this component's own doc comment above for why this must re-run
+      // every substep, not once per rendered frame). Bounded by
+      // `spatialSnapshots.length` (not `droneRefs.current.length`) — a
+      // defensive guard against the narrow React commit window where a
+      // difficulty-driven re-render's ref callbacks and this `useMemo` can
+      // transiently disagree in length; out-of-range drones simply skip
+      // PASS 1 for this one substep rather than indexing past the array.
+      const snapshotCount = Math.min(droneRefs.current.length, spatialSnapshots.length);
+      for (let i = 0; i < snapshotCount; i++) {
+        droneRefs.current[i]?.writeSpatialSnapshot(spatialSnapshots[i]);
+      }
+      // PASS 2 — every drone decides/moves against that SAME snapshot set.
       for (const drone of droneRefs.current) {
-        drone?.update(targetSnapshot, simulationDeltaS, now, bolts, droneConfig);
+        drone?.update(targetSnapshot, simulationDeltaS, now, bolts, droneConfig, spatialSnapshots);
       }
     });
   });

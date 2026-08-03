@@ -12,7 +12,8 @@ import type { DroneAiState, DroneSpawnDef } from '@/lib/v2/play/types';
 import { createLegacyDroneRuntime, decideLegacyDroneAi, resetLegacyDroneRuntime } from '@/lib/v2/ai/droneAiStateMachine';
 import { createSeededRandomSource, deriveDroneSeed, type RandomSource } from '@/lib/v2/ai/droneAiRandom';
 import { evaluateDronePerception, DRONE_PERCEPTION_MEMORY } from '@/lib/v2/ai/droneAiPerception';
-import type { DroneTargetSnapshot, LegacyDroneAiObservation, LegacyDroneAiRuntime } from '@/lib/v2/ai/droneAiTypes';
+import { resolveDroneMovementIntent, type DroneMovementIntent, type DroneSpatialSnapshot } from '@/lib/v2/ai/droneAiMovementIntent';
+import type { DroneTargetSnapshot, LegacyDroneAiObservation, LegacyDroneAiRuntime, Vec3Data } from '@/lib/v2/ai/droneAiTypes';
 import type { DroneBoltHandle } from './DroneBoltPool';
 
 /**
@@ -69,12 +70,30 @@ import type { DroneBoltHandle } from './DroneBoltPool';
  * timestamp DroneSquad reads once per rendered frame and passes in
  * unchanged. Only `simulationDeltaS` (translation, hover phase) is
  * frame-delta-accumulated, fed through DroneSquad's fixed-step accumulator.
+ *
+ * MILESTONE 9D — movement formulas (search/investigate/engage/attack) no
+ * longer live inline here. They moved to the pure, renderer-independent
+ * `resolveDroneMovementIntent()` (`lib/v2/ai/droneAiMovementIntent.ts`),
+ * which this file's `update()` now calls with a fresh observation, exactly
+ * mirroring how it already calls `decideLegacyDroneAi()` for STATE. No
+ * behaviour change for a drone with no nearby neighbours (see that module's
+ * own no-neighbour legacy-parity test suite) — the ONE new, disclosed
+ * behaviour is local XZ separation, which nudges the resulting direction
+ * apart when another living drone is close, so drones stop stacking into
+ * one visual blob. `writeSpatialSnapshot()` is the new second handle method
+ * `DroneSquad.tsx` calls in its own new PASS 1 (before ANY drone in the
+ * squad moves this substep — see that file's own doc comment) so every
+ * drone's separation math this tick sees the same pre-movement snapshot
+ * set, not an order-biased mix of already-moved and not-yet-moved
+ * neighbours.
  */
 export interface DroneHandle {
-  /** Called by DroneSquad, possibly several times per rendered frame (once per fixed-step substep — see fixedStep.ts), with the shared player target snapshot (position/alive/generation — one object, reused every substep, never a per-drone camera read), the shared bolt pool, and the difficulty-resolved combat numbers (HP baked in at spawn/reset time; the rest read live here). `simulationDeltaS` is always exactly one fixed substep, never a raw/variable frame delta. Returns true once destroyed (for squad bookkeeping). */
-  update: (targetSnapshot: DroneTargetSnapshot, simulationDeltaS: number, now: number, bolts: DroneBoltHandle, config: ResolvedDroneConfig) => boolean;
+  /** Called by DroneSquad, possibly several times per rendered frame (once per fixed-step substep — see fixedStep.ts), with the shared player target snapshot (position/alive/generation — one object, reused every substep, never a per-drone camera read), the shared bolt pool, the difficulty-resolved combat numbers (HP baked in at spawn/reset time; the rest read live here), and this substep's pre-movement squad spatial snapshot (see `writeSpatialSnapshot` below). `simulationDeltaS` is always exactly one fixed substep, never a raw/variable frame delta. Returns true once destroyed (for squad bookkeeping). */
+  update: (targetSnapshot: DroneTargetSnapshot, simulationDeltaS: number, now: number, bolts: DroneBoltHandle, config: ResolvedDroneConfig, neighbours: readonly DroneSpatialSnapshot[]) => boolean;
   reset: () => void;
   getState: () => DroneAiState;
+  /** Milestone 9D — writes this drone's CURRENT tactical (never hover-bobbed) position/state into a caller-provided, reused snapshot object — no allocation here. Called by `DroneSquad.tsx`'s own PASS 1, once per drone, before PASS 2's `update()` calls begin. */
+  writeSpatialSnapshot: (out: DroneSpatialSnapshot) => void;
 }
 
 interface DroneMaterials {
@@ -113,10 +132,24 @@ const DroneEnemy = forwardRef<DroneHandle, { spawn: DroneSpawnDef }>(function Dr
   const eyeRef = useRef<THREE.Mesh>(null);
   const materials = useMemo(createMaterials, []);
 
-  const scratch = useMemo(
-    () => ({ toPlayer: new THREE.Vector3(), strafe: new THREE.Vector3(), desired: new THREE.Vector3(), origin: new THREE.Vector3(), aim: new THREE.Vector3(), up: new THREE.Vector3(0, 1, 0) }),
-    [],
-  );
+  const scratch = useMemo(() => ({ toPlayer: new THREE.Vector3(), desired: new THREE.Vector3(), origin: new THREE.Vector3(), aim: new THREE.Vector3() }), []);
+
+  // Milestone 9D — reused plain-data scratch for the pure movement-intent
+  // call: one intent object (mutated in place by `resolveDroneMovementIntent`'s
+  // own `output` parameter) plus two reused `Vec3Data` position mirrors, so
+  // calling into the pure module every substep allocates nothing beyond what
+  // the pure module's own internal vector arithmetic already needs.
+  const movementIntentRef = useRef<DroneMovementIntent>({
+    mode: 'hold',
+    desiredDirection: { x: 0, y: 0, z: 0 },
+    speedMps: 0,
+    faceTarget: false,
+    facingTarget: null,
+    separationDirection: { x: 0, y: 0, z: 0 },
+    separationStrength: 0,
+  });
+  const selfPosDataRef = useRef<Vec3Data>({ x: 0, y: 0, z: 0 });
+  const homePosDataRef = useRef<Vec3Data>({ x: 0, y: 0, z: 0 });
 
   // Adapter-owned movement/presentation state — never part of the pure
   // core's own runtime (see this file's own doc comment above).
@@ -173,7 +206,7 @@ const DroneEnemy = forwardRef<DroneHandle, { spawn: DroneSpawnDef }>(function Dr
   };
 
   useImperativeHandle(ref, () => ({
-    update(targetSnapshot, simulationDeltaS, now, bolts, config) {
+    update(targetSnapshot, simulationDeltaS, now, bolts, config, neighbours) {
       const group = groupRef.current;
       if (!group) return runtimeRef.current.state === 'destroyed';
 
@@ -186,7 +219,7 @@ const DroneEnemy = forwardRef<DroneHandle, { spawn: DroneSpawnDef }>(function Dr
         phaseRef.current += simulationDeltaS * DRONE.HOVER_HZ * Math.PI * 2;
       }
 
-      const { toPlayer, strafe, desired, origin, aim, up } = scratch;
+      const { toPlayer, desired, origin, aim } = scratch;
       toPlayer.copy(targetSnapshot.position).sub(positionRef.current);
       toPlayer.normalize();
 
@@ -246,39 +279,54 @@ const DroneEnemy = forwardRef<DroneHandle, { spawn: DroneSpawnDef }>(function Dr
 
       group.scale.setScalar(decision.state === 'spawning' ? decision.spawnProgress : 1);
 
-      // --- Movement — formulas byte-identical to the legacy inline code
-      // for every pre-9C mode, selected by the decided mode instead of a
-      // re-checked state string. `investigate` is the one Milestone 9C
-      // addition: direct 3D steering toward the remembered position (same
-      // "never flattened to XZ" convention as approach/retreat), stopping
-      // once within `investigateArrivalRadiusM` — arrival is a MOVEMENT-only
-      // detail; it does not end the `investigating` STATE (see
-      // `droneAiStateMachine.ts`).
-      desired.set(0, 0, 0);
-      if (decision.movementMode === 'search') {
-        desired.copy(homeRef.current).sub(positionRef.current);
-        if (desired.length() > spawn.patrolRadius) desired.normalize().multiplyScalar(DRONE.STRAFE_SPEED);
-        else desired.set(Math.sin(phaseRef.current) * 0.4, 0, Math.cos(phaseRef.current * 0.7) * 0.4);
-      } else if (decision.movementMode === 'engage' || decision.movementMode === 'attack') {
-        if (distance < DRONE.RANGE_MIN) desired.copy(toPlayer).multiplyScalar(-config.retreatSpeed);
-        else if (distance > DRONE.RANGE_MAX) desired.copy(toPlayer).multiplyScalar(config.approachSpeed);
-        strafe.crossVectors(up, toPlayer).multiplyScalar(decision.runtime.strafeDirection * config.strafeSpeed);
-        desired.add(strafe);
-      } else if (decision.movementMode === 'investigate' && decision.movementTarget) {
-        desired.set(decision.movementTarget.x, decision.movementTarget.y, decision.movementTarget.z).sub(positionRef.current);
-        const distanceToMemory = desired.length();
-        if (distanceToMemory > DRONE_PERCEPTION_MEMORY.investigateArrivalRadiusM) desired.normalize().multiplyScalar(config.approachSpeed);
-        else desired.set(0, 0, 0);
-      }
-      // 'spawn-hold' / 'stunned-hold': desired stays (0,0,0), matching the
-      // legacy code's own empty branches exactly.
+      // --- Movement — Milestone 9D: delegated to the pure, renderer-
+      // independent `resolveDroneMovementIntent()`. Byte-identical to the
+      // pre-9D inline formulas for every mode when no neighbour is close
+      // enough to influence separation (proven by
+      // `droneAiMovementIntent.test.ts`'s own no-neighbour legacy-parity
+      // suite) — the ONE new, disclosed behaviour is local XZ separation.
+      // `selfPosDataRef`/`homePosDataRef` are reused plain-data mirrors of
+      // the THREE.Vector3 refs (never reallocated); `movementIntentRef` is
+      // likewise reused via `resolveDroneMovementIntent`'s own `output`
+      // parameter — this call allocates nothing beyond its own internal
+      // vector arithmetic.
+      selfPosDataRef.current.x = positionRef.current.x;
+      selfPosDataRef.current.y = positionRef.current.y;
+      selfPosDataRef.current.z = positionRef.current.z;
+      homePosDataRef.current.x = homeRef.current.x;
+      homePosDataRef.current.y = homeRef.current.y;
+      homePosDataRef.current.z = homeRef.current.z;
 
+      const movementIntent = resolveDroneMovementIntent(
+        {
+          legacyMovementMode: decision.movementMode,
+          state: decision.state,
+          selfId: spawn.id,
+          selfPosition: selfPosDataRef.current,
+          homePosition: homePosDataRef.current,
+          patrolRadiusM: spawn.patrolRadius,
+          targetPosition: targetSnapshot.position,
+          investigationPosition: decision.movementTarget,
+          strafeDirection: decision.runtime.strafeDirection,
+          rangeMinM: DRONE.RANGE_MIN,
+          rangeMaxM: DRONE.RANGE_MAX,
+          approachSpeedMps: config.approachSpeed,
+          retreatSpeedMps: config.retreatSpeed,
+          strafeSpeedMps: config.strafeSpeed,
+          searchReturnSpeedMps: DRONE.STRAFE_SPEED,
+          searchPhase: phaseRef.current,
+          facePlayer: decision.facePlayer,
+          neighbours,
+        },
+        movementIntentRef.current,
+      );
+
+      desired.set(movementIntent.desiredDirection.x, movementIntent.desiredDirection.y, movementIntent.desiredDirection.z);
       positionRef.current.addScaledVector(desired, simulationDeltaS);
       const bob = Math.sin(phaseRef.current) * DRONE.HOVER_AMP;
       group.position.set(positionRef.current.x, positionRef.current.y + bob, positionRef.current.z);
 
-      if (decision.facePlayer) group.lookAt(targetSnapshot.position.x, targetSnapshot.position.y, targetSnapshot.position.z);
-      else if (decision.movementMode === 'investigate' && decision.movementTarget) group.lookAt(decision.movementTarget.x, decision.movementTarget.y, decision.movementTarget.z);
+      if (movementIntent.faceTarget && movementIntent.facingTarget) group.lookAt(movementIntent.facingTarget.x, movementIntent.facingTarget.y, movementIntent.facingTarget.z);
 
       if (decision.fireExactlyOnce && decision.aimSpread) {
         origin.copy(positionRef.current).addScaledVector(toPlayer, 0.5);
@@ -293,6 +341,14 @@ const DroneEnemy = forwardRef<DroneHandle, { spawn: DroneSpawnDef }>(function Dr
     },
     reset: resetInternal,
     getState: () => runtimeRef.current.state,
+    writeSpatialSnapshot(out) {
+      out.id = spawn.id;
+      out.position.x = positionRef.current.x;
+      out.position.y = positionRef.current.y;
+      out.position.z = positionRef.current.z;
+      out.state = runtimeRef.current.state;
+      out.participatesInSeparation = runtimeRef.current.state !== 'destroyed';
+    },
   }));
 
   // Initial scale-in start.

@@ -1497,3 +1497,75 @@ Rejected: continuing to fight cover-geometry precision (e.g. re-deriving the pai
 Chosen: distance-based visible/invisible toggling for all live scenarios (A/B/C/D/E), documented here and in the Step 9C changelog entry; the deterministic `droneAiPerception.test.ts` suite remains the authoritative, exact proof of cover-geometry correctness.
 
 ---
+
+**2026-08-03 — Step 9D: the 9C overlap baseline uses a moving (orbiting) player, not a stationary one**
+
+Decision: the official 9C-vs-9D quantitative overlap comparison (Section 19 of the phase brief) uses a player orbiting a 3m radius on a 6s period, not a player standing still.
+
+Reason: an initial stationary-player capture (player at arena center, 8 drones converging to engage, sampled over 160+ real seconds / ~19 simulated seconds) showed essentially zero visual overlap under 9C's UNMODIFIED movement — drones naturally spread across the engagement ring at different compass angles from their spread-out spawn points and stayed there. That result is real, but it would have made the quantitative gate vacuous (0%→0%, "material reduction" trivially true but meaningless) and doesn't match how the problem was actually described (drones reactively repositioning as the player moves, several converging toward the same new angle at once). A second capture with the player continuously orbiting DID reproduce genuine, if modest, transient overlap under unmodified 9C movement (min XZ 1.06m, 0.24% of samples below the measured visual-overlap threshold, longest sustained overlap 473ms, a max simultaneous cluster of 2) — a real, meaningful baseline to improve against.
+
+Rejected: keeping the stationary-player capture as the official baseline (would have produced a meaningless 0%→0% comparison); inventing an artificially adversarial scenario (e.g. teleporting the player instantly between extremes) that wouldn't correspond to anything a real player does.
+
+Chosen: the moving-player methodology (3m orbit radius, 6s period, player at y=2 near arena center) as the one official baseline/candidate comparison, run with identical parameters (drone count, difficulty, viewport, DPR, sample cadence, capture duration) for both 9C and 9D, documented in `docs/changelog.md`'s Step 9D entry.
+
+---
+
+**2026-08-03 — Step 9D: `resolveDroneMovementIntent()` consumes the already-decided `LegacyDroneMovementMode`, not raw `state`/`stunned`**
+
+Decision: the new pure movement module's input type carries `legacyMovementMode: LegacyDroneMovementMode` (the actual value `decideLegacyDroneAi()` already computed this tick) as the field that drives all branching, rather than re-deriving a movement mode from `state`+`stunned` booleans independently inside the new module.
+
+Reason: the phase brief's own suggested `DroneMovementInput` shape lists `state`/`stunned` as separate fields, which could be read as "re-derive the priority chain here" — but `droneAiStateMachine.ts` already computes exactly this priority chain (stunned > spawning > searching > investigating > engage/attack) as part of `decideLegacyDroneAi()`'s own output. A second, independently-written implementation of that same priority logic inside the new module would be a real duplication risk: the two chains could silently drift apart under a future edit to either file, with nothing forcing them to agree. `state` is still accepted as an informational passthrough field (for caller/test readability), but branching runs on `legacyMovementMode` alone.
+
+Rejected: re-deriving movement mode from `state`+`stunned` inside the new module, matching the brief's suggested shape literally — the brief itself explicitly permits deviating ("the exact representation may differ based on current architecture," "adapt to the real code"), and a second priority-chain implementation is exactly the kind of duplicate-state-union risk the project's own established conventions (see the 9C entries above) consistently reject.
+
+Chosen: `legacyMovementMode` as the sole branching input, `state` kept only as documentation-oriented passthrough — verified by the "movement-mode selection" test block asserting the mapping from every `LegacyDroneMovementMode` value to the new module's own `DroneMovementMode`.
+
+---
+
+**2026-08-03 — Step 9D: separation's reference speed for scaling is the drone's own `strafeSpeedMps`, not the base vector's own magnitude**
+
+Decision: when blending the separation correction into the final direction, its magnitude is scaled by `effectiveStrength * input.strafeSpeedMps` — a fixed, always-nonzero existing speed constant — rather than by the magnitude of the base tactical vector being blended into (`||base||`).
+
+Reason: `||base||` was the first design considered (it has an appealing "always proportionate to whatever the drone was already doing" property), but it fails exactly where separation is needed most: an investigating drone that has ARRIVED at its arrival radius, or a searching drone in the middle of its ambient wander formula, both legitimately produce a near-zero or genuinely-tiny base vector — using that magnitude as separation's own reference would silently disable (or nearly disable) separation exactly when two idle/arrived/wandering drones are most likely to be sitting on top of each other (the investigating-cluster and search-cluster cases the phase brief explicitly calls out in its own Sections 4 and 12). `strafeSpeedMps` is always a real, nonzero, existing (never a new invented) speed value, giving separation a consistent, always-meaningful "how fast should a drone sidestep a neighbour" reference regardless of what its base movement is otherwise doing.
+
+Rejected: `||base||` as the separation reference speed — elegant in the common case, broken in exactly the idle/arrived cases separation exists to fix. Rejected: a brand-new separation-only speed constant — would have been the "new speed tier" the brief's own Section 11 explicitly asks to avoid.
+
+Chosen: `strafeSpeedMps` (an existing, difficulty-scaled, always-nonzero constant already threaded through every drone) as the fixed reference, documented directly in `droneAiMovementIntent.ts`'s own doc comment and exercised by the "search remains home-relative" / "investigate continues approaching memory" dominance tests (both explicitly constructed with a nearby neighbour to prove separation still visibly acts even when the base vector is small).
+
+---
+
+**2026-08-03 — Step 9D: retreat/advance dominance uses BOTH a lower blend-strength cap AND a hard radial-projection clamp, not just one**
+
+Decision: when a drone is retreating or advancing, separation's effective blend strength is first reduced to 50% of its normal cap (`OUT_OF_BAND_BLEND_FACTOR`), AND, after blending, the final vector's radial component (projected onto the drone-to-player axis) is hard-clamped so it can never net-reverse the retreat/advance direction — both mechanisms active together, not just one.
+
+Reason: the phase brief's own Section 10 offered these as alternatives ("either a lower out-of-band cap OR a minimum dot-product constraint"), either of which would independently satisfy the stated requirement under NORMAL conditions (a single nearby neighbour). But the lower cap alone is a probabilistic mitigation, not a guarantee — a sufficiently adversarial multi-neighbour configuration (several drones simultaneously pushing the same drone toward the player) could in principle still produce a net-positive radial component even at a reduced blend strength, depending on exact neighbour geometry. The hard clamp alone would work as an absolute guarantee, but combining it with the lower cap keeps the TYPICAL (non-adversarial) case smoother/less abrupt — the clamp only actually engages in the rare case the reduced-strength blend still would have crossed zero, rather than being the sole mechanism doing all the work on every single tick.
+
+Rejected: implementing only ONE of the two mechanisms — both satisfy the brief's letter, but relying solely on the probabilistic lower cap leaves a theoretical (if narrow) multi-neighbour edge case unguarded, and relying solely on the hard clamp produces a slightly more abrupt correction on every tick where separation is active at all, rather than only when it would otherwise have actually reversed the direction.
+
+Chosen: both mechanisms together, verified by dedicated dominance tests using an ADVERSARIALLY-placed single neighbour (positioned specifically to try to flip the net radial direction) and confirmed live in the browser (Scenario D, both retreat and advance) with an even more direct adjacent-neighbour placement than the unit tests use.
+
+---
+
+**2026-08-03 — Step 9D.1: three independent zero-inflation blend designs were measured live and rejected before reaching a bounded, close-proximity COLLISION-RECOVERY allowance**
+
+Decision: the final Step 9D.1 blend combines a directional-lerp rotation (unbounded by `separation.strength`'s own ceiling — see the next entry) with a small, proximity-scaled CLOSE-PROXIMITY COLLISION-RECOVERY magnitude allowance (`EMERGENCY_SPEED_BOOST_MAX`), rather than staying strictly at `final.length <= base.length` at all times. This is deliberately framed and documented as collision recovery, not a movement-speed buff: it governs only how fast a drone may separate from a neighbour it is already (or nearly) touching, is exactly 0 for any drone with no neighbour inside `neighbourRadiusM`, and never applies to ordinary combat positioning at normal engagement distances.
+
+Reason: the human reviewer's own closure brief required "no speed inflation... Required: 0 apart from floating-point tolerance," with a suggested implementation (add separation, then rescale down to `||base||` if it overshoots). That exact design was implemented first and unit-tested cleanly (60→76 tests, all passing, including a 200-sample randomized sweep proving zero measured increase) — but a REAL, extended (200s, 8-drone, moving-player) capture, the same methodology already used for the 9C-vs-9D quantitative gate, showed it was measurably WORSE than doing nothing: 14.1% of samples below the overlap threshold and 12.1s of continuous sustained overlap, against 9C's own unmodified 0.24%/473ms and 9D's own (rejected) uncapped result of 0%/0ms. Two further zero-inflation redesigns (directional interpolation instead of additive-then-clamp; then decoupling the interpolation factor from `separation.strength`'s own 0.5 ceiling so direction could fully commit under genuine urgency) were each ALSO measured live and each got WORSE, not better (22.6s/18.5%, then 13.2s/21.6%). The consistent geometric cause, confirmed by inspecting the actual closest-pair samples at the moment of worst overlap in each run: two drones strafing in OPPOSITE rotational senses around a continuously-moving player cross paths at a closing speed no same-speed redirection can out-run, regardless of how decisively the direction rotates — a kinematic limit, not a insufficiently-clever direction formula. The phase brief's own acceptance gate anticipated exactly this possibility in its closing paragraph: "The brief allowed a bounded emergency multiplier only if genuinely necessary and measured; it did not automatically approve permanent additive speed during ordinary separation" — three independent, real, live-measured failures of the strict interpretation constitute exactly that "genuinely necessary and measured" bar.
+
+Rejected: persisting with a fourth or fifth strictly-zero-inflation redesign on the theory that the RIGHT direction-only formula must exist somewhere — after three structurally different attempts (additive-clamp, direction-lerp-capped, direction-lerp-decoupled) all failed the same way for the same underlying kinematic reason, continuing to search that same design space was judged very unlikely to succeed and expensive to keep re-measuring (each live verification costs ~200 real seconds). Rejected: reverting to the ORIGINAL (pre-9D.1, also-rejected) uncapped additive design wholesale — that design's "permanent additive speed during ordinary separation" is exactly what the closure brief singled out as NOT automatically approved, even though it happened to work.
+
+Chosen: a narrow, bounded, proximity-scaled emergency allowance (zero at ordinary range, capped even at maximum urgency) layered on top of the direction-first design, with the exact final report disclosing all three failed attempts and their measurements rather than presenting only the successful configuration — see the changelog's Step 9D.1 entry for the full measured trace.
+
+---
+
+**2026-08-03 — Step 9D.1: the emergency speed-boost ceiling is scaled by `urgency` (separation.strength renormalized against its own known ceiling), not by `separation.strength` directly**
+
+Decision: both the directional-lerp rotation factor and the emergency magnitude ceiling use `urgency = min(1, separation.strength / DRONE_LOCAL_SEPARATION.maxBlendStrength)` — a value that reaches a genuine 1.0 exactly at `hardSeparationRadiusM` (already visually touching) — rather than using `separation.strength` (which never exceeds `maxBlendStrength`, 0.5 by construction) as that scaling factor directly.
+
+Reason: `separation.strength`'s own 0.5 ceiling exists to bound the RAW separation-direction signal `computeLocalSeparation()` returns (a general-purpose value also consumed for other purposes) — it was never meant to also cap how strongly the FINAL blend can commit to escaping. Using it directly as the blend/urgency factor was the second of the three failed 9D.1 attempts: even when a neighbour was already touching (the most urgent case there is), direction could only ever rotate halfway toward pure separation and magnitude could only ever reach a modest boost, because the raw signal itself never climbs above 0.5. Renormalizing against the SAME ceiling `computeLocalSeparation()` already uses internally to reach 1.0 (weight=1.0) inside `hardSeparationRadiusM` lets both the direction rotation and the magnitude allowance reach their own full, separately-defined ceilings (100% direction commitment, `1+EMERGENCY_SPEED_BOOST_MAX`× magnitude) exactly when genuinely warranted, without changing `separation.strength`'s own meaning or its other consumers.
+
+Rejected: raising `maxBlendStrength` itself to 1.0 so `separation.strength` could reach a genuine ceiling directly — would have changed the meaning and range of an already-established, tested field (also read by `DroneMovementIntent.separationStrength`, exposed for introspection/telemetry) for a concern (blend-factor renormalization) that only concerns the movement blend internally.
+
+Chosen: a separate, locally-scoped `urgency` value computed once per tick from `separation.strength`'s existing, unchanged range, used only inside the blend calculation — `separation.strength` itself keeps its original 0..0.5 meaning everywhere else.
+
+---
