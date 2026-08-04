@@ -31,6 +31,20 @@ import { fileURLToPath } from 'node:url';
  * (DroneSquad must remain the sole owner even with the new two-pass
  * snapshot update), and `DroneBoltPool.tsx` must remain untouched by the new
  * movement-intent module specifically.
+ *
+ * Milestone 9E extends this file with `droneAiDifficulty.ts` and
+ * `droneAiTelegraph.ts` (both subject to every pure-core guard below —
+ * `droneAiDifficulty.ts` deliberately imports `resolveDroneConfig`/
+ * `TrialDifficulty` from `lib/v2/play/difficulty.ts` and `DRONE` from
+ * `lib/v2/play/enemyConfig.ts`, neither of which pulls in anything
+ * forbidden), plus new guards specific to THIS phase's own scope fence: no
+ * burst/multi-shot/shooter-limit concept anywhere in the AI package (Rule
+ * 3 — still exactly one `DroneBoltPool.spawn()` call per completed attack),
+ * `droneAiTelegraph.ts` never imports/couples to `droneAiStateMachine.ts`
+ * (Rule 4 — presentation never drives combat truth, enforced structurally:
+ * the telegraph module only ever depends on `droneAiTypes.ts`'s plain
+ * types), and `DroneBoltPool.tsx`/`VortexFireSystem.tsx` remain untouched by
+ * this phase's own new modules specifically.
  */
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
@@ -42,6 +56,8 @@ const PURE_CORE_FILES = [
   'src/lib/v2/ai/droneAiStateMachine.ts',
   'src/lib/v2/ai/droneAiPerception.ts',
   'src/lib/v2/ai/droneAiMovementIntent.ts',
+  'src/lib/v2/ai/droneAiDifficulty.ts',
+  'src/lib/v2/ai/droneAiTelegraph.ts',
 ];
 
 const FORBIDDEN_IMPORTS: Record<string, RegExp> = {
@@ -185,6 +201,80 @@ describe('droneAiImportGuards — Milestone 9D scope fence (no boids/combat-sect
   });
 });
 
+describe('droneAiImportGuards — Milestone 9E scope fence (no burst/shot-count fields, telegraph never drives combat truth)', () => {
+  it('no file under src/lib/v2/ai/ has a name suggesting burst fire, multi-shot, or a shooter-limit/reservation system', () => {
+    const dir = path.join(repoRoot, 'src/lib/v2/ai');
+    const suspicious = fs.readdirSync(dir).filter((name) => /burst|multishot|shooterlimit|sectorreservation/i.test(name));
+    assert.deepStrictEqual(suspicious, [], `unexpected out-of-scope file(s) found in lib/v2/ai/: ${suspicious.join(', ')} — 9E's own brief explicitly forbids adding unused burst/shot-count fields`);
+  });
+
+  it('Rule 3 — neither droneAiStateMachine.ts, droneAiTypes.ts, nor droneAiDifficulty.ts introduces a burst/multi-shot/shot-count concept', () => {
+    const forbidden = ['burstSize', 'burstGap', 'shotsPerAttack', 'shotCount', 'multiShot'];
+    for (const file of ['src/lib/v2/ai/droneAiStateMachine.ts', 'src/lib/v2/ai/droneAiTypes.ts', 'src/lib/v2/ai/droneAiDifficulty.ts']) {
+      const src = read(file);
+      for (const term of forbidden) {
+        assert.ok(!src.includes(term), `${file} must not introduce "${term}" — Rule 3 keeps the single-shot attack model unchanged this phase`);
+      }
+    }
+  });
+
+  it('DroneEnemy.tsx still makes exactly one DroneBoltPool.spawn() call per completed attack', () => {
+    const src = read('src/components/three/play/DroneEnemy.tsx');
+    const matches = src.match(/bolts\.spawn\(/g) ?? [];
+    assert.strictEqual(matches.length, 1, 'DroneEnemy.tsx must contain exactly one bolts.spawn( call site — the single-shot attack model is unchanged by 9E');
+  });
+
+  it('attackWindupMs is never scaled per-difficulty in droneAiDifficulty.ts — every tier reuses the same DRONE.WINDUP_MS reference, never a second numeric literal', () => {
+    const src = read('src/lib/v2/ai/droneAiDifficulty.ts');
+    assert.ok(src.includes('DRONE.WINDUP_MS'), 'droneAiDifficulty.ts must source attackWindupMs from DRONE.WINDUP_MS, reused rather than restated');
+    assert.ok(!/attackWindupMs:\s*\d/.test(src), 'droneAiDifficulty.ts must never assign attackWindupMs a raw numeric literal — it must always come from DRONE.WINDUP_MS, identical across every difficulty');
+  });
+
+  it('Rule 4 — droneAiTelegraph.ts (presentation) never IMPORTS droneAiStateMachine.ts/droneAiMovementIntent.ts (combat truth) — the two are structurally decoupled. Anchored on actual import syntax, not prose, since this file\'s own doc comment legitimately discusses both by name.', () => {
+    const src = read('src/lib/v2/ai/droneAiTelegraph.ts');
+    assert.ok(!/from\s+['"]\.\/droneAiStateMachine['"]/.test(src), 'droneAiTelegraph.ts must not import droneAiStateMachine.ts — presentation must never feed back into or directly couple to the pure combat state machine');
+    assert.ok(!/from\s+['"]\.\/droneAiMovementIntent['"]/.test(src), 'droneAiTelegraph.ts must not import droneAiMovementIntent.ts either — it is a presentation-only module, unrelated to movement');
+  });
+
+  it('Rule 4 — droneAiStateMachine.ts never IMPORTS droneAiTelegraph.ts (no reverse coupling). Anchored on actual import syntax, not prose, since this file\'s own doc comment legitimately discusses droneAiTelegraph.ts by name.', () => {
+    const src = read('src/lib/v2/ai/droneAiStateMachine.ts');
+    assert.ok(!/from\s+['"]\.\/droneAiTelegraph['"]/.test(src), 'droneAiStateMachine.ts must not import droneAiTelegraph.ts — the pure state machine has no presentation concept at all');
+  });
+
+  it('droneAiStateMachine.ts introduces no new AI state — DroneAiRuntimeState is unchanged in shape from 9C (still six states)', () => {
+    const src = read('src/lib/v2/ai/droneAiTypes.ts');
+    const match = src.match(/export type DroneAiRuntimeState = ([^;]+);/);
+    assert.ok(match, 'DroneAiRuntimeState union must still be declared');
+    const states = match![1].match(/'[a-z-]+'/g) ?? [];
+    assert.deepStrictEqual(states.sort(), ["'attacking'", "'destroyed'", "'engaging'", "'investigating'", "'searching'", "'spawning'"].sort(), '9E must not add or remove a runtime AI state');
+  });
+
+  it('DroneBoltPool.tsx remains untouched by droneAiDifficulty.ts/droneAiTelegraph.ts specifically', () => {
+    const src = read('src/components/three/play/DroneBoltPool.tsx');
+    assert.ok(!src.includes('droneAiDifficulty'), 'DroneBoltPool.tsx must not reference droneAiDifficulty.ts');
+    assert.ok(!src.includes('droneAiTelegraph'), 'DroneBoltPool.tsx must not reference droneAiTelegraph.ts');
+  });
+
+  it('VortexFireSystem.tsx (protected player weapon system) is untouched by any droneAi* module', () => {
+    for (const relPath of ['src/components/three/weapons/VortexFireSystem.tsx', 'src/components/three/range/VortexFireSystem.tsx']) {
+      const src = read(relPath);
+      assert.ok(!src.includes('/ai/droneAi'), `${relPath} must never reference the drone AI core — it is an unrelated, protected player weapon system`);
+    }
+  });
+
+  it('DroneSquad.tsx resolves the difficulty profile via useMemo (once per difficulty change), not inside its per-frame useFrame body', () => {
+    const src = read('src/components/three/play/DroneSquad.tsx');
+    const memoIndex = src.indexOf('useMemo(() => resolveDroneAiDifficultyProfile');
+    const frameIndex = src.indexOf('useFrame((');
+    assert.ok(memoIndex > 0, 'DroneSquad.tsx must resolve droneProfile via useMemo');
+    assert.ok(frameIndex > 0 && memoIndex < frameIndex, 'the droneProfile useMemo must be declared before (outside) the useFrame callback, not recomputed per frame');
+    // Anchored on the actual IMPORT statement, not a bare substring — this
+    // file's own doc comment legitimately discusses the old
+    // resolveDroneConfig(...) call by name when explaining what changed.
+    assert.ok(!/import\s*{[^}]*\bresolveDroneConfig\b[^}]*}\s*from/.test(src), 'DroneSquad.tsx must no longer import resolveDroneConfig directly — resolveDroneAiDifficultyProfile() (which itself reuses resolveDroneConfig internally, inside droneAiDifficulty.ts) is now the one source');
+  });
+});
+
 describe('droneAiImportGuards — route scoping', () => {
   it('/v2/range (RangeScene.tsx) does not import any droneAi* module', () => {
     const src = read('src/components/three/range/RangeScene.tsx');
@@ -199,6 +289,12 @@ describe('droneAiImportGuards — route scoping', () => {
   it('Milestone 9D — /v2/range (RangeScene.tsx) does not import droneAiMovementIntent.ts specifically', () => {
     const src = read('src/components/three/range/RangeScene.tsx');
     assert.ok(!src.includes('droneAiMovementIntent'), 'RangeScene.tsx must never reference the new movement-intent module');
+  });
+
+  it('Milestone 9E — /v2/range (RangeScene.tsx) does not import droneAiDifficulty.ts or droneAiTelegraph.ts specifically', () => {
+    const src = read('src/components/three/range/RangeScene.tsx');
+    assert.ok(!src.includes('droneAiDifficulty'), 'RangeScene.tsx must never reference the new difficulty-profile module');
+    assert.ok(!src.includes('droneAiTelegraph'), 'RangeScene.tsx must never reference the new telegraph module');
   });
 
   it('no V1 source file under src/components/game or src/lib/game imports any droneAi* module', () => {

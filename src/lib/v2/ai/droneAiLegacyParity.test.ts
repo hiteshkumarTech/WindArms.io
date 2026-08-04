@@ -48,6 +48,9 @@ const BASE = {
   // Milestone 9C — mirrors DRONE_PERCEPTION_MEMORY's own selected values.
   losLossConfirmMs: 250,
   investigateDurationMs: 4500,
+  // Milestone 9E — 0 matches Medium's own resolved profile exactly (no added
+  // delay); every fixture here is a Medium-equivalent baseline.
+  acquireReactionDelayMs: 0,
 };
 
 function obs(overrides: Partial<LegacyDroneAiObservation> = {}): LegacyDroneAiObservation {

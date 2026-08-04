@@ -21,6 +21,18 @@
  * `recover`/`dead`-as-terminal-target-memory fields, no `assignedSector`, no
  * `stuck` runtime, no `nextAllowedEvadeAt`, no combat node reference, no
  * squad-shared perception. Those belong to 9D onward.
+ *
+ * MILESTONE 9E — adds the acquisition-reaction gate: `reactionReadyAtMs` on
+ * the runtime (below) and `acquireReactionDelayMs` on the observation, plus
+ * one new one-shot decision fact, `targetAcquired`. `investigateDurationMs`
+ * (observation) is unchanged in SHAPE but now sourced from the caller's
+ * resolved `DroneAiDifficultyProfile.targetMemoryDurationMs`
+ * (`droneAiDifficulty.ts`) rather than the flat, pre-9E
+ * `DRONE_PERCEPTION_MEMORY.investigateDurationMs` constant — see that
+ * module's own doc comment. No new AI state, no burst/shot-count field, no
+ * presentation/telegraph concept anywhere in this file — those stay entirely
+ * in the new, separate `droneAiTelegraph.ts` (adapter-facing, not part of
+ * this pure runtime contract at all).
  */
 
 /**
@@ -84,6 +96,25 @@ export interface LegacyDroneAiRuntime {
   investigateUntilMs: number | null;
 
   /**
+   * Milestone 9E — the `nowMs` deadline a drone must reach before it becomes
+   * ELIGIBLE to start its first windup, or `null` when no reaction wait is
+   * currently pending. Seeded to `now + observation.acquireReactionDelayMs`
+   * on EXACTLY the tick of a genuine acquisition (`searching`→`engaging` or
+   * `investigating`→`engaging` reacquisition — see `droneAiStateMachine.ts`'s
+   * own doc comment) — never on `attacking`→`engaging` (post-fire or
+   * post-stun-abort re-entry), never on a sub-`losLossConfirmMs` cover-edge
+   * flicker (state never actually leaves `engaging` for those), and never on
+   * an ordinary already-`engaging` tick. Once its deadline has passed it is
+   * left as-is (a harmless past timestamp) rather than cleared back to
+   * `null` — cheaper than re-deriving "already satisfied" on every
+   * subsequent tick, and the attack gate below only ever checks `now >=
+   * reactionReadyAtMs`, which stays true forever once crossed. Cleared to
+   * `null` on player-generation invalidation and on a full life reset
+   * (`resetLegacyDroneRuntime`), exactly like the other memory fields above.
+   */
+  reactionReadyAtMs: number | null;
+
+  /**
    * The player-life generation (`DroneTargetSnapshot.generation`, e.g.
    * `matchStore.respawnNonce`) this runtime's memory fields above currently
    * belong to. When the caller-supplied observation's generation differs,
@@ -128,10 +159,30 @@ export interface LegacyDroneAiObservation {
   /** Degrees — half-cone aim error, matching `ResolvedDroneConfig.aimSpreadDeg` exactly. Consumed only when a shot fires this tick. */
   aimSpreadDeg: number;
 
-  /** Milestone 9C — how long continuous LOS loss must persist while `engaging`/`attacking` before entering `investigating`, ms. Sourced from `DRONE_PERCEPTION_MEMORY.losLossConfirmMs` (see `droneAiPerception.ts`); supplied per-tick rather than imported directly so the pure core stays a function of its explicit inputs only. */
+  /** Milestone 9C — how long continuous LOS loss must persist while `engaging`/`attacking` before entering `investigating`, ms. Sourced from `DRONE_PERCEPTION_MEMORY.losLossConfirmMs` (see `droneAiPerception.ts`); supplied per-tick rather than imported directly so the pure core stays a function of its explicit inputs only. Difficulty-INVARIANT — unchanged by 9E. */
   losLossConfirmMs: number;
-  /** Milestone 9C — how long an `investigating` drone waits at/near the last-known position before giving up and returning to `searching`, ms. Sourced from `DRONE_PERCEPTION_MEMORY.investigateDurationMs`. */
+  /**
+   * How long an `investigating` drone waits at/near the last-known position
+   * before giving up and returning to `searching`, ms. Through 9C/9D this
+   * was always the flat `DRONE_PERCEPTION_MEMORY.investigateDurationMs`
+   * constant; as of Milestone 9E it is sourced from the caller's resolved
+   * `DroneAiDifficultyProfile.targetMemoryDurationMs`
+   * (`droneAiDifficulty.ts`) instead — difficulty-scaled (Medium still
+   * reuses the same 4500ms constant verbatim, so Medium's own behaviour is
+   * byte-identical to every prior phase). The field's shape/name/meaning
+   * here is unchanged; only its SOURCE moved.
+   */
   investigateDurationMs: number;
+  /**
+   * Milestone 9E — how long, after a genuine acquisition, a drone must wait
+   * before it becomes eligible to start its first windup, ms. Sourced from
+   * `DroneAiDifficultyProfile.acquireReactionDelayMs`. 0 = immediate (no
+   * added delay) — Medium is always exactly 0, preserving the pre-9E
+   * same-tick acquire→windup cascade byte-for-byte. See
+   * `LegacyDroneAiRuntime.reactionReadyAtMs`'s own doc comment for the full
+   * seeding/gating contract.
+   */
+  acquireReactionDelayMs: number;
 }
 
 export type LegacyDroneMovementMode = 'spawn-hold' | 'search' | 'stunned-hold' | 'engage' | 'attack' | 'investigate' | 'destroyed-hold';
@@ -165,6 +216,19 @@ export interface LegacyDroneAiDecision {
 
   /** True exactly once, the tick the strafe-flip deadline rolls over (a new random flip deadline was drawn). Informational for the adapter/tests; the new `strafeDirection`/`strafeFlipAtMs` are already in `runtime`. Never true while `investigating` (no strafe-flip logic runs in that mode). */
   strafeFlipped: boolean;
+
+  /**
+   * Milestone 9E — true exactly once, the tick a GENUINE acquisition
+   * happens: `searching`→`engaging`, or `investigating`→`engaging`
+   * (reacquisition). Never true on `attacking`→`engaging` (post-fire or
+   * post-stun-abort), never true on a sub-confirmation cover-edge flicker
+   * (state never leaves `engaging` for those), never true on an ordinary
+   * already-`engaging` tick. Drives the telegraph resolver's one-shot
+   * "acquire" pulse (`droneAiTelegraph.ts`) without that module needing to
+   * diff state across ticks itself — mirrors `startWindup`/`fireExactlyOnce`/
+   * `strafeFlipped`'s own "true exactly once" event-flag convention.
+   */
+  targetAcquired: boolean;
 
   movementMode: LegacyDroneMovementMode;
   /** Non-null exactly when `movementMode === 'investigate'` — a fresh copy of `runtime.lastKnownTargetPosition` for the adapter to steer/face toward. Never a `THREE.Vector3`; the adapter owns converting this to real movement. */

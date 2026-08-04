@@ -2,9 +2,10 @@
 
 import { useMemo, useRef } from 'react';
 import { useFrame, useThree } from '@react-three/fiber';
-import { resolveDroneConfig, resolveDroneSpawns } from '@/lib/v2/play/difficulty';
+import { resolveDroneSpawns } from '@/lib/v2/play/difficulty';
 import { createStepAccumulator, stepFixed } from '@/lib/v2/play/fixedStep';
 import { useV2MatchStore } from '@/lib/v2/play/matchStore';
+import { resolveDroneAiDifficultyProfile } from '@/lib/v2/ai/droneAiDifficulty';
 import type { DroneTargetSnapshot } from '@/lib/v2/ai/droneAiTypes';
 import type { DroneSpatialSnapshot } from '@/lib/v2/ai/droneAiMovementIntent';
 import DroneEnemy, { type DroneHandle } from './DroneEnemy';
@@ -61,6 +62,15 @@ import DroneBoltPool, { type DroneBoltHandle } from './DroneBoltPool';
  * no stale entries are possible after a difficulty switch, restart, death,
  * or route remount (a remount discards this whole component instance and
  * its refs/memos together).
+ *
+ * MILESTONE 9E — the per-frame `resolveDroneConfig(match.selectedDifficulty)`
+ * call this component used to make every frame is gone: `droneProfile`
+ * (below) resolves the richer `DroneAiDifficultyProfile` — which EXTENDS the
+ * old `ResolvedDroneConfig` shape with `acquireReactionDelayMs`/
+ * `targetMemoryDurationMs`/`attackWindupMs` — exactly ONCE per difficulty
+ * change via `useMemo`, mirroring `spawns`/`spatialSnapshots`'s own existing
+ * memoization pattern. Every drone's `update()` reads this one shared
+ * object; no drone (and no per-frame call) resolves its own.
  */
 export default function DroneSquad() {
   const camera = useThree((state) => state.camera);
@@ -78,6 +88,15 @@ export default function DroneSquad() {
   // the locked-in difficulty's stats before any damage can be dealt.
   const selectedDifficulty = useV2MatchStore((state) => state.selectedDifficulty);
   const spawns = useMemo(() => resolveDroneSpawns(selectedDifficulty), [selectedDifficulty]);
+
+  // Milestone 9E — the combat-cadence profile (reaction delay, target-memory
+  // duration, windup) is resolved ONCE per difficulty change, not per frame
+  // or per drone, and handed to every drone's `update()` call below —
+  // extends the existing `ResolvedDroneConfig` shape (same object now also
+  // carries maxHp/boltDamage/fireIntervalMs/etc.), so this replaces the old
+  // per-frame `resolveDroneConfig()` call entirely rather than sitting
+  // alongside it.
+  const droneProfile = useMemo(() => resolveDroneAiDifficultyProfile(selectedDifficulty), [selectedDifficulty]);
 
   // Milestone 9D — one shared, reused spatial-snapshot collection sized 1:1
   // to `spawns`, rebuilt only when `spawns` itself changes (never per
@@ -115,9 +134,6 @@ export default function DroneSquad() {
     const bolts = boltRef.current;
     if (!bolts) return;
 
-    // Resolved once per frame (cheap, pure arithmetic) — same function every
-    // consumer uses, so drone AI, bolts and the HUD can never disagree.
-    const droneConfig = resolveDroneConfig(match.selectedDifficulty);
     stepFixed(stepAcc.current, rawDelta, (simulationDeltaS) => {
       // Milestone 9D — PASS 1: capture every mounted drone's pre-movement
       // spatial snapshot BEFORE any drone in PASS 2 moves this substep (see
@@ -133,8 +149,10 @@ export default function DroneSquad() {
         droneRefs.current[i]?.writeSpatialSnapshot(spatialSnapshots[i]);
       }
       // PASS 2 — every drone decides/moves against that SAME snapshot set.
+      // `droneProfile` (Milestone 9E) is captured from the render closure —
+      // memoized once per difficulty change, not recomputed here.
       for (const drone of droneRefs.current) {
-        drone?.update(targetSnapshot, simulationDeltaS, now, bolts, droneConfig, spatialSnapshots);
+        drone?.update(targetSnapshot, simulationDeltaS, now, bolts, droneProfile, spatialSnapshots);
       }
     });
   });

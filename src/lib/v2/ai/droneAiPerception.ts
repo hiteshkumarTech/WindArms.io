@@ -77,8 +77,18 @@ export function evaluateDronePerception(input: DronePerceptionInput): DronePerce
 
 /**
  * Milestone 9C — bounded, source-controlled perception-memory tuning.
- * Deliberately flat/not difficulty-scaled this phase (difficulty-specific
- * perception belongs to 9E, per the brief's own explicit scope fence).
+ * Deliberately flat/not difficulty-scaled in 9C/9D (difficulty-specific
+ * perception was explicitly deferred to 9E at the time).
+ *
+ * MILESTONE 9E UPDATE: `investigateDurationMs` below is now ALSO the value
+ * `droneAiDifficulty.ts` reuses verbatim as Medium's own
+ * `targetMemoryDurationMs` (never restated as a second `4500` literal) — the
+ * actual value `droneAiStateMachine.ts` uses for a drone's investigate
+ * timeout is difficulty-scaled as of 9E (Low/Max get their own values; see
+ * that module's own doc comment), sourced from the caller's resolved
+ * `DroneAiDifficultyProfile`, not read directly from this constant anymore.
+ * `losLossConfirmMs` and `investigateArrivalRadiusM` remain genuinely flat/
+ * difficulty-INVARIANT — 9E's own brief explicitly kept both out of scope.
  *
  * Selected values and reasoning (see `docs/decisions.md`'s Step 9C entry for
  * the full verification against approach speed / arena dimensions / cover
@@ -95,7 +105,8 @@ export function evaluateDronePerception(input: DronePerceptionInput): DronePerce
  *   the arena's own cover blocks (`COVERS` in `spawnConfig.ts`), so a drone
  *   can meaningfully close on the last-known point rather than immediately
  *   giving up, without becoming permanently omniscient (memory always
- *   expires; the drone never "waits forever").
+ *   expires; the drone never "waits forever"). As of 9E this is specifically
+ *   Medium's value (reused, see above) — Low/Max now differ.
  * - `investigateArrivalRadiusM: 1.5` — comfortably larger than one drone
  *   hull (the hit-sphere radius is 0.62m) so small per-substep numerical
  *   noise at the destination can never cause visible oscillation, while

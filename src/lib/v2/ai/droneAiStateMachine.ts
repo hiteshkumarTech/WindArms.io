@@ -51,6 +51,21 @@ import type { RandomSource } from './droneAiRandom';
  * adapter" instruction. This module only tells the adapter WHICH movement
  * mode applies each tick (now including `'investigate'` — see
  * `LegacyDroneAiDecision.movementTarget`).
+ *
+ * MILESTONE 9E — adds the acquisition-reaction gate: a genuine acquisition
+ * (`searching`→`engaging`, or `investigating`→`engaging` reacquisition —
+ * never `attacking`→`engaging`) now seeds `runtime.reactionReadyAtMs = now +
+ * observation.acquireReactionDelayMs`, and the attack block's own
+ * windup-start check additionally requires `now >= reactionReadyAtMs`.
+ * Medium's `acquireReactionDelayMs` is always exactly 0, so
+ * `reactionReadyAtMs` is seeded to the CURRENT tick and the gate is
+ * trivially already satisfied — the existing same-tick
+ * spawning→searching→engaging→attacking cascade is completely unaffected
+ * for Medium. `investigateDurationMs` (observation) is unchanged in shape,
+ * only its upstream source moved (see `droneAiTypes.ts`'s own doc comment).
+ * No new AI state, no burst/shot-count concept, nothing presentation-related
+ * added here — see `droneAiTelegraph.ts` (a wholly separate, adapter-facing
+ * module) for the new visual telegraph layer this phase also introduces.
  */
 
 /** A player-life generation no real `matchStore.respawnNonce` value can ever equal (it only ever counts up from 0) — see `LegacyDroneAiRuntime.observedPlayerGeneration`'s own doc comment. */
@@ -108,6 +123,7 @@ export function createLegacyDroneRuntime(
       losLostStartedAtMs: null,
       investigateUntilMs: null,
       observedPlayerGeneration: NEVER_OBSERVED_PLAYER_GENERATION,
+      reactionReadyAtMs: null,
     },
   };
 }
@@ -150,6 +166,9 @@ export function resetLegacyDroneRuntime(previous: LegacyDroneAiRuntime, rng: Ran
     losLostStartedAtMs: null,
     investigateUntilMs: null,
     observedPlayerGeneration: NEVER_OBSERVED_PLAYER_GENERATION,
+    // Milestone 9E — no pending reaction wait carries into a new life, same
+    // "starts fresh every life" treatment as the 9C memory fields above.
+    reactionReadyAtMs: null,
   };
 }
 
@@ -168,6 +187,7 @@ function destroyedDecision(runtime: LegacyDroneAiRuntime, observation: LegacyDro
     fireExactlyOnce: false,
     aimSpread: null,
     strafeFlipped: false,
+    targetAcquired: false,
     movementMode: 'destroyed-hold',
     movementTarget: null,
     facePlayer: false,
@@ -207,15 +227,26 @@ function destroyedDecision(runtime: LegacyDroneAiRuntime, observation: LegacyDro
  *    the existing 9B abort branch in the attack block below — the
  *    RECOMMENDED design from this phase's own brief, chosen over an
  *    immediate `attacking`→`investigating` shortcut because it reuses the
- *    already-verified abort path instead of adding a second one).
+ *    already-verified abort path instead of adding a second one). MILESTONE
+ *    9E extends this block: EVERY genuine `searching`→`engaging` or
+ *    `investigating`→`engaging` transition also seeds
+ *    `reactionReadyAtMs = now + observation.acquireReactionDelayMs` and sets
+ *    the one-shot `targetAcquired` decision fact — never on the
+ *    `attacking`→`engaging` transitions the attack block (step 9) makes.
  * 7. Movement mode + strafe-flip (extended with an `investigate` branch —
  *    no strafe-flip logic runs there, so investigating never consumes RNG).
  * 8. Facing (unchanged, 9B — still `engaging`/`attacking` only; the adapter
  *    derives investigate-facing from `movementTarget` itself).
- * 9. Attack block (unchanged, 9B) — still the sole place `attacking` drops
- *    to `engaging` on LOS loss/stun; still the sole place a shot can fire,
- *    and its own `&& observation.canSeePlayer` guard already made "no fire
- *    on an invisible-target tick" true even before this phase.
+ * 9. Attack block (unchanged shape since 9B, extended by 9E) — still the
+ *    sole place `attacking` drops to `engaging` on LOS loss/stun; still the
+ *    sole place a shot can fire, and its own `&& observation.canSeePlayer`
+ *    guard already made "no fire on an invisible-target tick" true even
+ *    before this phase. MILESTONE 9E adds one further condition to the
+ *    windup-START check only (never to windup-completion/firing, and never
+ *    to the abort branch): `now >= reactionReadyAtMs` (or no reaction wait
+ *    pending at all). Medium's `reactionReadyAtMs` is always seeded to the
+ *    current tick (0ms delay), so this is trivially satisfied immediately —
+ *    Medium's own same-tick acquire→windup cascade is unaffected.
  */
 export function decideLegacyDroneAi(runtime: LegacyDroneAiRuntime, observation: LegacyDroneAiObservation, rng: RandomSource): LegacyDroneAiDecision {
   const now = observation.nowMs;
@@ -249,6 +280,11 @@ export function decideLegacyDroneAi(runtime: LegacyDroneAiRuntime, observation: 
   let investigateUntilMs = runtime.investigateUntilMs;
   let observedPlayerGeneration = runtime.observedPlayerGeneration;
   let generationInvalidatedAttack = false;
+  // Milestone 9E — the acquisition-reaction deadline. Cleared alongside the
+  // other memory fields on generation invalidation below (a fresh life has
+  // nothing pending to react to); re-seeded only by a genuine acquisition in
+  // step 6.
+  let reactionReadyAtMs = runtime.reactionReadyAtMs;
 
   if (observation.playerGeneration !== observedPlayerGeneration) {
     observedPlayerGeneration = observation.playerGeneration;
@@ -256,6 +292,7 @@ export function decideLegacyDroneAi(runtime: LegacyDroneAiRuntime, observation: 
     lastSeenTargetAtMs = null;
     losLostStartedAtMs = null;
     investigateUntilMs = null;
+    reactionReadyAtMs = null;
     if (state === 'investigating' || state === 'engaging' || state === 'attacking') {
       if (state === 'attacking') generationInvalidatedAttack = true;
       state = 'searching';
@@ -293,15 +330,28 @@ export function decideLegacyDroneAi(runtime: LegacyDroneAiRuntime, observation: 
   // --- 6. Milestone 9C — search/engage/investigate cascade (replaces 9B's
   // "stay engaging forever while still inside detectRadius" quirk — see
   // docs/decisions.md's Step 9C entry for the full replacement rationale).
-  if (state === 'searching' && observation.canSeePlayer) state = 'engaging';
+  // Milestone 9E — both branches below are the ONLY two genuine-acquisition
+  // sites in this whole function: each seeds a fresh `reactionReadyAtMs` and
+  // sets `targetAcquired` exactly once.
+  let targetAcquired = false;
+  if (state === 'searching' && observation.canSeePlayer) {
+    state = 'engaging';
+    reactionReadyAtMs = now + observation.acquireReactionDelayMs;
+    targetAcquired = true;
+  }
   if (state === 'investigating' && observation.canSeePlayer) {
     // Reacquisition — immediate, same tick. `lastKnownTargetPosition` was
     // already refreshed to the current visible position in step 5 above;
     // `lastFireAtMs` is untouched here (no free shot, no cooldown reset —
     // time spent investigating still counts toward the next cooldown,
-    // exactly as if the drone had stayed `engaging` the whole time).
+    // exactly as if the drone had stayed `engaging` the whole time). 9E: a
+    // NEW `reactionReadyAtMs` deadline IS seeded here — reacquiring after a
+    // period of investigating is still a genuine acquisition, so it still
+    // gates the next windup start, even though it grants no free shot.
     state = 'engaging';
     investigateUntilMs = null;
+    reactionReadyAtMs = now + observation.acquireReactionDelayMs;
+    targetAcquired = true;
   }
 
   // LOS-loss confirmation timer — starts the instant visibility is lost
@@ -390,22 +440,28 @@ export function decideLegacyDroneAi(runtime: LegacyDroneAiRuntime, observation: 
   // `DroneEnemy.tsx`), not `facePlayer`.
   const facePlayer = state === 'engaging' || state === 'attacking';
 
-  // --- 9. Attack (unchanged, 9B). Two SEQUENTIAL `if`s (not else-if)
-  // between "start windup" and "complete windup", matching the legacy
-  // structure exactly — with the current WINDUP_MS constant this never
-  // fires same-tick, but the structure is preserved rather than collapsed,
-  // in case that constant ever changes. The `&& observation.canSeePlayer`
-  // guard on the first `if` already made "no fire on an invisible-target
-  // tick" true since 9B — unchanged, still true here.
+  // --- 9. Attack (unchanged shape since 9B). Two SEQUENTIAL `if`s (not
+  // else-if) between "start windup" and "complete windup", matching the
+  // legacy structure exactly — with the current WINDUP_MS constant this
+  // never fires same-tick, but the structure is preserved rather than
+  // collapsed, in case that constant ever changes. The `&&
+  // observation.canSeePlayer` guard on the first `if` already made "no fire
+  // on an invisible-target tick" true since 9B — unchanged, still true here.
+  // MILESTONE 9E — the windup-START check (only) gains one further AND
+  // condition: `reactionReady`. Windup-COMPLETION/firing below and the abort
+  // branch are both untouched — the reaction gate only ever decides whether
+  // a windup is allowed to BEGIN, never whether an in-progress one finishes
+  // or aborts.
   let windupUntilMs = runtime.windupUntilMs;
   let lastFireAtMs = runtime.lastFireAtMs;
   let startWindup = false;
   let abortWindup = generationInvalidatedAttack;
   let fireExactlyOnce = false;
   let aimSpread: { x: number; y: number; z: number } | null = null;
+  const reactionReady = reactionReadyAtMs === null || now >= reactionReadyAtMs;
 
   if ((state === 'engaging' || state === 'attacking') && !stunned && observation.canSeePlayer) {
-    if (state === 'engaging' && now - lastFireAtMs >= observation.fireIntervalMs) {
+    if (state === 'engaging' && reactionReady && now - lastFireAtMs >= observation.fireIntervalMs) {
       state = 'attacking';
       windupUntilMs = now + observation.attackWindupMs;
       startWindup = true;
@@ -442,6 +498,7 @@ export function decideLegacyDroneAi(runtime: LegacyDroneAiRuntime, observation: 
     losLostStartedAtMs,
     investigateUntilMs,
     observedPlayerGeneration,
+    reactionReadyAtMs,
   };
 
   return {
@@ -457,6 +514,7 @@ export function decideLegacyDroneAi(runtime: LegacyDroneAiRuntime, observation: 
     fireExactlyOnce,
     aimSpread,
     strafeFlipped,
+    targetAcquired,
     movementMode,
     movementTarget,
     facePlayer,

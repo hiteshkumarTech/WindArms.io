@@ -16,6 +16,10 @@ const BASE = {
   // Milestone 9C — mirrors DRONE_PERCEPTION_MEMORY's own selected values.
   losLossConfirmMs: 250,
   investigateDurationMs: 4500,
+  // Milestone 9E — 0 matches Medium's own resolved profile exactly (no added
+  // delay), preserving every pre-9E test's same-tick acquire→windup cascade
+  // assumption unchanged.
+  acquireReactionDelayMs: 0,
 };
 
 function obs(overrides: Partial<LegacyDroneAiObservation> = {}): LegacyDroneAiObservation {
@@ -945,5 +949,250 @@ describe('droneAiStateMachine — destruction interactions with investigating (M
 
     assert.strictEqual(destroyedWithMemory.destroyProgress, destroyedWithoutMemory.destroyProgress);
     assert.strictEqual(destroyedWithMemory.completeDestroyedPresentation, destroyedWithoutMemory.completeDestroyedPresentation);
+  });
+});
+
+describe('droneAiStateMachine — Milestone 9E acquisition-reaction gate', () => {
+  it('a genuine searching->engaging acquisition seeds reactionReadyAtMs = now + acquireReactionDelayMs and sets targetAcquired exactly once', () => {
+    const rng = createSeededRandomSource(200);
+    const runtime = freshRuntime(rng, 0);
+    const acquired = decideLegacyDroneAi(runtime, obs({ nowMs: 700, canSeePlayer: true, distance: 15, acquireReactionDelayMs: 350 }), rng);
+    assert.strictEqual(acquired.state, 'engaging');
+    assert.strictEqual(acquired.targetAcquired, true);
+    assert.strictEqual(acquired.runtime.reactionReadyAtMs, 700 + 350);
+  });
+
+  it('zero-delay (Medium-equivalent): the same-tick acquire->windup cascade is byte-identical to pre-9E — reaction gate never blocks it', () => {
+    const rng = createSeededRandomSource(201);
+    let runtime = { ...freshRuntime(rng, 0) };
+    runtime = { ...runtime, lastFireAtMs: -BASE.fireIntervalMs }; // cooldown already elapsed
+    const d = decideLegacyDroneAi(runtime, obs({ nowMs: 700, canSeePlayer: true, distance: 15, acquireReactionDelayMs: 0 }), rng);
+    assert.strictEqual(d.state, 'attacking', 'searching->engaging->attacking must still cascade in a single tick when acquireReactionDelayMs is 0');
+    assert.strictEqual(d.startWindup, true);
+    assert.strictEqual(d.targetAcquired, true);
+  });
+
+  it('non-zero delay: a windup cannot start before reactionReadyAtMs, even with cooldown already elapsed and clear LOS', () => {
+    const rng = createSeededRandomSource(202);
+    let runtime = freshRuntime(rng, 0);
+    runtime = { ...decideLegacyDroneAi(runtime, obs({ nowMs: 700, canSeePlayer: true, distance: 15, acquireReactionDelayMs: 350 }), rng).runtime, lastFireAtMs: -BASE.fireIntervalMs };
+    assert.strictEqual(runtime.reactionReadyAtMs, 1050);
+    const tooSoon = decideLegacyDroneAi(runtime, obs({ nowMs: 1049, canSeePlayer: true, distance: 15, acquireReactionDelayMs: 350 }), rng);
+    assert.strictEqual(tooSoon.state, 'engaging', 'one ms before reactionReadyAtMs must still be waiting, not attacking');
+    assert.strictEqual(tooSoon.startWindup, false);
+  });
+
+  it('non-zero delay: the windup starts exactly on the tick reactionReadyAtMs is reached', () => {
+    const rng = createSeededRandomSource(203);
+    let runtime = freshRuntime(rng, 0);
+    runtime = { ...decideLegacyDroneAi(runtime, obs({ nowMs: 700, canSeePlayer: true, distance: 15, acquireReactionDelayMs: 350 }), rng).runtime, lastFireAtMs: -BASE.fireIntervalMs };
+    const ready = decideLegacyDroneAi(runtime, obs({ nowMs: 1050, canSeePlayer: true, distance: 15, acquireReactionDelayMs: 350 }), rng);
+    assert.strictEqual(ready.state, 'attacking');
+    assert.strictEqual(ready.startWindup, true);
+  });
+
+  it('reaction gate does not block windup COMPLETION/firing or the abort branch — only the windup-START check', () => {
+    const rng = createSeededRandomSource(204);
+    let runtime = freshRuntime(rng, 0);
+    runtime = { ...decideLegacyDroneAi(runtime, obs({ nowMs: 700, canSeePlayer: true, distance: 15, acquireReactionDelayMs: 0 }), rng).runtime, lastFireAtMs: -BASE.fireIntervalMs };
+    const attacking = decideLegacyDroneAi(runtime, obs({ nowMs: 700, canSeePlayer: true, distance: 15, acquireReactionDelayMs: 0 }), rng);
+    assert.strictEqual(attacking.state, 'attacking');
+    // Force a stale/never-satisfied reactionReadyAtMs onto the runtime — if
+    // completion/firing wrongly re-checked the gate, this would block it.
+    const gatedRuntime = { ...attacking.runtime, reactionReadyAtMs: Number.POSITIVE_INFINITY };
+    const fired = decideLegacyDroneAi(gatedRuntime, obs({ nowMs: 700 + BASE.attackWindupMs, canSeePlayer: true, distance: 15, acquireReactionDelayMs: 0 }), rng);
+    assert.strictEqual(fired.fireExactlyOnce, true, 'windup completion/firing must never be gated by reactionReadyAtMs');
+  });
+
+  it('reacquisition (investigating->engaging) seeds a NEW reactionReadyAtMs and grants no free shot even if cooldown elapsed during the investigation', () => {
+    const rng = createSeededRandomSource(205);
+    let runtime = freshRuntime(rng, 0);
+    runtime = { ...decideLegacyDroneAi(runtime, obs({ nowMs: 700, canSeePlayer: true, distance: 15, acquireReactionDelayMs: 0 }), rng).runtime, lastFireAtMs: 700 };
+    runtime = decideLegacyDroneAi(runtime, obs({ nowMs: 800, canSeePlayer: false, distance: 15, acquireReactionDelayMs: 0 }), rng).runtime;
+    const investigating = decideLegacyDroneAi(runtime, obs({ nowMs: 800 + BASE.losLossConfirmMs, canSeePlayer: false, distance: 15, acquireReactionDelayMs: 0 }), rng);
+    assert.strictEqual(investigating.state, 'investigating');
+    // Cooldown elapses while investigating (far beyond fireIntervalMs).
+    const reacquireAt = 800 + BASE.losLossConfirmMs + BASE.fireIntervalMs + 500;
+    const reacquired = decideLegacyDroneAi(investigating.runtime, obs({ nowMs: reacquireAt, canSeePlayer: true, distance: 15, acquireReactionDelayMs: 350 }), rng);
+    assert.strictEqual(reacquired.state, 'engaging', 'reacquisition must not grant a same-tick free shot even though the cooldown had long elapsed');
+    assert.strictEqual(reacquired.targetAcquired, true);
+    assert.strictEqual(reacquired.runtime.reactionReadyAtMs, reacquireAt + 350);
+    assert.strictEqual(reacquired.startWindup, false);
+  });
+
+  it('attacking->engaging (post-fire) does NOT reseed reactionReadyAtMs — a fresh cooldown-gated shot needs no further reaction wait', () => {
+    const rng = createSeededRandomSource(206);
+    let runtime = freshRuntime(rng, 0);
+    const acquired = decideLegacyDroneAi(runtime, obs({ nowMs: 700, canSeePlayer: true, distance: 15, acquireReactionDelayMs: 350 }), rng);
+    const reactionDeadline = acquired.runtime.reactionReadyAtMs;
+    runtime = { ...acquired.runtime, lastFireAtMs: -BASE.fireIntervalMs };
+    // Reaction wait for the FIRST windup — waiting until reactionDeadline.
+    runtime = decideLegacyDroneAi(runtime, obs({ nowMs: reactionDeadline!, canSeePlayer: true, distance: 15, acquireReactionDelayMs: 350 }), rng).runtime;
+    assert.strictEqual(runtime.state, 'attacking');
+    const fired = decideLegacyDroneAi(runtime, obs({ nowMs: reactionDeadline! + BASE.attackWindupMs, canSeePlayer: true, distance: 15, acquireReactionDelayMs: 350 }), rng);
+    assert.strictEqual(fired.fireExactlyOnce, true);
+    assert.strictEqual(fired.state, 'engaging');
+    assert.strictEqual(fired.runtime.reactionReadyAtMs, reactionDeadline, 'firing must not touch reactionReadyAtMs at all');
+    assert.strictEqual(fired.targetAcquired, false, 'firing/re-entering engaging post-shot is not a genuine acquisition');
+    // The SECOND windup, once the next cooldown elapses, must start immediately — no second reaction wait.
+    const secondReady = decideLegacyDroneAi(fired.runtime, obs({ nowMs: reactionDeadline! + BASE.attackWindupMs + BASE.fireIntervalMs, canSeePlayer: true, distance: 15, acquireReactionDelayMs: 350 }), rng);
+    assert.strictEqual(secondReady.startWindup, true, 'a second cooldown-gated windup must not wait out a second reaction delay');
+  });
+
+  it('an aborted windup (LOS loss or stun) does not reseed reactionReadyAtMs, and does not touch targetAcquired', () => {
+    const rng = createSeededRandomSource(207);
+    let runtime = freshRuntime(rng, 0);
+    const acquired = decideLegacyDroneAi(runtime, obs({ nowMs: 700, canSeePlayer: true, distance: 15, acquireReactionDelayMs: 0 }), rng);
+    runtime = { ...acquired.runtime, lastFireAtMs: -BASE.fireIntervalMs };
+    const attacking = decideLegacyDroneAi(runtime, obs({ nowMs: 700, canSeePlayer: true, distance: 15, acquireReactionDelayMs: 0 }), rng);
+    assert.strictEqual(attacking.state, 'attacking');
+    const aborted = decideLegacyDroneAi(attacking.runtime, obs({ nowMs: 750, canSeePlayer: false, distance: 15, acquireReactionDelayMs: 0 }), rng);
+    assert.strictEqual(aborted.state, 'engaging');
+    assert.strictEqual(aborted.abortWindup, true);
+    assert.strictEqual(aborted.targetAcquired, false);
+    assert.strictEqual(aborted.runtime.reactionReadyAtMs, attacking.runtime.reactionReadyAtMs, 'an abort must never reseed the reaction deadline');
+  });
+
+  it('a sub-confirmation cover-edge LOS flicker while engaging never touches reactionReadyAtMs or targetAcquired (state never leaves engaging)', () => {
+    const rng = createSeededRandomSource(208);
+    let runtime = freshRuntime(rng, 0);
+    const acquired = decideLegacyDroneAi(runtime, obs({ nowMs: 700, canSeePlayer: true, distance: 15, acquireReactionDelayMs: 500 }), rng);
+    const deadline = acquired.runtime.reactionReadyAtMs;
+    runtime = acquired.runtime;
+    const flicker = decideLegacyDroneAi(runtime, obs({ nowMs: 716, canSeePlayer: false, distance: 15, acquireReactionDelayMs: 500 }), rng);
+    assert.strictEqual(flicker.state, 'engaging');
+    assert.strictEqual(flicker.targetAcquired, false);
+    const recovered = decideLegacyDroneAi(flicker.runtime, obs({ nowMs: 732, canSeePlayer: true, distance: 15, acquireReactionDelayMs: 500 }), rng);
+    assert.strictEqual(recovered.state, 'engaging');
+    assert.strictEqual(recovered.targetAcquired, false, 'LOS returning within one frame is not a new acquisition');
+    assert.strictEqual(recovered.runtime.reactionReadyAtMs, deadline, 'a sub-confirmation flicker must never reseed the reaction deadline');
+  });
+
+  it('reactionReadyAtMs (and every memory field) clears to null on player-generation invalidation', () => {
+    const rng = createSeededRandomSource(209);
+    let runtime = freshRuntime(rng, 0);
+    runtime = decideLegacyDroneAi(runtime, obs({ nowMs: 700, canSeePlayer: true, distance: 15, acquireReactionDelayMs: 350, playerGeneration: 0 }), rng).runtime;
+    assert.ok(runtime.reactionReadyAtMs !== null);
+    const invalidated = decideLegacyDroneAi(runtime, obs({ nowMs: 750, canSeePlayer: false, distance: 15, playerGeneration: 1 }), rng);
+    assert.strictEqual(invalidated.state, 'searching');
+    assert.strictEqual(invalidated.runtime.reactionReadyAtMs, null);
+  });
+
+  it('resetLegacyDroneRuntime always clears reactionReadyAtMs back to null, exactly like the other per-life memory fields', () => {
+    const rng = createSeededRandomSource(210);
+    let runtime = freshRuntime(rng, 0);
+    runtime = decideLegacyDroneAi(runtime, obs({ nowMs: 700, canSeePlayer: true, distance: 15, acquireReactionDelayMs: 350 }), rng).runtime;
+    assert.ok(runtime.reactionReadyAtMs !== null);
+    const reset = resetLegacyDroneRuntime(runtime, rng, 2000, BASE.fireIntervalMs);
+    assert.strictEqual(reset.reactionReadyAtMs, null);
+  });
+
+  it('createLegacyDroneRuntime always starts with reactionReadyAtMs === null', () => {
+    assert.strictEqual(freshRuntime().reactionReadyAtMs, null);
+  });
+
+  it('an already-elapsed reactionReadyAtMs is left as a stale past timestamp across many subsequent engaging ticks, never re-derived to null', () => {
+    const rng = createSeededRandomSource(211);
+    let runtime = freshRuntime(rng, 0);
+    const acquired = decideLegacyDroneAi(runtime, obs({ nowMs: 700, canSeePlayer: true, distance: 15, acquireReactionDelayMs: 100 }), rng);
+    const deadline = acquired.runtime.reactionReadyAtMs;
+    runtime = { ...acquired.runtime, lastFireAtMs: 1_000_000 }; // push cooldown far out so state stays engaging, never attacks
+    for (let now = 900; now < 5000; now += 250) {
+      const d = decideLegacyDroneAi(runtime, obs({ nowMs: now, canSeePlayer: true, distance: 15, acquireReactionDelayMs: 100 }), rng);
+      assert.strictEqual(d.runtime.reactionReadyAtMs, deadline, `reactionReadyAtMs must remain the original stale deadline at tick ${now}, never cleared or redrawn`);
+      runtime = d.runtime;
+    }
+  });
+
+  it('zero additional RNG consumption: the reaction gate itself never advances the RNG stream (a tightly-sized tape survives an acquire+reaction+windup+fire sequence)', () => {
+    // Tape budget mirrors the pre-9E draw count exactly: 4 at construction
+    // (phase, fire jitter, strafeDir, strafeFlip), then 3 for the eventual
+    // aim-spread draw. If the reaction gate consumed any RNG itself, this
+    // exact-length tape would throw "exhausted" before firing.
+    const tape = [0.1, 0.2, 0.3, 0.4, 0.5, 0.5, 0.5];
+    const tapeRng = createTapeRandomSource(tape);
+    let runtime = createLegacyDroneRuntime(tapeRng, 0, BASE.fireIntervalMs, 1).runtime;
+    const acquired = decideLegacyDroneAi(runtime, obs({ nowMs: 700, canSeePlayer: true, distance: 15, acquireReactionDelayMs: 350 }), tapeRng);
+    assert.strictEqual(acquired.state, 'engaging');
+    runtime = { ...acquired.runtime, lastFireAtMs: -BASE.fireIntervalMs };
+    const ready = decideLegacyDroneAi(runtime, obs({ nowMs: 1050, canSeePlayer: true, distance: 15, acquireReactionDelayMs: 350 }), tapeRng);
+    assert.strictEqual(ready.state, 'attacking');
+    const fired = decideLegacyDroneAi(ready.runtime, obs({ nowMs: 1050 + BASE.attackWindupMs, canSeePlayer: true, distance: 15, acquireReactionDelayMs: 350 }), tapeRng);
+    assert.strictEqual(fired.fireExactlyOnce, true, 'the exact-length tape must not be exhausted before the shot fires — proves the reaction gate itself consumes zero RNG');
+  });
+});
+
+describe('droneAiStateMachine — Milestone 9E profile-driven target-memory duration', () => {
+  it('investigateUntilMs is computed from observation.investigateDurationMs — a non-4500 (Low-equivalent) value is honoured exactly, not the old flat constant', () => {
+    const rng = createSeededRandomSource(220);
+    let runtime = freshRuntime(rng, 0);
+    runtime = decideLegacyDroneAi(runtime, obs({ nowMs: 700, canSeePlayer: true, distance: 15, investigateDurationMs: 3500 }), rng).runtime;
+    runtime = decideLegacyDroneAi(runtime, obs({ nowMs: 800, canSeePlayer: false, distance: 15, investigateDurationMs: 3500 }), rng).runtime;
+    const investigating = decideLegacyDroneAi(runtime, obs({ nowMs: 800 + BASE.losLossConfirmMs, canSeePlayer: false, distance: 15, investigateDurationMs: 3500 }), rng);
+    assert.strictEqual(investigating.state, 'investigating');
+    assert.strictEqual(investigating.runtime.investigateUntilMs, 800 + BASE.losLossConfirmMs + 3500, 'must use the supplied 3500ms (Low-equivalent) value, not the flat 4500ms constant');
+  });
+
+  it('a Max-equivalent (5250ms) value keeps a drone investigating noticeably longer than the Medium baseline before timing out', () => {
+    const rng = createSeededRandomSource(221);
+    let runtime = freshRuntime(rng, 0);
+    runtime = decideLegacyDroneAi(runtime, obs({ nowMs: 700, canSeePlayer: true, distance: 15, investigateDurationMs: 5250 }), rng).runtime;
+    runtime = decideLegacyDroneAi(runtime, obs({ nowMs: 800, canSeePlayer: false, distance: 15, investigateDurationMs: 5250 }), rng).runtime;
+    const investigating = decideLegacyDroneAi(runtime, obs({ nowMs: 800 + BASE.losLossConfirmMs, canSeePlayer: false, distance: 15, investigateDurationMs: 5250 }), rng).runtime;
+    const timeoutAt = 800 + BASE.losLossConfirmMs + 5250;
+    const justBefore = decideLegacyDroneAi(investigating, obs({ nowMs: timeoutAt - 1, canSeePlayer: false, distance: 15, investigateDurationMs: 5250 }), rng);
+    assert.strictEqual(justBefore.state, 'investigating');
+    const atTimeout = decideLegacyDroneAi(investigating, obs({ nowMs: timeoutAt, canSeePlayer: false, distance: 15, investigateDurationMs: 5250 }), rng);
+    assert.strictEqual(atTimeout.state, 'searching');
+  });
+
+  it('losLossConfirmMs and investigate-arrival semantics remain difficulty-invariant — only investigateDurationMs changed, the confirmation window did not', () => {
+    const rng = createSeededRandomSource(222);
+    let runtime = freshRuntime(rng, 0);
+    runtime = decideLegacyDroneAi(runtime, obs({ nowMs: 700, canSeePlayer: true, distance: 15, investigateDurationMs: 3500 }), rng).runtime;
+    runtime = decideLegacyDroneAi(runtime, obs({ nowMs: 800, canSeePlayer: false, distance: 15, investigateDurationMs: 3500 }), rng).runtime;
+    const justUnder = decideLegacyDroneAi(runtime, obs({ nowMs: 800 + BASE.losLossConfirmMs - 1, canSeePlayer: false, distance: 15, investigateDurationMs: 3500 }), rng);
+    assert.strictEqual(justUnder.state, 'engaging', 'confirmation window (250ms, difficulty-invariant) must be unaffected by a non-default investigateDurationMs');
+  });
+
+  it('Medium-equivalent (4500ms, exactly BASE) is unchanged from the pre-9E behaviour', () => {
+    const rng = createSeededRandomSource(223);
+    let runtime = freshRuntime(rng, 0);
+    runtime = decideLegacyDroneAi(runtime, obs({ nowMs: 700, canSeePlayer: true, distance: 15 }), rng).runtime;
+    runtime = decideLegacyDroneAi(runtime, obs({ nowMs: 800, canSeePlayer: false, distance: 15 }), rng).runtime;
+    const investigating = decideLegacyDroneAi(runtime, obs({ nowMs: 800 + BASE.losLossConfirmMs, canSeePlayer: false, distance: 15 }), rng);
+    assert.strictEqual(investigating.runtime.investigateUntilMs, 800 + BASE.losLossConfirmMs + 4500);
+  });
+});
+
+describe('droneAiStateMachine — Milestone 9E targetAcquired event integrity (exhaustive sweep)', () => {
+  it('targetAcquired is true on exactly the ticks state genuinely transitions searching->engaging or investigating->engaging, across a long randomized visibility sweep, and never on any other tick', () => {
+    const rng = createSeededRandomSource(230);
+    let runtime = freshRuntime(rng, 0);
+    let previousState = runtime.state;
+    let acquisitions = 0;
+    let now = 0;
+    for (let i = 0; i < 800; i++) {
+      now += 47;
+      const cycle = Math.floor(i / 37) % 2;
+      const canSeePlayer = cycle === 0;
+      const d = decideLegacyDroneAi(runtime, obs({ nowMs: now, canSeePlayer, distance: 12, acquireReactionDelayMs: 120, investigateDurationMs: 2000 }), rng);
+      if (d.targetAcquired) {
+        acquisitions++;
+        // previousState may be 'spawning' when the spawning->searching->
+        // engaging same-tick cascade completes in one call — still a
+        // genuine acquisition. Only a re-entry from 'engaging' (impossible,
+        // it's already there) or 'attacking' (post-fire/abort) is NOT genuine.
+        const genuineTransition = d.state === 'engaging' && previousState !== 'engaging' && previousState !== 'attacking';
+        assert.ok(genuineTransition, `targetAcquired fired on tick ${i} but the transition was ${previousState} -> ${d.state}, not a genuine acquisition`);
+        assert.strictEqual(d.runtime.reactionReadyAtMs, now + 120, `targetAcquired fired but reactionReadyAtMs was not freshly seeded on tick ${i}`);
+      }
+      if (previousState === 'attacking' && d.state === 'engaging') {
+        assert.strictEqual(d.targetAcquired, false, `attacking->engaging on tick ${i} must never set targetAcquired`);
+      }
+      previousState = d.state;
+      runtime = d.runtime;
+    }
+    assert.ok(acquisitions > 0, 'the sweep must actually exercise at least one real acquisition, or this test proves nothing');
   });
 });

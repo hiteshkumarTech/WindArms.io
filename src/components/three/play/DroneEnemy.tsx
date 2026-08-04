@@ -5,7 +5,7 @@ import * as THREE from 'three';
 import { STORM } from '@/lib/v2/tokens';
 import { DRONE } from '@/lib/v2/play/enemyConfig';
 import { createTargetUserData, type TargetUserData } from '@/lib/v2/combat/targets';
-import { resolveDroneConfig, type ResolvedDroneConfig } from '@/lib/v2/play/difficulty';
+import { resolveDroneConfig } from '@/lib/v2/play/difficulty';
 import { useV2MatchStore } from '@/lib/v2/play/matchStore';
 import { OCCLUDERS } from '@/lib/v2/play/spawnConfig';
 import type { DroneAiState, DroneSpawnDef } from '@/lib/v2/play/types';
@@ -13,7 +13,10 @@ import { createLegacyDroneRuntime, decideLegacyDroneAi, resetLegacyDroneRuntime 
 import { createSeededRandomSource, deriveDroneSeed, type RandomSource } from '@/lib/v2/ai/droneAiRandom';
 import { evaluateDronePerception, DRONE_PERCEPTION_MEMORY } from '@/lib/v2/ai/droneAiPerception';
 import { resolveDroneMovementIntent, type DroneMovementIntent, type DroneSpatialSnapshot } from '@/lib/v2/ai/droneAiMovementIntent';
+import type { DroneAiDifficultyProfile } from '@/lib/v2/ai/droneAiDifficulty';
+import { resolveDroneTelegraph, DRONE_COMBAT_TELEGRAPH } from '@/lib/v2/ai/droneAiTelegraph';
 import type { DroneTargetSnapshot, LegacyDroneAiObservation, LegacyDroneAiRuntime, Vec3Data } from '@/lib/v2/ai/droneAiTypes';
+import { DRONE_MUZZLE_LOCAL_OFFSET } from './droneVisualConfig';
 import type { DroneBoltHandle } from './DroneBoltPool';
 
 /**
@@ -86,10 +89,29 @@ import type { DroneBoltHandle } from './DroneBoltPool';
  * drone's separation math this tick sees the same pre-movement snapshot
  * set, not an order-biased mix of already-moved and not-yet-moved
  * neighbours.
+ *
+ * MILESTONE 9E — `update()` now takes the richer `DroneAiDifficultyProfile`
+ * (`profile`, extends the old `ResolvedDroneConfig`) instead of a bare
+ * config, and reads two NEW fields from it every tick:
+ * `acquireReactionDelayMs` (fed into the observation, gates the pure core's
+ * own windup-start decision — see `droneAiStateMachine.ts`) and
+ * `targetMemoryDurationMs` (replaces the old flat
+ * `DRONE_PERCEPTION_MEMORY.investigateDurationMs` read as the observation's
+ * `investigateDurationMs`). This file also gains a small, adapter-owned
+ * visual-telegraph layer: `acquirePulseUntilRef`/`fireFlashUntilRef` arm on
+ * the pure core's own one-shot `targetAcquired`/`fireExactlyOnce` decision
+ * facts, then feed (together with the runtime's own `reactionReadyAtMs`/
+ * `windupUntilMs`) into the pure `resolveDroneTelegraph()`
+ * (`lib/v2/ai/droneAiTelegraph.ts`), which now owns the eye-emissive-
+ * intensity decision this file used to compute with an inline ternary, plus
+ * a new preallocated muzzle-flash mesh (`muzzleRef`, created once in this
+ * component's own JSX below, never per-shot). Presentation still never
+ * feeds back into combat truth — the telegraph resolver only ever READS
+ * decision/runtime fields the pure state machine already produces.
  */
 export interface DroneHandle {
-  /** Called by DroneSquad, possibly several times per rendered frame (once per fixed-step substep — see fixedStep.ts), with the shared player target snapshot (position/alive/generation — one object, reused every substep, never a per-drone camera read), the shared bolt pool, the difficulty-resolved combat numbers (HP baked in at spawn/reset time; the rest read live here), and this substep's pre-movement squad spatial snapshot (see `writeSpatialSnapshot` below). `simulationDeltaS` is always exactly one fixed substep, never a raw/variable frame delta. Returns true once destroyed (for squad bookkeeping). */
-  update: (targetSnapshot: DroneTargetSnapshot, simulationDeltaS: number, now: number, bolts: DroneBoltHandle, config: ResolvedDroneConfig, neighbours: readonly DroneSpatialSnapshot[]) => boolean;
+  /** Called by DroneSquad, possibly several times per rendered frame (once per fixed-step substep — see fixedStep.ts), with the shared player target snapshot (position/alive/generation — one object, reused every substep, never a per-drone camera read), the shared bolt pool, the difficulty-resolved combat/cadence profile (Milestone 9E — HP baked in at spawn/reset time; the rest read live here), and this substep's pre-movement squad spatial snapshot (see `writeSpatialSnapshot` below). `simulationDeltaS` is always exactly one fixed substep, never a raw/variable frame delta. Returns true once destroyed (for squad bookkeeping). */
+  update: (targetSnapshot: DroneTargetSnapshot, simulationDeltaS: number, now: number, bolts: DroneBoltHandle, profile: DroneAiDifficultyProfile, neighbours: readonly DroneSpatialSnapshot[]) => boolean;
   reset: () => void;
   getState: () => DroneAiState;
   /** Milestone 9D — writes this drone's CURRENT tactical (never hover-bobbed) position/state into a caller-provided, reused snapshot object — no allocation here. Called by `DroneSquad.tsx`'s own PASS 1, once per drone, before PASS 2's `update()` calls begin. */
@@ -101,6 +123,8 @@ interface DroneMaterials {
   ringMarble: THREE.MeshStandardMaterial;
   gold: THREE.MeshStandardMaterial;
   eye: THREE.MeshStandardMaterial;
+  /** Milestone 9E — the preallocated muzzle-flash visual's own material (see `muzzleRef` below). Transparent so `resolveDroneTelegraph()`'s `muzzleFlashProgress` can drive a fade via `.opacity`, never via allocating a new material per shot. */
+  muzzleFlash: THREE.MeshBasicMaterial;
 }
 
 function createMaterials(): DroneMaterials {
@@ -109,6 +133,7 @@ function createMaterials(): DroneMaterials {
     ringMarble: new THREE.MeshStandardMaterial({ color: '#E9E5DB', metalness: 0.25, roughness: 0.5 }),
     gold: new THREE.MeshStandardMaterial({ color: STORM.gold, metalness: 0.95, roughness: 0.25 }),
     eye: new THREE.MeshStandardMaterial({ color: '#06222f', emissive: new THREE.Color(STORM.energy), emissiveIntensity: 1.4, toneMapped: false }),
+    muzzleFlash: new THREE.MeshBasicMaterial({ color: STORM.energy, transparent: true, opacity: 0, toneMapped: false, depthWrite: false }),
   };
 }
 
@@ -130,7 +155,19 @@ const DroneEnemy = forwardRef<DroneHandle, { spawn: DroneSpawnDef }>(function Dr
   const groupRef = useRef<THREE.Group>(null);
   const rotorRef = useRef<THREE.Mesh>(null);
   const eyeRef = useRef<THREE.Mesh>(null);
+  const muzzleRef = useRef<THREE.Mesh>(null);
   const materials = useMemo(createMaterials, []);
+
+  // Milestone 9E — adapter-owned presentation deadlines for the telegraph
+  // resolver's one-shot cues (0 = inactive, matching `TargetUserData`'s own
+  // "0 = no active window" convention). Set only on the tick the
+  // corresponding pure-core event fires (`decision.targetAcquired` /
+  // `decision.fireExactlyOnce`) — never read or written by
+  // `droneAiStateMachine.ts` itself, per Rule 4 ("presentation must never
+  // drive combat truth"). Mirrors `phaseRef`'s own existing "adapter owns
+  // presentation-only state across ticks" pattern.
+  const acquirePulseUntilRef = useRef(0);
+  const fireFlashUntilRef = useRef(0);
 
   const scratch = useMemo(() => ({ toPlayer: new THREE.Vector3(), desired: new THREE.Vector3(), origin: new THREE.Vector3(), aim: new THREE.Vector3() }), []);
 
@@ -199,6 +236,11 @@ const DroneEnemy = forwardRef<DroneHandle, { spawn: DroneSpawnDef }>(function Dr
     userData.isTarget = true;
     userData.hitFlashUntil = 0;
     userData.destroyedAt = 0;
+    // Milestone 9E — presentation-only cue deadlines reset alongside every
+    // other per-life field above; a fresh life starts with no pending
+    // acquire pulse or fire flash carried over from the previous one.
+    acquirePulseUntilRef.current = 0;
+    fireFlashUntilRef.current = 0;
     if (groupRef.current) {
       groupRef.current.visible = true;
       groupRef.current.scale.setScalar(0.001);
@@ -206,7 +248,7 @@ const DroneEnemy = forwardRef<DroneHandle, { spawn: DroneSpawnDef }>(function Dr
   };
 
   useImperativeHandle(ref, () => ({
-    update(targetSnapshot, simulationDeltaS, now, bolts, config, neighbours) {
+    update(targetSnapshot, simulationDeltaS, now, bolts, profile, neighbours) {
       const group = groupRef.current;
       if (!group) return runtimeRef.current.state === 'destroyed';
 
@@ -244,14 +286,17 @@ const DroneEnemy = forwardRef<DroneHandle, { spawn: DroneSpawnDef }>(function Dr
         destroyedAtMs: userData.destroyedAt,
         hitFlashUntilMs: userData.hitFlashUntil,
         detectRadius: DRONE.DETECT_RADIUS,
-        fireIntervalMs: config.fireIntervalMs,
+        fireIntervalMs: profile.fireIntervalMs,
         spawnDurationMs: DRONE.SPAWN_SCALE_MS,
-        attackWindupMs: DRONE.WINDUP_MS,
+        attackWindupMs: profile.attackWindupMs,
         destroyShrinkMs: DRONE.DESTROY_SHRINK_MS,
         stunMs: DRONE.STUN_MS,
-        aimSpreadDeg: config.aimSpreadDeg,
+        aimSpreadDeg: profile.aimSpreadDeg,
         losLossConfirmMs: DRONE_PERCEPTION_MEMORY.losLossConfirmMs,
-        investigateDurationMs: DRONE_PERCEPTION_MEMORY.investigateDurationMs,
+        // Milestone 9E — difficulty-scaled (was the flat DRONE_PERCEPTION_MEMORY
+        // constant through 9D); see droneAiDifficulty.ts's own doc comment.
+        investigateDurationMs: profile.targetMemoryDurationMs,
+        acquireReactionDelayMs: profile.acquireReactionDelayMs,
       };
 
       const decision = decideLegacyDroneAi(runtimeRef.current, observation, rngRef.current);
@@ -261,11 +306,37 @@ const DroneEnemy = forwardRef<DroneHandle, { spawn: DroneSpawnDef }>(function Dr
         useV2MatchStore.getState().recordDroneDestroyed();
       }
 
-      // Hit flash (a SHORTER, separate window from the pure core's own
-      // `stunned` overlay) drives the eye material directly — read here
-      // exactly as the legacy code did, since this is presentation-only.
-      const flashing = now < userData.hitFlashUntil;
-      if (eyeRef.current) (eyeRef.current.material as THREE.MeshStandardMaterial).emissiveIntensity = flashing ? 3.2 : decision.state === 'attacking' ? 2.6 : 1.4;
+      // Milestone 9E — visual telegraph. `acquirePulseUntilRef`/
+      // `fireFlashUntilRef` are armed here, exactly on the tick the
+      // corresponding pure-core one-shot event fires, then fed (already
+      // possibly-expired) into the pure `resolveDroneTelegraph()` resolver
+      // alongside the runtime's own `reactionReadyAtMs`/`windupUntilMs`. This
+      // replaces the old inline hit/attacking/idle eye-intensity ternary —
+      // `resolveDroneTelegraph()` now owns that decision, extended with the
+      // new acquire/reaction/windup-ramp/fire/cooldown phases.
+      if (decision.targetAcquired) acquirePulseUntilRef.current = now + DRONE_COMBAT_TELEGRAPH.acquirePulseMs;
+      if (decision.fireExactlyOnce) fireFlashUntilRef.current = now + DRONE_COMBAT_TELEGRAPH.fireFlashMs;
+
+      const telegraph = resolveDroneTelegraph({
+        nowMs: now,
+        state: decision.state,
+        hitFlashUntilMs: userData.hitFlashUntil,
+        acquirePulseUntilMs: acquirePulseUntilRef.current,
+        reactionReadyAtMs: decision.runtime.reactionReadyAtMs,
+        windupUntilMs: decision.runtime.windupUntilMs,
+        attackWindupMs: profile.attackWindupMs,
+        fireFlashUntilMs: fireFlashUntilRef.current,
+      });
+
+      if (eyeRef.current) (eyeRef.current.material as THREE.MeshStandardMaterial).emissiveIntensity = telegraph.eyeEmissiveIntensity;
+      if (muzzleRef.current) {
+        muzzleRef.current.visible = telegraph.muzzleFlashVisible;
+        if (telegraph.muzzleFlashVisible) {
+          muzzleRef.current.scale.setScalar(0.4 + 0.6 * (1 - telegraph.muzzleFlashProgress));
+          materials.muzzleFlash.opacity = 1 - telegraph.muzzleFlashProgress;
+        }
+      }
+
 
       if (decision.state === 'destroyed') {
         if (decision.completeDestroyedPresentation) {
@@ -310,9 +381,9 @@ const DroneEnemy = forwardRef<DroneHandle, { spawn: DroneSpawnDef }>(function Dr
           strafeDirection: decision.runtime.strafeDirection,
           rangeMinM: DRONE.RANGE_MIN,
           rangeMaxM: DRONE.RANGE_MAX,
-          approachSpeedMps: config.approachSpeed,
-          retreatSpeedMps: config.retreatSpeed,
-          strafeSpeedMps: config.strafeSpeed,
+          approachSpeedMps: profile.approachSpeed,
+          retreatSpeedMps: profile.retreatSpeed,
+          strafeSpeedMps: profile.strafeSpeed,
           searchReturnSpeedMps: DRONE.STRAFE_SPEED,
           searchPhase: phaseRef.current,
           facePlayer: decision.facePlayer,
@@ -334,7 +405,7 @@ const DroneEnemy = forwardRef<DroneHandle, { spawn: DroneSpawnDef }>(function Dr
         aim.x += decision.aimSpread.x;
         aim.y += decision.aimSpread.y;
         aim.z += decision.aimSpread.z;
-        bolts.spawn(origin, aim, config.boltSpeed, config.boltDamage);
+        bolts.spawn(origin, aim, profile.boltSpeed, profile.boltDamage);
       }
 
       return false;
@@ -382,6 +453,28 @@ const DroneEnemy = forwardRef<DroneHandle, { spawn: DroneSpawnDef }>(function Dr
       {/* Cyan eye, faces forward (-Z) */}
       <mesh ref={eyeRef} material={materials.eye} position={[0, 0, -0.3]}>
         <sphereGeometry args={[0.12, 12, 12]} />
+      </mesh>
+      {/*
+        Milestone 9E.1 fix, Milestone 9E.2 hardening — preallocated
+        muzzle-flash visual: created once here (never per-shot),
+        toggled/scaled/faded every tick from `resolveDroneTelegraph()`'s
+        output in `update()` above. No light, no shadow, no physics body.
+
+        Positioned via `DRONE_MUZZLE_LOCAL_OFFSET` (`droneVisualConfig.ts`),
+        NOT a raw JSX literal — see that module's own doc comment for the
+        full `lookAt()`-facing-convention reasoning and
+        `droneVisualConfig.test.ts` for the permanent regression guard (a
+        negative-Z offset, the original shipped defect, is proven to fail
+        the exact same geometric check that constant now passes).
+
+        The existing eye mesh (just above) is authored at negative local Z
+        and is UNCHANGED here — it predates Milestone 9E entirely and this
+        same lookAt() quirk very likely affects it too, but that is a
+        pre-existing, out-of-scope system this pass does not touch; see
+        docs/decisions.md's 9E.1 entry for the full disclosure.
+      */}
+      <mesh ref={muzzleRef} material={materials.muzzleFlash} position={DRONE_MUZZLE_LOCAL_OFFSET} visible={false}>
+        <sphereGeometry args={[0.16, 10, 8]} />
       </mesh>
     </group>
   );
