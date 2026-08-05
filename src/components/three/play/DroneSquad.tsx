@@ -8,8 +8,19 @@ import { useV2MatchStore } from '@/lib/v2/play/matchStore';
 import { resolveDroneAiDifficultyProfile } from '@/lib/v2/ai/droneAiDifficulty';
 import type { DroneTargetSnapshot } from '@/lib/v2/ai/droneAiTypes';
 import type { DroneSpatialSnapshot } from '@/lib/v2/ai/droneAiMovementIntent';
+import {
+  createDroneSquadCoordinatorRuntime,
+  resetDroneSquadCoordinatorRuntime,
+  resolveDroneSquadCoordination,
+  resolveDroneSquadCoordinationProfile,
+  type DroneAttackPermit,
+  type DroneAttackRequest,
+} from '@/lib/v2/ai/droneAiSquad';
 import DroneEnemy, { type DroneHandle } from './DroneEnemy';
 import DroneBoltPool, { type DroneBoltHandle } from './DroneBoltPool';
+
+/** A permit no request should ever actually need to fall back to (every live drone's index has a matching preallocated `attackRequests`/`permits` entry) — kept only as a defensive `?? EMPTY_PERMIT` default, mirroring this file's own general "never let a missing map entry propagate as undefined" discipline. */
+const EMPTY_PERMIT: DroneAttackPermit = { granted: false, sector: null };
 
 /**
  * Drives the Skyfront Trial drone squad (5 on Low, 8 on Medium/Max — see
@@ -71,6 +82,26 @@ import DroneBoltPool, { type DroneBoltHandle } from './DroneBoltPool';
  * change via `useMemo`, mirroring `spawns`/`spatialSnapshots`'s own existing
  * memoization pattern. Every drone's `update()` reads this one shared
  * object; no drone (and no per-frame call) resolves its own.
+ *
+ * MILESTONE 9G — the fixed-step substep callback gains a THIRD pass, run
+ * between the existing PASS 1 (`writeSpatialSnapshot`) and PASS 2
+ * (`update`): each drone reports a side-effect-free attack-permit REQUEST
+ * (`prepareAttackRequest`, into `attackRequests` — a shared, preallocated
+ * array mirroring `spatialSnapshots`'s own "one reused object per drone,
+ * resized only on a spawns change" convention), then ONE squad-level, pure
+ * `resolveDroneSquadCoordination()` call (`droneAiSquad.ts`) resolves every
+ * request into a permit in a single deterministic pass — EXPLICITLY NOT by
+ * calling into each drone in array order and letting the first ones win
+ * (see that module's own doc comment on why this would be an order-
+ * dependent design, and its own test suite proving the granted SET is
+ * identical regardless of request order). PASS 2's `update()` calls are
+ * unchanged in ORDER, only gaining one new trailing argument — this
+ * substep's already-resolved `permit` for that drone. `coordinatorRuntimeRef`
+ * (below) is the ONE piece of new squad-owned state this phase introduces —
+ * held here, never duplicated per-drone, never merged into
+ * `spatialSnapshots`/`targetSnapshot`. It resets alongside every drone on a
+ * restart (see the existing restart branch below), exactly like
+ * `boltRef.current?.clear()` already does for the shared bolt pool.
  */
 export default function DroneSquad() {
   const camera = useThree((state) => state.camera);
@@ -79,6 +110,11 @@ export default function DroneSquad() {
   const lastRestartNonce = useRef(0);
   const targetSnapshot = useMemo<DroneTargetSnapshot>(() => ({ position: { x: 0, y: 0, z: 0 }, alive: false, generation: 0 }), []);
   const stepAcc = useRef(createStepAccumulator());
+
+  // Milestone 9G — the squad-owned attack-permit coordinator runtime (see
+  // this component's own doc comment above). Reset alongside every drone on
+  // restart, below.
+  const coordinatorRuntimeRef = useRef(createDroneSquadCoordinatorRuntime());
 
   // Reactive to the selected difficulty so switching Low↔Medium↔Max during
   // the pre-countdown 'ready' screen mounts/unmounts the right drone count
@@ -98,11 +134,24 @@ export default function DroneSquad() {
   // alongside it.
   const droneProfile = useMemo(() => resolveDroneAiDifficultyProfile(selectedDifficulty), [selectedDifficulty]);
 
+  // Milestone 9G — the squad attack-coordination profile (concurrent-
+  // attacker cap, sector count), resolved ONCE per difficulty change, mirroring
+  // `droneProfile`'s own memoization convention exactly.
+  const coordinationProfile = useMemo(() => resolveDroneSquadCoordinationProfile(selectedDifficulty), [selectedDifficulty]);
+
   // Milestone 9D — one shared, reused spatial-snapshot collection sized 1:1
   // to `spawns`, rebuilt only when `spawns` itself changes (never per
   // frame/substep) — see this component's own doc comment above.
   const spatialSnapshots = useMemo<DroneSpatialSnapshot[]>(
     () => spawns.map((spawn) => ({ id: spawn.id, position: { x: 0, y: 0, z: 0 }, state: 'spawning', participatesInSeparation: false })),
+    [spawns],
+  );
+
+  // Milestone 9G — one shared, reused attack-request collection, sized 1:1
+  // to `spawns`, mirroring `spatialSnapshots`'s own "rebuilt only on a
+  // spawns change, mutated in place every substep otherwise" convention.
+  const attackRequests = useMemo<DroneAttackRequest[]>(
+    () => spawns.map((spawn) => ({ droneId: spawn.id, wantsAttack: false, dronePosition: { x: 0, y: 0, z: 0 }, targetPosition: { x: 0, y: 0, z: 0 }, attackReadyAtMs: 0 })),
     [spawns],
   );
 
@@ -114,11 +163,15 @@ export default function DroneSquad() {
 
     if (match.phase === 'paused') return; // fully frozen
 
-    // Restart: reset every drone + clear bolts, no remount.
+    // Restart: reset every drone + clear bolts + clear squad coordination, no remount.
     if (match.restartNonce !== lastRestartNonce.current) {
       lastRestartNonce.current = match.restartNonce;
       for (const drone of droneRefs.current) drone?.reset();
       boltRef.current?.clear();
+      // Milestone 9G — every lease/fairness-history entry clears on restart,
+      // exactly like the bolt pool above (see this component's own doc
+      // comment).
+      coordinatorRuntimeRef.current = resetDroneSquadCoordinatorRuntime();
     }
 
     // Drones only think during live combat (active). During countdown they
@@ -148,11 +201,43 @@ export default function DroneSquad() {
       for (let i = 0; i < snapshotCount; i++) {
         droneRefs.current[i]?.writeSpatialSnapshot(spatialSnapshots[i]);
       }
-      // PASS 2 — every drone decides/moves against that SAME snapshot set.
-      // `droneProfile` (Milestone 9E) is captured from the render closure —
-      // memoized once per difficulty change, not recomputed here.
-      for (const drone of droneRefs.current) {
-        drone?.update(targetSnapshot, simulationDeltaS, now, bolts, droneProfile, spatialSnapshots);
+
+      // Milestone 9G — PASS "prepare": every drone reports its own
+      // side-effect-free attack-permit REQUEST into the same shared,
+      // preallocated `attackRequests` array (bounded by `attackRequests.length`,
+      // mirroring PASS 1's own defensive `snapshotCount` guard against a
+      // transient React-commit-window length mismatch). A drone whose ref is
+      // momentarily missing simply keeps its request's stale `wantsAttack`
+      // from a prior substep for this one substep — informational only,
+      // since `resolveDroneSquadCoordination` below only ever GRANTS a
+      // request whose owning drone was actually reachable, and a stale
+      // `wantsAttack:true` with no corresponding real update() call this
+      // substep is harmless (worst case: one substep's wasted candidacy,
+      // self-corrects next substep).
+      const requestCount = Math.min(droneRefs.current.length, attackRequests.length);
+      for (let i = 0; i < requestCount; i++) {
+        droneRefs.current[i]?.prepareAttackRequest(targetSnapshot, now, droneProfile, attackRequests[i]);
+      }
+
+      // Milestone 9G — squad-level coordination: ONE deterministic pass
+      // resolves every request into a permit, order-independent (see
+      // `droneAiSquad.ts`'s own doc comment) — never "first drone to call
+      // wins".
+      const coordination = resolveDroneSquadCoordination(coordinatorRuntimeRef.current, attackRequests, coordinationProfile, now);
+      coordinatorRuntimeRef.current = coordination.runtime;
+
+      // PASS 2 — every drone decides/moves against that SAME snapshot set,
+      // now also consuming this substep's own already-resolved attack
+      // permit (looked up by this drone's own stable spawn id — `spawns`/
+      // `droneRefs.current` share the same 1:1 index correspondence
+      // `spatialSnapshots`/`attackRequests` already rely on). `droneProfile`
+      // (Milestone 9E) is captured from the render closure — memoized once
+      // per difficulty change, not recomputed here.
+      const droneCount = Math.min(droneRefs.current.length, spawns.length);
+      for (let i = 0; i < droneCount; i++) {
+        const drone = droneRefs.current[i];
+        const permit = coordination.permits.get(spawns[i].id) ?? EMPTY_PERMIT;
+        drone?.update(targetSnapshot, simulationDeltaS, now, bolts, droneProfile, spatialSnapshots, permit);
       }
     });
   });

@@ -61,6 +61,22 @@ import { fileURLToPath } from 'node:url';
  * unchanged and that this file stays fully decoupled from
  * `droneAiStuckRecovery.ts` in the one direction that matters (the recovery
  * module never imports the state machine back).
+ *
+ * Milestone 9G extends this file with `droneAiSquad.ts` (also now subject
+ * to every pure-core guard above via `PURE_CORE_FILES` — it deliberately
+ * imports `TrialDifficulty` from `lib/v2/play/difficulty.ts`, the same
+ * established read-only reuse precedent `droneAiDifficulty.ts` already set).
+ * This phase makes the SAME kind of small, disclosed, ADDITIVE change to
+ * `droneAiTypes.ts`/`droneAiStateMachine.ts` 9F already made (a second new
+ * OPTIONAL observation field, `coordinationBlocksAttack`) — the new
+ * 9G-specific describe block below re-confirms the six-state union is STILL
+ * unchanged, that `droneAiSquad.ts` never imports the state machine or the
+ * movement-intent module, that a granted lease's `sector` is never fed into
+ * any movement/steering concept, and that every prior milestone's own
+ * protected-file list (the full 9F module set, `droneAiMovementIntent.ts`,
+ * `droneAiDifficulty.ts`, `droneAiTelegraph.ts`, `DroneBoltPool.tsx`,
+ * `WindLift.tsx`, `PlayerController.tsx`, `/v2/range`, V1 `/play`) remains
+ * byte-unreferenced by any new 9G module.
  */
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
@@ -77,6 +93,7 @@ const PURE_CORE_FILES = [
   'src/lib/v2/ai/droneArenaConfig.ts',
   'src/lib/v2/ai/droneAiArenaConstraints.ts',
   'src/lib/v2/ai/droneAiStuckRecovery.ts',
+  'src/lib/v2/ai/droneAiSquad.ts',
 ];
 
 const FORBIDDEN_IMPORTS: Record<string, RegExp> = {
@@ -472,5 +489,157 @@ describe('droneAiImportGuards — Milestone 9F scope fence (arena constraints + 
     };
     for (const root of roots) walk(path.join(repoRoot, root));
     assert.deepStrictEqual(offenders, [], `V1 files must never import any 9F module: ${offenders.join(', ')}`);
+  });
+});
+
+describe('droneAiImportGuards — Milestone 9G scope fence (squad attack-permit coordination, no formations/flanking/target-calling/navmesh)', () => {
+  it('no file under src/lib/v2/ai/ has a name suggesting formations, flanking, target-calling, squad leaders, combat nodes, or navmesh/pathfinding', () => {
+    const dir = path.join(repoRoot, 'src/lib/v2/ai');
+    const suspicious = fs
+      .readdirSync(dir)
+      .filter((name) => /formation|flank|targetcall|squadleader|combatnode|navmesh|pathfind|waypointgraph/i.test(name));
+    assert.deepStrictEqual(suspicious, [], `unexpected out-of-scope file(s) found in lib/v2/ai/: ${suspicious.join(', ')} — 9G's own brief explicitly forbids these`);
+  });
+
+  it('droneAiSquad.ts defines no formation, flanking, target-calling, squad-leader, combat-node, shared-target-memory, or global-volley-timer CODE concept (word-boundary-anchored so legitimate prose like "informational" never false-positives on "formation")', () => {
+    const src = read('src/lib/v2/ai/droneAiSquad.ts');
+    const forbidden = ['formation', 'flank', 'targetCall', 'squadLeader', 'combatNode', 'sharedTargetMemory', 'globalVolley', 'volleyTimer', 'fireRateTimer'];
+    for (const term of forbidden) {
+      const pattern = new RegExp(`\\b${term}\\b`, 'i');
+      assert.ok(!pattern.test(src), `droneAiSquad.ts must not introduce "${term}" — 9G is attack-permit coordination only, none of the wider squad-AI concepts explicitly ruled out of scope`);
+    }
+  });
+
+  it('droneAiSquad.ts does not IMPORT any navmesh/pathfinding dependency (syntax-anchored, not prose)', () => {
+    const src = read('src/lib/v2/ai/droneAiSquad.ts');
+    assert.ok(!/from\s+['"][^'"]*(navmesh|pathfind|astar)/i.test(src));
+  });
+
+  it('droneAiSquad.ts never imports droneAiStateMachine.ts or droneAiMovementIntent.ts — the coordinator stays fully decoupled, one-directional (the adapter is the only place the two ever meet)', () => {
+    const src = read('src/lib/v2/ai/droneAiSquad.ts');
+    assert.ok(!/from\s+['"]\.\/droneAiStateMachine['"]/.test(src), 'droneAiSquad.ts must not import droneAiStateMachine.ts');
+    assert.ok(!/from\s+['"]\.\/droneAiMovementIntent['"]/.test(src), 'droneAiSquad.ts must not import droneAiMovementIntent.ts (protected)');
+  });
+
+  it('droneAiStateMachine.ts never IMPORTS droneAiSquad.ts (no reverse coupling) — anchored on actual import syntax, not prose', () => {
+    const src = read('src/lib/v2/ai/droneAiStateMachine.ts');
+    assert.ok(!/from\s+['"]\.\/droneAiSquad['"]/.test(src), 'droneAiStateMachine.ts must not import droneAiSquad.ts — the pure state machine only ever reads the one boolean the adapter derives from it');
+  });
+
+  it('CRITICAL SCOPE DECISION — a granted lease\'s sector is never fed into any movement/steering concept: droneAiSquad.ts declares no sector-to-position/direction/steering conversion IDENTIFIER, and droneAiMovementIntent.ts never references sector/permit/lease/coordination at all', () => {
+    const squadSrc = read('src/lib/v2/ai/droneAiSquad.ts');
+    // Anchored on actual combined-identifier names a movement-facing sector
+    // API would need to expose — NOT a proximity regex (fragile: "sector"
+    // and "position" legitimately co-occur in this file already, since a
+    // sector is CORRECTLY computed FROM a drone's current position — that is
+    // not a violation, only a function that turned a sector back INTO a
+    // position/direction/steering target would be).
+    const forbiddenIdentifiers = ['sectorDirection', 'sectorPosition', 'sectorTarget', 'sectorToPosition', 'sectorToDirection', 'moveToSector', 'steerToSector', 'sectorWaypoint', 'sectorDestination'];
+    for (const identifier of forbiddenIdentifiers) {
+      assert.ok(!squadSrc.includes(identifier), `droneAiSquad.ts must not declare "${identifier}" — a sector is firing-permit metadata only, never converted back into a movement input`);
+    }
+    const movementSrc = read('src/lib/v2/ai/droneAiMovementIntent.ts');
+    for (const term of ['sector', 'permit', 'lease', 'coordinationBlocksAttack', 'droneAiSquad']) {
+      assert.ok(!movementSrc.includes(term), `droneAiMovementIntent.ts (protected) must not reference "${term}" — firing-permit sectors are never movement destinations`);
+    }
+  });
+
+  it('droneAiSquad.ts consumes no RNG (no Math.random, no RandomSource import) and reads no clock of its own beyond the explicit nowMs parameter', () => {
+    const src = read('src/lib/v2/ai/droneAiSquad.ts');
+    assert.ok(!src.includes('Math.random('));
+    assert.ok(!/from\s+['"]\.\/droneAiRandom['"]/.test(src), 'droneAiSquad.ts must not import droneAiRandom.ts — every fairness tiebreak is deterministic (drone-ID compare), never randomized');
+  });
+
+  it('droneAiSquad.ts uses no timer/interval/rAF APIs', () => {
+    const src = read('src/lib/v2/ai/droneAiSquad.ts');
+    assert.ok(!src.includes('setTimeout('));
+    assert.ok(!src.includes('setInterval('));
+    assert.ok(!src.includes('requestAnimationFrame('));
+  });
+
+  it('droneAiTypes.ts DroneAiRuntimeState union is unchanged by 9G — still exactly six states', () => {
+    const src = read('src/lib/v2/ai/droneAiTypes.ts');
+    const match = src.match(/export type DroneAiRuntimeState = ([^;]+);/);
+    assert.ok(match, 'DroneAiRuntimeState union must still be declared');
+    const states = match![1].match(/'[a-z-]+'/g) ?? [];
+    assert.deepStrictEqual(states.sort(), ["'attacking'", "'destroyed'", "'engaging'", "'investigating'", "'searching'", "'spawning'"].sort(), '9G must not add or remove a runtime AI state — coordination is a squad-owned permit result, not a state');
+  });
+
+  it('droneAiTelegraph.ts is untouched by 9G — no new telegraph phase, no reference to the squad coordinator', () => {
+    const src = read('src/lib/v2/ai/droneAiTelegraph.ts');
+    const match = src.match(/export type DroneTelegraphPhase = ([^;]+);/);
+    assert.ok(match);
+    const phases = match![1].match(/'[a-z-]+'/g) ?? [];
+    assert.deepStrictEqual(phases.sort(), ["'idle'", "'acquire'", "'reaction'", "'windup'", "'fire'", "'cooldown'", "'hit'", "'destroyed'"].sort(), '9G must not add a coordination/sector telegraph phase');
+    assert.ok(!src.includes('droneAiSquad'), 'droneAiTelegraph.ts must not reference the new squad coordinator module');
+  });
+
+  it('droneAiDifficulty.ts, droneAiMovementIntent.ts, droneAiStuckRecovery.ts, droneAiArenaConstraints.ts, droneArenaConfig.ts (all protected) do not reference the new 9G module', () => {
+    for (const relPath of [
+      'src/lib/v2/ai/droneAiDifficulty.ts',
+      'src/lib/v2/ai/droneAiMovementIntent.ts',
+      'src/lib/v2/ai/droneAiStuckRecovery.ts',
+      'src/lib/v2/ai/droneAiArenaConstraints.ts',
+      'src/lib/v2/ai/droneArenaConfig.ts',
+    ]) {
+      const src = read(relPath);
+      assert.ok(!src.includes('droneAiSquad'), `${relPath} must not reference droneAiSquad.ts`);
+    }
+  });
+
+  it('DroneBoltPool.tsx, WindLift.tsx, PlayerController.tsx (protected) remain untouched by the new 9G module', () => {
+    for (const relPath of ['src/components/three/play/DroneBoltPool.tsx', 'src/components/three/play/WindLift.tsx', 'src/components/three/play/PlayerController.tsx']) {
+      const src = read(relPath);
+      assert.ok(!src.includes('droneAiSquad'), `${relPath} must never reference the squad coordinator`);
+    }
+  });
+
+  it('DroneEnemy.tsx does not create its own useFrame even after the 9G prepareAttackRequest addition — DroneSquad remains the sole frame owner', () => {
+    const src = read('src/components/three/play/DroneEnemy.tsx');
+    assert.ok(!src.includes('useFrame'), 'DroneEnemy.tsx must stay a pure imperative-handle adapter after 9G');
+  });
+
+  it('DroneEnemy.tsx exposes prepareAttackRequest without creating a second frame owner, and DroneSquad.tsx calls it BEFORE update() in source order (prepare -> coordinate -> commit, never order-dependent)', () => {
+    const enemySrc = read('src/components/three/play/DroneEnemy.tsx');
+    assert.ok(enemySrc.includes('prepareAttackRequest'), 'DroneEnemy.tsx must expose the new prepareAttackRequest handle method for DroneSquad\'s prepare pass');
+    const squadSrc = read('src/components/three/play/DroneSquad.tsx');
+    // Anchored on the actual CALL SITES, not the doc comment above them —
+    // this file's own doc comment legitimately mentions
+    // `resolveDroneSquadCoordination()` by name in prose (with its own
+    // empty-parens function-reference style), so the real call is anchored
+    // on its distinctive first argument instead of the bare function name.
+    const prepareCallIndex = squadSrc.indexOf('?.prepareAttackRequest(');
+    const coordinateCallIndex = squadSrc.indexOf('resolveDroneSquadCoordination(coordinatorRuntimeRef');
+    const updateCallIndex = squadSrc.indexOf('drone?.update(');
+    assert.ok(prepareCallIndex > 0 && coordinateCallIndex > prepareCallIndex && updateCallIndex > coordinateCallIndex, 'PASS order must be prepare -> coordinate -> commit in source order, never a single per-drone loop that both requests and commits inline');
+  });
+
+  it('DroneSquad.tsx resets the squad coordinator runtime in the SAME restart branch that resets every drone and clears the bolt pool', () => {
+    const src = read('src/components/three/play/DroneSquad.tsx');
+    const restartBranchMatch = src.match(/restartNonce !== lastRestartNonce\.current\)\s*\{([\s\S]*?)\n\s*\}/);
+    assert.ok(restartBranchMatch, 'the restart branch must still exist');
+    assert.ok(restartBranchMatch![1].includes('resetDroneSquadCoordinatorRuntime'), 'restart must clear the squad coordinator runtime alongside every drone reset and the bolt-pool clear — "restarts clear everything"');
+  });
+
+  it('/v2/range (RangeScene.tsx) does not import the new 9G module', () => {
+    const src = read('src/components/three/range/RangeScene.tsx');
+    assert.ok(!src.includes('droneAiSquad'));
+  });
+
+  it('no V1 source file under src/components/game or src/lib/game references the new 9G module', () => {
+    const roots = ['src/components/game', 'src/lib/game'];
+    const offenders: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (/\.(tsx?|jsx?)$/.test(entry.name)) {
+          const src = fs.readFileSync(full, 'utf8');
+          if (src.includes('droneAiSquad')) offenders.push(full);
+        }
+      }
+    };
+    for (const root of roots) walk(path.join(repoRoot, root));
+    assert.deepStrictEqual(offenders, [], `V1 files must never import the 9G module: ${offenders.join(', ')}`);
   });
 });

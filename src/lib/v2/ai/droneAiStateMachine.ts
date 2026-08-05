@@ -1,4 +1,4 @@
-import type { LegacyDroneAiDecision, LegacyDroneAiObservation, LegacyDroneAiRuntime, LegacyDroneMovementMode, Vec3Data } from './droneAiTypes';
+import type { DroneAiRuntimeState, LegacyDroneAiDecision, LegacyDroneAiObservation, LegacyDroneAiRuntime, LegacyDroneMovementMode, Vec3Data } from './droneAiTypes';
 import type { RandomSource } from './droneAiRandom';
 
 /**
@@ -78,6 +78,17 @@ import type { RandomSource } from './droneAiRandom';
  * one boolean the adapter derives from that overlay's own `recoveryActive`
  * flag. Every pre-9F test/call site is unaffected (the field is optional,
  * `undefined` behaves identically to its prior absence).
+ *
+ * MILESTONE 9G — the attack block gains a SECOND additional, OPTIONAL gate
+ * of the exact same shape: `observation.coordinationBlocksAttack` (default
+ * falsy — see that field's own doc comment in `droneAiTypes.ts`). This is
+ * the ONLY change 9G makes to this file: the same two `if`/`else if`
+ * conditions extended once more, nothing else. `DroneAiRuntimeState` remains
+ * UNCHANGED (still exactly six values) — 9G's own squad attack-permit
+ * coordinator (`droneAiSquad.ts`) is a fully separate, squad-owned runtime
+ * this file never imports and knows nothing about; it only ever reads this
+ * one boolean the adapter derives from that coordinator's own per-tick
+ * permit result. Every pre-9G test/call site is unaffected.
  */
 
 /** A player-life generation no real `matchStore.respawnNonce` value can ever equal (it only ever counts up from 0) — see `LegacyDroneAiRuntime.observedPlayerGeneration`'s own doc comment. */
@@ -182,6 +193,66 @@ export function resetLegacyDroneRuntime(previous: LegacyDroneAiRuntime, rng: Ran
     // "starts fresh every life" treatment as the 9C memory fields above.
     reactionReadyAtMs: null,
   };
+}
+
+/**
+ * Milestone 9G.1 — the SINGLE shared attack-eligibility predicate, now used
+ * by BOTH this file's own attack block (`decideLegacyDroneAi`, below) AND
+ * the adapter's read-only preview (`DroneEnemy.tsx`'s `prepareAttackRequest()`,
+ * which the squad coordinator consults BEFORE this function ever runs this
+ * tick). Extracted specifically to close the drift risk a duplicated
+ * predicate would otherwise carry between the two call sites — a surgical
+ * refactor, not a redesign: mathematically proven equivalent to the
+ * pre-extraction inline expressions it replaces (see `docs/decisions.md`'s
+ * 9G.1 entry for the full proof), confirmed byte-identical by every
+ * pre-existing state-machine/parity test passing unmodified. Pure,
+ * deterministic, no RNG, no clock read — every timestamp/flag is an
+ * explicit input, matching this whole file's own established convention.
+ *
+ * Answers exactly one question: "would this drone attack THIS TICK if
+ * nothing squad-level blocked it?" — deliberately EXCLUDES
+ * `coordinationBlocksAttack` itself, since the squad coordinator needs
+ * exactly this answer BEFORE it can decide whether to grant a permit in the
+ * first place (folding `coordinationBlocksAttack` in here would be
+ * circular). The real attack block ANDs `!observation.coordinationBlocksAttack`
+ * on top of this function's own result, never inside it.
+ *
+ * Folds together, in one expression, both of the legacy code's own
+ * previously-separate gates: the OUTER "may attack processing happen at all
+ * this tick" gate (state/stunned/canSeePlayer/recoveryBlocksAttack) AND the
+ * INNER "may a NEW windup begin" gate (reactionReady, cooldown elapsed) —
+ * via `(state === 'attacking' || (reactionReady && cooldownElapsed))`. This
+ * is DELIBERATELY not the same as ANDing `reactionReady`/`cooldownElapsed`
+ * unconditionally: an already-`attacking` drone's windup COMPLETION/firing
+ * must never be re-gated by either check (only windup START is gated,
+ * exactly matching the legacy code's own two-separate-`if` structure and
+ * proven by a dedicated permanent regression test —
+ * `droneAiStateMachine.test.ts`'s "reaction gate does not block windup
+ * COMPLETION/firing" — forcing a stale/never-satisfied `reactionReadyAtMs`
+ * onto an already-`attacking` runtime and confirming firing still occurs).
+ * The `(state === 'attacking' || ...)` short-circuit is what makes this
+ * true: once `state === 'attacking'`, neither `reactionReady` nor
+ * `cooldownElapsed` is evaluated at all for the purpose of this predicate.
+ */
+export function evaluateAttackReadiness(input: {
+  state: DroneAiRuntimeState;
+  stunned: boolean;
+  canSeePlayer: boolean;
+  recoveryBlocksAttack: boolean;
+  reactionReadyAtMs: number | null;
+  nowMs: number;
+  lastFireAtMs: number;
+  fireIntervalMs: number;
+}): boolean {
+  const reactionReady = input.reactionReadyAtMs === null || input.nowMs >= input.reactionReadyAtMs;
+  const cooldownElapsed = input.nowMs - input.lastFireAtMs >= input.fireIntervalMs;
+  return (
+    (input.state === 'engaging' || input.state === 'attacking') &&
+    !input.stunned &&
+    input.canSeePlayer &&
+    !input.recoveryBlocksAttack &&
+    (input.state === 'attacking' || (reactionReady && cooldownElapsed))
+  );
 }
 
 function destroyedDecision(runtime: LegacyDroneAiRuntime, observation: LegacyDroneAiObservation, requestRecordDestroyed: boolean): LegacyDroneAiDecision {
@@ -470,18 +541,42 @@ export function decideLegacyDroneAi(runtime: LegacyDroneAiRuntime, observation: 
   let abortWindup = generationInvalidatedAttack;
   let fireExactlyOnce = false;
   let aimSpread: { x: number; y: number; z: number } | null = null;
-  const reactionReady = reactionReadyAtMs === null || now >= reactionReadyAtMs;
 
-  // Milestone 9F — `recoveryBlocksAttack` (optional, default falsy — see
-  // `droneAiTypes.ts`'s own doc comment on this field for the full,
-  // disclosed contract) is folded into BOTH the outer gate and the abort
-  // condition below, so a drone whose adapter-owned stuck-recovery overlay
-  // is currently active can neither START nor CONTINUE a windup, and any
-  // IN-PROGRESS windup aborts through this exact same pre-existing branch
-  // stunned/LOS-loss already use — no new branch, no behaviour change at
-  // all when the field is omitted/false (every pre-9F caller).
-  if ((state === 'engaging' || state === 'attacking') && !stunned && observation.canSeePlayer && !observation.recoveryBlocksAttack) {
-    if (state === 'engaging' && reactionReady && now - lastFireAtMs >= observation.fireIntervalMs) {
+  // Milestone 9G.1 — `attackEligible` replaces the two separate inline
+  // boolean expressions (outer gate + inner windup-start gate) the
+  // legacy/9E/9F/9G code used previously, via the SHARED
+  // `evaluateAttackReadiness()` predicate above — the same function
+  // `DroneEnemy.tsx`'s `prepareAttackRequest()` now calls, closing the
+  // duplicated-predicate drift risk 9G's own first pass disclosed. Proven
+  // byte-identical to the pre-extraction code (see that function's own doc
+  // comment, and `docs/decisions.md`'s 9G.1 entry): for an already-`attacking`
+  // drone, `attackEligible` reduces to exactly `!stunned && canSeePlayer &&
+  // !recoveryBlocksAttack` — `reactionReady`/`cooldownElapsed` are NEVER
+  // consulted once already attacking, so windup completion/firing is never
+  // re-gated by them, exactly matching the legacy structure (confirmed by a
+  // dedicated permanent regression test that forces a stale
+  // `reactionReadyAtMs` onto an already-`attacking` runtime).
+  // `coordinationBlocksAttack` (Milestone 9G) is deliberately NOT part of
+  // the shared predicate itself (see that function's own doc comment) —
+  // folded in here, on top, exactly as `recoveryBlocksAttack` already is
+  // inside the predicate: a drone without a currently-granted squad
+  // attack-permit lease can neither START nor CONTINUE a windup, and any
+  // IN-PROGRESS windup aborts through this same pre-existing branch —
+  // still no new branch, no behaviour change at all when the field is
+  // omitted/false (every pre-9G caller).
+  const attackEligible = evaluateAttackReadiness({
+    state,
+    stunned,
+    canSeePlayer: observation.canSeePlayer,
+    recoveryBlocksAttack: observation.recoveryBlocksAttack ?? false,
+    reactionReadyAtMs,
+    nowMs: now,
+    lastFireAtMs,
+    fireIntervalMs: observation.fireIntervalMs,
+  });
+
+  if (attackEligible && !observation.coordinationBlocksAttack) {
+    if (state === 'engaging') {
       state = 'attacking';
       windupUntilMs = now + observation.attackWindupMs;
       startWindup = true;
@@ -497,7 +592,7 @@ export function decideLegacyDroneAi(runtime: LegacyDroneAiRuntime, observation: 
       lastFireAtMs = now;
       state = 'engaging';
     }
-  } else if (state === 'attacking' && (stunned || !observation.canSeePlayer || observation.recoveryBlocksAttack)) {
+  } else if (state === 'attacking' && (!attackEligible || observation.coordinationBlocksAttack)) {
     // Abort — mirrors the legacy code exactly: only `state` changes.
     // `windupUntilMs` is deliberately left as-is (stale until the next real
     // windup start overwrites it) — it is never read while state !== 'attacking'.

@@ -1,6 +1,9 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { createLegacyDroneRuntime, decideLegacyDroneAi, resetLegacyDroneRuntime } from './droneAiStateMachine';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createLegacyDroneRuntime, decideLegacyDroneAi, evaluateAttackReadiness, resetLegacyDroneRuntime } from './droneAiStateMachine';
 import { createSeededRandomSource, createTapeRandomSource } from './droneAiRandom';
 import type { LegacyDroneAiObservation, LegacyDroneAiRuntime } from './droneAiTypes';
 
@@ -1289,5 +1292,215 @@ describe('droneAiStateMachine — Milestone 9F recoveryBlocksAttack gate (option
   it('DroneAiRuntimeState union is unchanged — still exactly six states — after the 9F addition', () => {
     const valid = new Set(['spawning', 'searching', 'investigating', 'engaging', 'attacking', 'destroyed']);
     assert.strictEqual(valid.size, 6);
+  });
+});
+
+describe('droneAiStateMachine — Milestone 9G coordinationBlocksAttack gate (optional, default falsy)', () => {
+  it('omitting coordinationBlocksAttack entirely is byte-identical to explicit false — an engaging, cooled-down, visible drone still starts a windup normally', () => {
+    const runtime = { ...freshRuntime(), state: 'engaging' as const, lastFireAtMs: -10000 };
+    const withoutField = decideLegacyDroneAi(runtime, obs({ nowMs: 0 }), createSeededRandomSource(5));
+    const withFalse = decideLegacyDroneAi(runtime, obs({ nowMs: 0, coordinationBlocksAttack: false }), createSeededRandomSource(5));
+    assert.strictEqual(withoutField.startWindup, true);
+    assert.deepStrictEqual(withoutField, withFalse);
+  });
+
+  it('coordinationBlocksAttack=true prevents a new windup from starting while engaging (no granted attack-permit lease)', () => {
+    const runtime = { ...freshRuntime(), state: 'engaging' as const, lastFireAtMs: -10000 };
+    const decision = decideLegacyDroneAi(runtime, obs({ nowMs: 0, coordinationBlocksAttack: true }), createSeededRandomSource(5));
+    assert.strictEqual(decision.startWindup, false);
+    assert.strictEqual(decision.state, 'engaging');
+    assert.strictEqual(decision.fireExactlyOnce, false);
+  });
+
+  it('coordinationBlocksAttack=true aborts an IN-PROGRESS windup through the existing abort branch — zero fire, zero spread RNG, lastFireAtMs untouched', () => {
+    const rng = createSeededRandomSource(7);
+    let runtime: LegacyDroneAiRuntime = { ...freshRuntime(rng), state: 'engaging', lastFireAtMs: -10000 };
+    const started = decideLegacyDroneAi(runtime, obs({ nowMs: 0 }), rng);
+    assert.strictEqual(started.startWindup, true);
+    runtime = started.runtime;
+    const lastFireBeforeAbort = runtime.lastFireAtMs;
+    const windupUntilBeforeAbort = runtime.windupUntilMs;
+
+    // The squad coordinator revokes the lease mid-windup (e.g. a real
+    // combat-gate failure the coordinator's own request predicate detected).
+    const aborted = decideLegacyDroneAi(runtime, obs({ nowMs: 100, coordinationBlocksAttack: true }), rng);
+    assert.strictEqual(aborted.state, 'engaging', 'an in-progress windup must abort back to engaging');
+    assert.strictEqual(aborted.abortWindup, true);
+    assert.strictEqual(aborted.fireExactlyOnce, false);
+    assert.strictEqual(aborted.aimSpread, null);
+    assert.strictEqual(aborted.runtime.lastFireAtMs, lastFireBeforeAbort, 'lastFireAtMs must be exactly untouched by a coordination-triggered abort');
+    assert.strictEqual(aborted.runtime.windupUntilMs, windupUntilBeforeAbort, 'windupUntilMs is left stale (matches the existing stun/LOS/recovery abort convention), never reset');
+  });
+
+  it('coordinationBlocksAttack=true even on the exact tick a windup would otherwise complete prevents firing (no free shot)', () => {
+    const rng = createSeededRandomSource(9);
+    let runtime: LegacyDroneAiRuntime = { ...freshRuntime(rng), state: 'engaging', lastFireAtMs: -10000 };
+    const started = decideLegacyDroneAi(runtime, obs({ nowMs: 0 }), rng);
+    runtime = started.runtime;
+    const windupUntil = runtime.windupUntilMs;
+    const result = decideLegacyDroneAi(runtime, obs({ nowMs: windupUntil, coordinationBlocksAttack: true }), rng);
+    assert.strictEqual(result.fireExactlyOnce, false);
+    assert.strictEqual(result.aimSpread, null);
+    assert.strictEqual(result.state, 'engaging');
+  });
+
+  it('after coordinationBlocksAttack returns to false (permit re-granted), the drone resumes normal cadence — no reset reaction gate, no forced reacquisition, cooldown continues counting through the blocked period', () => {
+    const rng = createSeededRandomSource(11);
+    let runtime: LegacyDroneAiRuntime = { ...freshRuntime(rng), state: 'engaging', lastFireAtMs: -10000 };
+    const started = decideLegacyDroneAi(runtime, obs({ nowMs: 0 }), rng);
+    runtime = started.runtime;
+    const aborted = decideLegacyDroneAi(runtime, obs({ nowMs: 100, coordinationBlocksAttack: true }), rng);
+    runtime = aborted.runtime;
+    for (let now = 200; now < 2000; now += 200) {
+      const held = decideLegacyDroneAi(runtime, obs({ nowMs: now, coordinationBlocksAttack: true }), rng);
+      assert.strictEqual(held.targetAcquired, false, 'holding coordination-block must never replay an acquire cue');
+      assert.strictEqual(held.startWindup, false);
+      runtime = held.runtime;
+    }
+    const resumed = decideLegacyDroneAi(runtime, obs({ nowMs: 2000 + BASE.fireIntervalMs }), rng);
+    assert.strictEqual(resumed.startWindup, true, 'a real windup must be able to start again once the permit is re-granted and the (unmodified) cooldown has elapsed');
+    assert.strictEqual(resumed.targetAcquired, false, 'resuming after a coordination block must never fabricate a fresh acquisition');
+  });
+
+  it('coordinationBlocksAttack has no effect on state transitions unrelated to the attack block — truthful perception/investigating remain unaffected', () => {
+    const rng = createSeededRandomSource(13);
+    let runtime: LegacyDroneAiRuntime = { ...freshRuntime(rng), state: 'engaging' };
+    const seen = decideLegacyDroneAi(runtime, obs({ nowMs: 0, canSeePlayer: true, coordinationBlocksAttack: true }), rng);
+    runtime = seen.runtime;
+    let now = 0;
+    for (let i = 0; i < 20; i++) {
+      now += 50;
+      const d = decideLegacyDroneAi(runtime, obs({ nowMs: now, canSeePlayer: false, coordinationBlocksAttack: true }), rng);
+      runtime = d.runtime;
+    }
+    assert.strictEqual(runtime.state, 'investigating', 'real LOS loss must still produce a truthful investigating transition regardless of coordinationBlocksAttack');
+  });
+
+  it('coordinationBlocksAttack and recoveryBlocksAttack compose — either alone blocks attack, and both simultaneously behave identically to either alone', () => {
+    const runtime = { ...freshRuntime(), state: 'engaging' as const, lastFireAtMs: -10000 };
+    const coordOnly = decideLegacyDroneAi(runtime, obs({ nowMs: 0, coordinationBlocksAttack: true, recoveryBlocksAttack: false }), createSeededRandomSource(5));
+    const recoveryOnly = decideLegacyDroneAi(runtime, obs({ nowMs: 0, coordinationBlocksAttack: false, recoveryBlocksAttack: true }), createSeededRandomSource(5));
+    const both = decideLegacyDroneAi(runtime, obs({ nowMs: 0, coordinationBlocksAttack: true, recoveryBlocksAttack: true }), createSeededRandomSource(5));
+    assert.strictEqual(coordOnly.startWindup, false);
+    assert.strictEqual(recoveryOnly.startWindup, false);
+    assert.strictEqual(both.startWindup, false);
+  });
+
+  it('DroneAiRuntimeState union is unchanged — still exactly six states — after the 9G addition', () => {
+    const valid = new Set(['spawning', 'searching', 'investigating', 'engaging', 'attacking', 'destroyed']);
+    assert.strictEqual(valid.size, 6);
+  });
+});
+
+describe('droneAiStateMachine — Milestone 9G.1 evaluateAttackReadiness: exhaustive combinatorial parity', () => {
+  const ALL_STATES = ['spawning', 'searching', 'investigating', 'engaging', 'attacking', 'destroyed'];
+  const NOW = 10_000;
+  const FIRE_INTERVAL = 500;
+
+  /**
+   * Independently-structured reference oracle — deliberately an early-return
+   * chain, NOT the AND-expression shape `evaluateAttackReadiness` itself
+   * uses, to minimize the chance an identical bug is present in both. Hand
+   * -derived directly from the ORIGINAL (pre-9G.1) legacy two-`if`
+   * structure this extraction replaced: outer gate
+   * (state/stunned/canSeePlayer/recoveryBlocksAttack), then — ONLY while
+   * `engaging` — the inner reaction/cooldown gate; an already-`attacking`
+   * drone's continuation is NEVER re-gated by reaction/cooldown.
+   */
+  function referenceAttackEligible(params: { state: string; stunned: boolean; canSeePlayer: boolean; recoveryBlocksAttack: boolean; reactionReady: boolean; cooldownElapsed: boolean }): boolean {
+    if (params.state !== 'engaging' && params.state !== 'attacking') return false;
+    if (params.stunned) return false;
+    if (!params.canSeePlayer) return false;
+    if (params.recoveryBlocksAttack) return false;
+    if (params.state === 'attacking') return true;
+    return params.reactionReady && params.cooldownElapsed;
+  }
+
+  it('agrees with an independently-structured reference oracle across every combination of state x stunned x canSeePlayer x recoveryBlocksAttack x reactionReady x cooldownElapsed (192 cases)', () => {
+    let casesChecked = 0;
+    for (const state of ALL_STATES) {
+      for (const stunned of [true, false]) {
+        for (const canSeePlayer of [true, false]) {
+          for (const recoveryBlocksAttack of [true, false]) {
+            for (const reactionReady of [true, false]) {
+              for (const cooldownElapsed of [true, false]) {
+                const reactionReadyAtMs = reactionReady ? NOW - 1 : NOW + 100_000;
+                const lastFireAtMs = cooldownElapsed ? NOW - FIRE_INTERVAL - 1 : NOW - 1;
+                const actual = evaluateAttackReadiness({
+                  state: state as any,
+                  stunned,
+                  canSeePlayer,
+                  recoveryBlocksAttack,
+                  reactionReadyAtMs,
+                  nowMs: NOW,
+                  lastFireAtMs,
+                  fireIntervalMs: FIRE_INTERVAL,
+                });
+                const expected = referenceAttackEligible({ state, stunned, canSeePlayer, recoveryBlocksAttack, reactionReady, cooldownElapsed });
+                assert.strictEqual(
+                  actual,
+                  expected,
+                  `mismatch: state=${state} stunned=${stunned} canSeePlayer=${canSeePlayer} recoveryBlocksAttack=${recoveryBlocksAttack} reactionReady=${reactionReady} cooldownElapsed=${cooldownElapsed} — got ${actual}, expected ${expected}`,
+                );
+                casesChecked += 1;
+              }
+            }
+          }
+        }
+      }
+    }
+    assert.strictEqual(casesChecked, 6 * 2 * 2 * 2 * 2 * 2, 'must have exhaustively checked all 192 combinations, not a subset');
+  });
+
+  it('reactionReadyAtMs === null is always reaction-ready, matching the "no pending reaction wait" convention', () => {
+    const result = evaluateAttackReadiness({ state: 'engaging', stunned: false, canSeePlayer: true, recoveryBlocksAttack: false, reactionReadyAtMs: null, nowMs: NOW, lastFireAtMs: NOW - FIRE_INTERVAL - 1, fireIntervalMs: FIRE_INTERVAL });
+    assert.strictEqual(result, true);
+  });
+
+  it('consumes no RNG and reads no clock of its own — every timestamp is an explicit input (pure function property)', () => {
+    const input = { state: 'engaging' as const, stunned: false, canSeePlayer: true, recoveryBlocksAttack: false, reactionReadyAtMs: null, nowMs: NOW, lastFireAtMs: NOW - FIRE_INTERVAL - 1, fireIntervalMs: FIRE_INTERVAL };
+    const a = evaluateAttackReadiness(input);
+    const b = evaluateAttackReadiness(input);
+    const c = evaluateAttackReadiness({ ...input });
+    assert.strictEqual(a, b);
+    assert.strictEqual(a, c);
+  });
+
+  it('an already-attacking drone with a stale/never-satisfied reactionReadyAtMs and a not-yet-elapsed cooldown is STILL eligible — proves neither gate is re-checked once attacking (the exact scenario the dedicated regression test above exercises end-to-end)', () => {
+    const result = evaluateAttackReadiness({
+      state: 'attacking',
+      stunned: false,
+      canSeePlayer: true,
+      recoveryBlocksAttack: false,
+      reactionReadyAtMs: Number.POSITIVE_INFINITY,
+      nowMs: NOW,
+      lastFireAtMs: NOW, // cooldown could not possibly have elapsed (0ms since last fire)
+      fireIntervalMs: FIRE_INTERVAL,
+    });
+    assert.strictEqual(result, true);
+  });
+
+  it('boundary: reactionReadyAtMs === nowMs (exactly) counts as ready (>=, not >)', () => {
+    const result = evaluateAttackReadiness({ state: 'engaging', stunned: false, canSeePlayer: true, recoveryBlocksAttack: false, reactionReadyAtMs: NOW, nowMs: NOW, lastFireAtMs: NOW - FIRE_INTERVAL, fireIntervalMs: FIRE_INTERVAL });
+    assert.strictEqual(result, true);
+  });
+
+  it('boundary: nowMs - lastFireAtMs === fireIntervalMs (exactly) counts as cooldown-elapsed (>=, not >)', () => {
+    const result = evaluateAttackReadiness({ state: 'engaging', stunned: false, canSeePlayer: true, recoveryBlocksAttack: false, reactionReadyAtMs: null, nowMs: NOW, lastFireAtMs: NOW - FIRE_INTERVAL, fireIntervalMs: FIRE_INTERVAL });
+    assert.strictEqual(result, true);
+  });
+});
+
+describe('droneAiStateMachine — Milestone 9G.1: DroneEnemy.tsx consumes the SHARED evaluateAttackReadiness — no duplicated predicate remains (structural guard)', () => {
+  it('DroneEnemy.tsx imports and calls evaluateAttackReadiness from droneAiStateMachine.ts, and no longer computes its own inline wantsAttack boolean expression', () => {
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
+    const src = fs.readFileSync(path.join(repoRoot, 'src/components/three/play/DroneEnemy.tsx'), 'utf8');
+    assert.ok(/import\s*\{[^}]*\bevaluateAttackReadiness\b[^}]*\}\s*from\s*['"]@\/lib\/v2\/ai\/droneAiStateMachine['"]/.test(src), 'DroneEnemy.tsx must import evaluateAttackReadiness from droneAiStateMachine.ts');
+    assert.ok(src.includes('evaluateAttackReadiness({'), 'DroneEnemy.tsx must actually CALL evaluateAttackReadiness (not just import it unused)');
+    // The old hand-duplicated boolean expression must be gone — anchored on
+    // its own distinctive shape (state/stunned/canSeePlayer chained with the
+    // reaction/cooldown OR-clause) so this test would fail if a future edit
+    // reintroduced a parallel inline predicate instead of reusing the shared one.
+    assert.ok(!/state === 'engaging' \|\| state === 'attacking'\).*!stunned.*canSeePlayer/.test(src), 'DroneEnemy.tsx must not reintroduce its own inline duplicate of the attack-eligibility predicate');
   });
 });

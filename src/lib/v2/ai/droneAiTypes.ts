@@ -209,6 +209,27 @@ export interface LegacyDroneAiObservation {
    * file at all.
    */
   recoveryBlocksAttack?: boolean;
+
+  /**
+   * Milestone 9G — OPTIONAL, squad-owned attack-permit gate. Identical shape
+   * and precedent to `recoveryBlocksAttack` immediately above —
+   * `undefined`/`false` (every pre-9G call site, and every 9B-9F test) is
+   * byte-identical to omitting this field entirely. Set true by the adapter
+   * (`DroneEnemy.tsx`) on exactly the ticks its own separate, squad-level
+   * `DroneSquadCoordinatorRuntime` (`droneAiSquad.ts`, a fully decoupled pure
+   * module this file never imports) reports this drone does NOT currently
+   * hold a granted attack-permit lease. When true: a new windup may not
+   * START, and an IN-PROGRESS windup is aborted through the exact same
+   * existing `abortWindup` branch stunned/LOS-loss/`recoveryBlocksAttack`
+   * already use — only `state` changes; no free retry, no reset cooldown, no
+   * fire cue, no spread RNG. This is a deliberate, disclosed, minimal
+   * extension of the SAME attack-gating contract 9F already established —
+   * NOT a new AI state, NOT a change to `DroneAiRuntimeState`'s six-value
+   * union, NOT a reverse dependency (`droneAiSquad.ts` never imports this
+   * file or `droneAiStateMachine.ts`). See `docs/decisions.md`'s Step 9G
+   * entry for the full reasoning.
+   */
+  coordinationBlocksAttack?: boolean;
 }
 
 export type LegacyDroneMovementMode = 'spawn-hold' | 'search' | 'stunned-hold' | 'engage' | 'attack' | 'investigate' | 'destroyed-hold';

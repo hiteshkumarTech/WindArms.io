@@ -9,7 +9,7 @@ import { resolveDroneConfig } from '@/lib/v2/play/difficulty';
 import { useV2MatchStore } from '@/lib/v2/play/matchStore';
 import { OCCLUDERS } from '@/lib/v2/play/spawnConfig';
 import type { DroneAiState, DroneSpawnDef } from '@/lib/v2/play/types';
-import { createLegacyDroneRuntime, decideLegacyDroneAi, resetLegacyDroneRuntime } from '@/lib/v2/ai/droneAiStateMachine';
+import { createLegacyDroneRuntime, decideLegacyDroneAi, evaluateAttackReadiness, resetLegacyDroneRuntime } from '@/lib/v2/ai/droneAiStateMachine';
 import { createSeededRandomSource, deriveDroneSeed, type RandomSource } from '@/lib/v2/ai/droneAiRandom';
 import { evaluateDronePerception, DRONE_PERCEPTION_MEMORY } from '@/lib/v2/ai/droneAiPerception';
 import { resolveDroneMovementIntent, type DroneMovementIntent, type DroneSpatialSnapshot } from '@/lib/v2/ai/droneAiMovementIntent';
@@ -30,6 +30,7 @@ import {
 } from '@/lib/v2/ai/droneAiStuckRecovery';
 import { DRONE_MUZZLE_LOCAL_OFFSET } from './droneVisualConfig';
 import type { DroneBoltHandle } from './DroneBoltPool';
+import type { DroneAttackPermit, DroneAttackRequest } from '@/lib/v2/ai/droneAiSquad';
 
 /**
  * One hostile wind training-drone (Milestone 6). TEMPORARY gameplay target,
@@ -142,14 +143,49 @@ import type { DroneBoltHandle } from './DroneBoltPool';
  * `observedPlayerGeneration` sentinel pattern to detect a player death/
  * respawn from OUTSIDE that module, since this recovery runtime is not
  * something `droneAiStateMachine.ts` knows how to invalidate itself.
+ *
+ * MILESTONE 9G — adds a THIRD handle method, `prepareAttackRequest`, called
+ * by `DroneSquad.tsx` in a new PASS run BEFORE `update()` each substep (see
+ * that file's own doc comment for the full three-phase pass order:
+ * spatial-snapshot capture -> attack-request preparation -> squad-level
+ * coordination -> per-drone commit). `prepareAttackRequest` mirrors
+ * `writeSpatialSnapshot`'s own "reused output object, no allocation, no
+ * mutation of stored refs" convention exactly — it computes this tick's
+ * perception (`evaluateDronePerception`, the SAME call `update()` already
+ * makes) and this drone's own attack-eligibility predicate (a deliberate,
+ * disclosed, read-only DUPLICATE of `droneAiStateMachine.ts`'s own attack-
+ * block gate — state/stunned/canSeePlayer/recoveryBlocksAttack/reactionReady/
+ * cooldown — see that method's own doc comment for why this duplication is
+ * safe: it can only ever ADD a restriction via the coordinator's resulting
+ * permit, never replace or bypass the real gate, which is re-evaluated
+ * live, independently, inside `decideLegacyDroneAi` itself every tick). The
+ * resulting `DroneAttackRequest` is squad-coordinated
+ * (`resolveDroneSquadCoordination`, `droneAiSquad.ts`) into a
+ * `DroneAttackPermit` BEFORE `update()` runs this same substep; `update()`
+ * then folds `!permit.granted` into the new, optional
+ * `LegacyDroneAiObservation.coordinationBlocksAttack` field (see
+ * `droneAiTypes.ts`'s own doc comment) — the ONLY new input this phase feeds
+ * into the pure state machine, mirroring `recoveryBlocksAttack`'s own 9F
+ * precedent exactly. `update()`'s OWN signature gains one new trailing
+ * parameter, `permit`, for this purpose.
  */
 export interface DroneHandle {
-  /** Called by DroneSquad, possibly several times per rendered frame (once per fixed-step substep — see fixedStep.ts), with the shared player target snapshot (position/alive/generation — one object, reused every substep, never a per-drone camera read), the shared bolt pool, the difficulty-resolved combat/cadence profile (Milestone 9E — HP baked in at spawn/reset time; the rest read live here), and this substep's pre-movement squad spatial snapshot (see `writeSpatialSnapshot` below). `simulationDeltaS` is always exactly one fixed substep, never a raw/variable frame delta. Returns true once destroyed (for squad bookkeeping). */
-  update: (targetSnapshot: DroneTargetSnapshot, simulationDeltaS: number, now: number, bolts: DroneBoltHandle, profile: DroneAiDifficultyProfile, neighbours: readonly DroneSpatialSnapshot[]) => boolean;
+  /** Called by DroneSquad, possibly several times per rendered frame (once per fixed-step substep — see fixedStep.ts), with the shared player target snapshot (position/alive/generation — one object, reused every substep, never a per-drone camera read), the shared bolt pool, the difficulty-resolved combat/cadence profile (Milestone 9E — HP baked in at spawn/reset time; the rest read live here), this substep's pre-movement squad spatial snapshot (see `writeSpatialSnapshot` below), and (Milestone 9G) this substep's already-resolved attack permit (see `prepareAttackRequest` below). `simulationDeltaS` is always exactly one fixed substep, never a raw/variable frame delta. Returns true once destroyed (for squad bookkeeping). */
+  update: (
+    targetSnapshot: DroneTargetSnapshot,
+    simulationDeltaS: number,
+    now: number,
+    bolts: DroneBoltHandle,
+    profile: DroneAiDifficultyProfile,
+    neighbours: readonly DroneSpatialSnapshot[],
+    permit: DroneAttackPermit,
+  ) => boolean;
   reset: () => void;
   getState: () => DroneAiState;
   /** Milestone 9D — writes this drone's CURRENT tactical (never hover-bobbed) position/state into a caller-provided, reused snapshot object — no allocation here. Called by `DroneSquad.tsx`'s own PASS 1, once per drone, before PASS 2's `update()` calls begin. */
   writeSpatialSnapshot: (out: DroneSpatialSnapshot) => void;
+  /** Milestone 9G — writes this drone's own attack-permit REQUEST for this substep into a caller-provided, reused output object — no allocation here, no mutation of any stored ref (see this file's own doc comment above). Called by `DroneSquad.tsx`'s own new PASS between PASS 1 (`writeSpatialSnapshot`) and PASS 2 (`update`), once per drone, before the squad-level coordination call. */
+  prepareAttackRequest: (targetSnapshot: DroneTargetSnapshot, now: number, profile: DroneAiDifficultyProfile, out: DroneAttackRequest) => void;
 }
 
 interface DroneMaterials {
@@ -309,7 +345,7 @@ const DroneEnemy = forwardRef<DroneHandle, { spawn: DroneSpawnDef }>(function Dr
   };
 
   useImperativeHandle(ref, () => ({
-    update(targetSnapshot, simulationDeltaS, now, bolts, profile, neighbours) {
+    update(targetSnapshot, simulationDeltaS, now, bolts, profile, neighbours, permit) {
       const group = groupRef.current;
       if (!group) return runtimeRef.current.state === 'destroyed';
 
@@ -382,6 +418,11 @@ const DroneEnemy = forwardRef<DroneHandle, { spawn: DroneSpawnDef }>(function Dr
         acquireReactionDelayMs: profile.acquireReactionDelayMs,
         // Milestone 9F — see droneAiTypes.ts's own doc comment on this field.
         recoveryBlocksAttack: recoveryBlocksAttackThisTick,
+        // Milestone 9G — see droneAiTypes.ts's own doc comment on this field.
+        // `permit` was already resolved by DroneSquad's own squad-level
+        // coordination call THIS substep, before this update() call — see
+        // this file's own top doc comment for the exact pass order.
+        coordinationBlocksAttack: !permit.granted,
       };
 
       const decision = decideLegacyDroneAi(runtimeRef.current, observation, rngRef.current);
@@ -584,6 +625,61 @@ const DroneEnemy = forwardRef<DroneHandle, { spawn: DroneSpawnDef }>(function Dr
     },
     reset: resetInternal,
     getState: () => runtimeRef.current.state,
+    // Milestone 9G.1 — see this file's own top doc comment. `wantsAttack`
+    // now calls `evaluateAttackReadiness()` (`droneAiStateMachine.ts`) — the
+    // SAME shared pure predicate `decideLegacyDroneAi`'s own real attack
+    // block calls — rather than a hand-duplicated boolean expression. This
+    // closes the drift risk 9G's own first pass disclosed: both call sites
+    // now share ONE implementation, so they cannot diverge by construction.
+    // Reads ONLY: `groupRef`/`runtimeRef`/`userData` (all pre-decision, as
+    // they stood at the end of the PREVIOUS tick — this call happens BEFORE
+    // this tick's own `decideLegacyDroneAi`), `positionRef` (not yet moved
+    // this substep — PASS "prepare" runs before PASS 2 movement), and
+    // `recoveryRuntimeRef` (read-only, same field `update()` itself reads
+    // for `recoveryBlocksAttackThisTick`). Mutates only the caller-provided
+    // `out` — never a stored ref, never `runtimeRef`/`positionRef` themselves.
+    prepareAttackRequest(targetSnapshot, now, profile, out) {
+      const group = groupRef.current;
+      if (!group || runtimeRef.current.state === 'destroyed' || userData.destroyedAt !== 0) {
+        out.wantsAttack = false;
+        return;
+      }
+
+      const perception = evaluateDronePerception({
+        dronePosition: positionRef.current,
+        targetPosition: targetSnapshot.position,
+        detectionRadius: DRONE.DETECT_RADIUS,
+        occluders: OCCLUDERS,
+      });
+
+      const flashing = now < userData.hitFlashUntil;
+      let stunnedUntilMs = runtimeRef.current.stunnedUntilMs;
+      if (flashing && stunnedUntilMs < now) stunnedUntilMs = now + DRONE.STUN_MS;
+      const stunned = now < stunnedUntilMs;
+
+      const recoveryPhase = recoveryRuntimeRef.current.phase;
+      const recoveryBlocksAttack = recoveryPhase === 'nudging' || recoveryPhase === 'backing-away' || recoveryPhase === 'altitude-correcting' || recoveryPhase === 'teleport-fallback';
+
+      const reactionReadyAtMs = runtimeRef.current.reactionReadyAtMs;
+
+      out.wantsAttack = evaluateAttackReadiness({
+        state: runtimeRef.current.state,
+        stunned,
+        canSeePlayer: perception.targetVisible,
+        recoveryBlocksAttack,
+        reactionReadyAtMs,
+        nowMs: now,
+        lastFireAtMs: runtimeRef.current.lastFireAtMs,
+        fireIntervalMs: profile.fireIntervalMs,
+      });
+      out.dronePosition.x = positionRef.current.x;
+      out.dronePosition.y = positionRef.current.y;
+      out.dronePosition.z = positionRef.current.z;
+      out.targetPosition.x = targetSnapshot.position.x;
+      out.targetPosition.y = targetSnapshot.position.y;
+      out.targetPosition.z = targetSnapshot.position.z;
+      out.attackReadyAtMs = Math.max(runtimeRef.current.lastFireAtMs + profile.fireIntervalMs, reactionReadyAtMs ?? -Infinity);
+    },
     writeSpatialSnapshot(out) {
       out.id = spawn.id;
       out.position.x = positionRef.current.x;
