@@ -1196,3 +1196,98 @@ describe('droneAiStateMachine — Milestone 9E targetAcquired event integrity (e
     assert.ok(acquisitions > 0, 'the sweep must actually exercise at least one real acquisition, or this test proves nothing');
   });
 });
+
+describe('droneAiStateMachine — Milestone 9F recoveryBlocksAttack gate (optional, default falsy)', () => {
+  it('omitting recoveryBlocksAttack entirely is byte-identical to explicit false — an engaging, cooled-down, visible drone still starts a windup normally', () => {
+    const runtime = { ...freshRuntime(), state: 'engaging' as const, lastFireAtMs: -10000 };
+    const withoutField = decideLegacyDroneAi(runtime, obs({ nowMs: 0 }), createSeededRandomSource(5));
+    const withFalse = decideLegacyDroneAi(runtime, obs({ nowMs: 0, recoveryBlocksAttack: false }), createSeededRandomSource(5));
+    assert.strictEqual(withoutField.startWindup, true);
+    assert.deepStrictEqual(withoutField, withFalse);
+  });
+
+  it('recoveryBlocksAttack=true prevents a new windup from starting while engaging', () => {
+    const runtime = { ...freshRuntime(), state: 'engaging' as const, lastFireAtMs: -10000 };
+    const decision = decideLegacyDroneAi(runtime, obs({ nowMs: 0, recoveryBlocksAttack: true }), createSeededRandomSource(5));
+    assert.strictEqual(decision.startWindup, false);
+    assert.strictEqual(decision.state, 'engaging');
+    assert.strictEqual(decision.fireExactlyOnce, false);
+  });
+
+  it('recoveryBlocksAttack=true aborts an IN-PROGRESS windup through the existing abort branch — zero fire, zero spread RNG, lastFireAtMs untouched', () => {
+    const rng = createSeededRandomSource(7);
+    let runtime: LegacyDroneAiRuntime = { ...freshRuntime(rng), state: 'engaging', lastFireAtMs: -10000 };
+    // Start a real windup first (recoveryBlocksAttack false/absent).
+    const started = decideLegacyDroneAi(runtime, obs({ nowMs: 0 }), rng);
+    assert.strictEqual(started.startWindup, true);
+    runtime = started.runtime;
+    const lastFireBeforeAbort = runtime.lastFireAtMs;
+    const windupUntilBeforeAbort = runtime.windupUntilMs;
+
+    // Recovery becomes active mid-windup, well before windupUntilMs.
+    const aborted = decideLegacyDroneAi(runtime, obs({ nowMs: 100, recoveryBlocksAttack: true }), rng);
+    assert.strictEqual(aborted.state, 'engaging', 'an in-progress windup must abort back to engaging');
+    assert.strictEqual(aborted.abortWindup, true);
+    assert.strictEqual(aborted.fireExactlyOnce, false);
+    assert.strictEqual(aborted.aimSpread, null);
+    assert.strictEqual(aborted.runtime.lastFireAtMs, lastFireBeforeAbort, 'lastFireAtMs must be exactly untouched by a recovery-triggered abort');
+    assert.strictEqual(aborted.runtime.windupUntilMs, windupUntilBeforeAbort, 'windupUntilMs is left stale (matches the existing stun/LOS abort convention), never reset');
+  });
+
+  it('recoveryBlocksAttack=true even on the exact tick a windup would otherwise complete prevents firing (no free shot)', () => {
+    const rng = createSeededRandomSource(9);
+    let runtime: LegacyDroneAiRuntime = { ...freshRuntime(rng), state: 'engaging', lastFireAtMs: -10000 };
+    const started = decideLegacyDroneAi(runtime, obs({ nowMs: 0 }), rng);
+    runtime = started.runtime;
+    const windupUntil = runtime.windupUntilMs;
+    // Same tick the windup would complete AND recovery is active.
+    const result = decideLegacyDroneAi(runtime, obs({ nowMs: windupUntil, recoveryBlocksAttack: true }), rng);
+    assert.strictEqual(result.fireExactlyOnce, false);
+    assert.strictEqual(result.aimSpread, null);
+    assert.strictEqual(result.state, 'engaging');
+  });
+
+  it('after recoveryBlocksAttack returns to false, the drone resumes normal cadence — no reset reaction gate, no forced reacquisition, cooldown continues counting through the blocked period', () => {
+    const rng = createSeededRandomSource(11);
+    let runtime: LegacyDroneAiRuntime = { ...freshRuntime(rng), state: 'engaging', lastFireAtMs: -10000 };
+    const started = decideLegacyDroneAi(runtime, obs({ nowMs: 0 }), rng);
+    runtime = started.runtime;
+    const aborted = decideLegacyDroneAi(runtime, obs({ nowMs: 100, recoveryBlocksAttack: true }), rng);
+    runtime = aborted.runtime;
+    // Recovery still active for a while — no re-acquisition cue, no windup.
+    for (let now = 200; now < 2000; now += 200) {
+      const held = decideLegacyDroneAi(runtime, obs({ nowMs: now, recoveryBlocksAttack: true }), rng);
+      assert.strictEqual(held.targetAcquired, false, 'holding recovery must never replay an acquire cue');
+      assert.strictEqual(held.startWindup, false);
+      runtime = held.runtime;
+    }
+    // Recovery ends — normal attack resumes once fireIntervalMs has elapsed since the ORIGINAL lastFireAtMs (never reset by the abort).
+    const resumed = decideLegacyDroneAi(runtime, obs({ nowMs: 2000 + BASE.fireIntervalMs }), rng);
+    assert.strictEqual(resumed.startWindup, true, 'a real windup must be able to start again once recovery ends and the (unmodified) cooldown has elapsed');
+    assert.strictEqual(resumed.targetAcquired, false, 'resuming after recovery must never fabricate a fresh acquisition');
+  });
+
+  it('recoveryBlocksAttack has no effect on state transitions unrelated to the attack block — truthful perception/investigating remain unaffected', () => {
+    const rng = createSeededRandomSource(13);
+    let runtime: LegacyDroneAiRuntime = { ...freshRuntime(rng), state: 'engaging' };
+    // Establish real target memory first (a visible tick), matching how
+    // `engaging` is only ever genuinely reached in production — otherwise
+    // the defensive "no memory to investigate" fallback (searching) would
+    // fire instead, which would not be testing this gate at all.
+    const seen = decideLegacyDroneAi(runtime, obs({ nowMs: 0, canSeePlayer: true, recoveryBlocksAttack: true }), rng);
+    runtime = seen.runtime;
+    // LOS genuinely lost while recovery is (irrelevantly) also active — investigating must still trigger truthfully off real canSeePlayer, not be blocked/altered by recoveryBlocksAttack.
+    let now = 0;
+    for (let i = 0; i < 20; i++) {
+      now += 50;
+      const d = decideLegacyDroneAi(runtime, obs({ nowMs: now, canSeePlayer: false, recoveryBlocksAttack: true }), rng);
+      runtime = d.runtime;
+    }
+    assert.strictEqual(runtime.state, 'investigating', 'real LOS loss must still produce a truthful investigating transition regardless of recoveryBlocksAttack');
+  });
+
+  it('DroneAiRuntimeState union is unchanged — still exactly six states — after the 9F addition', () => {
+    const valid = new Set(['spawning', 'searching', 'investigating', 'engaging', 'attacking', 'destroyed']);
+    assert.strictEqual(valid.size, 6);
+  });
+});

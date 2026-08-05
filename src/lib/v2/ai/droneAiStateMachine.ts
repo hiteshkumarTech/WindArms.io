@@ -66,6 +66,18 @@ import type { RandomSource } from './droneAiRandom';
  * No new AI state, no burst/shot-count concept, nothing presentation-related
  * added here — see `droneAiTelegraph.ts` (a wholly separate, adapter-facing
  * module) for the new visual telegraph layer this phase also introduces.
+ *
+ * MILESTONE 9F — the attack block gains ONE additional, OPTIONAL gate:
+ * `observation.recoveryBlocksAttack` (default falsy — see that field's own
+ * doc comment in `droneAiTypes.ts` for the full contract). This is the
+ * ONLY change 9F makes to this file: two conditions added to the existing
+ * windup-start/abort `if`/`else if` pair, nothing else. `DroneAiRuntimeState`
+ * is UNCHANGED (still exactly six values) — 9F's own stuck-recovery overlay
+ * (`droneAiStuckRecovery.ts`) is a fully separate, adapter-owned runtime
+ * this file never imports and knows nothing about; it only ever reads this
+ * one boolean the adapter derives from that overlay's own `recoveryActive`
+ * flag. Every pre-9F test/call site is unaffected (the field is optional,
+ * `undefined` behaves identically to its prior absence).
  */
 
 /** A player-life generation no real `matchStore.respawnNonce` value can ever equal (it only ever counts up from 0) — see `LegacyDroneAiRuntime.observedPlayerGeneration`'s own doc comment. */
@@ -460,7 +472,15 @@ export function decideLegacyDroneAi(runtime: LegacyDroneAiRuntime, observation: 
   let aimSpread: { x: number; y: number; z: number } | null = null;
   const reactionReady = reactionReadyAtMs === null || now >= reactionReadyAtMs;
 
-  if ((state === 'engaging' || state === 'attacking') && !stunned && observation.canSeePlayer) {
+  // Milestone 9F — `recoveryBlocksAttack` (optional, default falsy — see
+  // `droneAiTypes.ts`'s own doc comment on this field for the full,
+  // disclosed contract) is folded into BOTH the outer gate and the abort
+  // condition below, so a drone whose adapter-owned stuck-recovery overlay
+  // is currently active can neither START nor CONTINUE a windup, and any
+  // IN-PROGRESS windup aborts through this exact same pre-existing branch
+  // stunned/LOS-loss already use — no new branch, no behaviour change at
+  // all when the field is omitted/false (every pre-9F caller).
+  if ((state === 'engaging' || state === 'attacking') && !stunned && observation.canSeePlayer && !observation.recoveryBlocksAttack) {
     if (state === 'engaging' && reactionReady && now - lastFireAtMs >= observation.fireIntervalMs) {
       state = 'attacking';
       windupUntilMs = now + observation.attackWindupMs;
@@ -477,7 +497,7 @@ export function decideLegacyDroneAi(runtime: LegacyDroneAiRuntime, observation: 
       lastFireAtMs = now;
       state = 'engaging';
     }
-  } else if (state === 'attacking' && (stunned || !observation.canSeePlayer)) {
+  } else if (state === 'attacking' && (stunned || !observation.canSeePlayer || observation.recoveryBlocksAttack)) {
     // Abort — mirrors the legacy code exactly: only `state` changes.
     // `windupUntilMs` is deliberately left as-is (stale until the next real
     // windup start overwrites it) — it is never read while state !== 'attacking'.

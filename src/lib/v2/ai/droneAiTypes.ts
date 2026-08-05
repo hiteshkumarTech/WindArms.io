@@ -183,6 +183,32 @@ export interface LegacyDroneAiObservation {
    * seeding/gating contract.
    */
   acquireReactionDelayMs: number;
+
+  /**
+   * Milestone 9F — OPTIONAL, adapter-owned attack-suppression gate.
+   * `undefined`/`false` (every pre-9F call site, and every 9B-9E test) is
+   * byte-identical to omitting this field entirely — the two extra
+   * conditions this adds in `decideLegacyDroneAi`'s attack block are both
+   * `&&`/`||` against a falsy default, so no existing behaviour changes
+   * unless a caller deliberately sets this true. Set true by the adapter
+   * (`DroneEnemy.tsx`) on exactly the ticks its own separate
+   * `DroneStuckRecoveryRuntime` (`droneAiStuckRecovery.ts`, a fully
+   * decoupled pure module this file never imports) reports an ACTIVE
+   * recovery episode (nudging/backing-away/altitude-correcting/teleport-
+   * fallback — never idle/cooldown). When true: a new windup may not START,
+   * and an IN-PROGRESS windup is aborted through the exact same existing
+   * `abortWindup` branch stunned/LOS-loss already use (only `state`
+   * changes; `windupUntilMs`/`lastFireAtMs` are left exactly as untouched as
+   * every other abort reason — no free retry, no reset cooldown, no fire
+   * cue, no spread RNG). This is a deliberate, disclosed, minimal extension
+   * of the attack-gating contract — NOT a new AI state, NOT a change to
+   * `DroneAiRuntimeState`'s six-value union, NOT a reverse dependency
+   * (`droneAiStuckRecovery.ts` never imports this file or
+   * `droneAiStateMachine.ts`). See `docs/decisions.md`'s Step 9F entry for
+   * the full reasoning behind touching this previously-untouched-since-9E
+   * file at all.
+   */
+  recoveryBlocksAttack?: boolean;
 }
 
 export type LegacyDroneMovementMode = 'spawn-hold' | 'search' | 'stunned-hold' | 'engage' | 'attack' | 'investigate' | 'destroyed-hold';

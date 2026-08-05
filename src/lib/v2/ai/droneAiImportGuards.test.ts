@@ -45,6 +45,22 @@ import { fileURLToPath } from 'node:url';
  * the telegraph module only ever depends on `droneAiTypes.ts`'s plain
  * types), and `DroneBoltPool.tsx`/`VortexFireSystem.tsx` remain untouched by
  * this phase's own new modules specifically.
+ *
+ * Milestone 9F extends this file with `droneArenaConfig.ts` (plain derived
+ * data — deliberately imports `DRONE_SPAWNS`/`MAIN_DECK` from
+ * `lib/v2/play/spawnConfig.ts` and `WIND_LIFT` from
+ * `lib/v2/play/constants.ts`, neither of which pulls in anything forbidden,
+ * mirroring `droneAiPerception.ts`'s own established precedent for reusing
+ * plain-data route constants), `droneAiArenaConstraints.ts`, and
+ * `droneAiStuckRecovery.ts` (all three now subject to every pure-core guard
+ * above via `PURE_CORE_FILES`). This phase also, for the first and only
+ * time, makes a small, disclosed, ADDITIVE change to `droneAiTypes.ts`/
+ * `droneAiStateMachine.ts` themselves (one new OPTIONAL observation field,
+ * `recoveryBlocksAttack` — see those files' own doc comments) — the new
+ * 9F-specific describe block below re-confirms the six-state union is
+ * unchanged and that this file stays fully decoupled from
+ * `droneAiStuckRecovery.ts` in the one direction that matters (the recovery
+ * module never imports the state machine back).
  */
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
@@ -58,6 +74,9 @@ const PURE_CORE_FILES = [
   'src/lib/v2/ai/droneAiMovementIntent.ts',
   'src/lib/v2/ai/droneAiDifficulty.ts',
   'src/lib/v2/ai/droneAiTelegraph.ts',
+  'src/lib/v2/ai/droneArenaConfig.ts',
+  'src/lib/v2/ai/droneAiArenaConstraints.ts',
+  'src/lib/v2/ai/droneAiStuckRecovery.ts',
 ];
 
 const FORBIDDEN_IMPORTS: Record<string, RegExp> = {
@@ -165,13 +184,13 @@ describe('droneAiImportGuards — Milestone 9C scope fence (no FOV/hearing/squad
   });
 });
 
-describe('droneAiImportGuards — Milestone 9D scope fence (no boids/combat-sector/navigation/arena-boundary/stuck-recovery)', () => {
-  it('no file under src/lib/v2/ai/ has a name suggesting boids cohesion/alignment, combat-sector reservation, shooter limits, squad coordination, waypoint/navmesh/pathfinding, arena boundaries, or stuck recovery', () => {
+describe('droneAiImportGuards — Milestone 9D scope fence (no boids/combat-sector/navigation) — arena-boundary/stuck-recovery moved to the Milestone 9F describe block below, since 9F is the phase that legitimately introduces them', () => {
+  it('no file under src/lib/v2/ai/ has a name suggesting boids cohesion/alignment, combat-sector reservation, shooter limits, squad coordination, or waypoint/navmesh/pathfinding', () => {
     const dir = path.join(repoRoot, 'src/lib/v2/ai');
     const suspicious = fs
       .readdirSync(dir)
-      .filter((name) => /boids|cohesion|alignment|combatsector|sectorreservation|shooterlimit|squadcoord|waypoint|navmesh|pathfind|navigation|arenaboundary|stuckrecovery|evade|flank/i.test(name));
-    assert.deepStrictEqual(suspicious, [], `unexpected out-of-scope file(s) found in lib/v2/ai/: ${suspicious.join(', ')} — 9D's own brief explicitly fences these to 9E-9G`);
+      .filter((name) => /boids|cohesion|alignment|combatsector|sectorreservation|shooterlimit|squadcoord|waypoint|navmesh|pathfind|navigation|evade|flank/i.test(name));
+    assert.deepStrictEqual(suspicious, [], `unexpected out-of-scope file(s) found in lib/v2/ai/: ${suspicious.join(', ')} — still out of scope through 9F, fenced to 9E-9G`);
   });
 
   it('droneAiMovementIntent.ts defines no combat-sector, shooter-limit, squad-target-sharing, flanking, waypoint/navmesh, arena-boundary, or stuck-recovery concept', () => {
@@ -309,5 +328,149 @@ describe('droneAiImportGuards — route scoping', () => {
     };
     for (const root of roots) walk(path.join(repoRoot, root));
     assert.deepStrictEqual(offenders, [], `V1 files must never import the drone AI core: ${offenders.join(', ')}`);
+  });
+});
+
+describe('droneAiImportGuards — Milestone 9F scope fence (arena constraints + stuck recovery, no navmesh/combat-nodes/squad-coordination)', () => {
+  it('no file under src/lib/v2/ai/ has a name suggesting navmesh/pathfinding/waypoint graphs, combat nodes, shooter limits, sector reservation, or a squad coordinator', () => {
+    const dir = path.join(repoRoot, 'src/lib/v2/ai');
+    const suspicious = fs
+      .readdirSync(dir)
+      .filter((name) => /navmesh|pathfind|waypointgraph|combatnode|shooterlimit|sectorreservation|squadcoord/i.test(name));
+    assert.deepStrictEqual(suspicious, [], `unexpected out-of-scope file(s) found in lib/v2/ai/: ${suspicious.join(', ')} — 9F's own brief explicitly forbids these`);
+  });
+
+  it('droneAiArenaConstraints.ts defines no combat-node, cover-collision, Rapier body, or drone-vs-drone collision CODE concept (anchored on camelCase identifiers, not prose — this file\'s own doc comment legitimately discusses "navmesh"/"pathfind" by name when explaining what it deliberately is NOT)', () => {
+    const src = read('src/lib/v2/ai/droneAiArenaConstraints.ts');
+    const forbidden = ['combatNode', 'RigidBody', 'Collider', 'coverCollision'];
+    for (const term of forbidden) {
+      assert.ok(!src.includes(term), `droneAiArenaConstraints.ts must not introduce "${term}" — 9F is arena-envelope clamping only, not obstacle avoidance`);
+    }
+  });
+
+  it('droneAiArenaConstraints.ts does not IMPORT any navmesh/pathfinding dependency (syntax-anchored, not prose)', () => {
+    const src = read('src/lib/v2/ai/droneAiArenaConstraints.ts');
+    assert.ok(!/from\s+['"][^'"]*(navmesh|pathfind|astar)/i.test(src));
+  });
+
+  it('droneAiStuckRecovery.ts defines no combat-node, squad-coordination, or shared-recovery-state CODE concept (anchored on camelCase identifiers, not prose)', () => {
+    const src = read('src/lib/v2/ai/droneAiStuckRecovery.ts');
+    const forbidden = ['combatNode', 'squadCoordinator', 'sharedRecoveryState', 'sharedTargetMemory'];
+    for (const term of forbidden) {
+      assert.ok(!src.includes(term), `droneAiStuckRecovery.ts must not introduce "${term}" — recovery is a per-drone overlay, never a squad-shared concept`);
+    }
+  });
+
+  it('droneAiStuckRecovery.ts does not declare its own DroneAiRuntimeState-shaped union or import one from droneAiTypes.ts (it may only discuss the type BY NAME in prose — see the syntax-anchored import check above)', () => {
+    const src = read('src/lib/v2/ai/droneAiStuckRecovery.ts');
+    assert.ok(!/import[^;]*\bDroneAiRuntimeState\b/.test(src), 'droneAiStuckRecovery.ts must not import DroneAiRuntimeState — it has zero knowledge of the pure state machine\'s own state union');
+    assert.ok(!/export type DroneAiRuntimeState/.test(src), 'droneAiStuckRecovery.ts must not redeclare DroneAiRuntimeState');
+  });
+
+  it('droneAiStuckRecovery.ts never imports droneAiStateMachine.ts or droneAiMovementIntent.ts — the overlay stays fully decoupled, and never touches the protected movement module', () => {
+    const src = read('src/lib/v2/ai/droneAiStuckRecovery.ts');
+    assert.ok(!/from\s+['"]\.\/droneAiStateMachine['"]/.test(src), 'droneAiStuckRecovery.ts must not import droneAiStateMachine.ts');
+    assert.ok(!/from\s+['"]\.\/droneAiMovementIntent['"]/.test(src), 'droneAiStuckRecovery.ts must not import droneAiMovementIntent.ts (protected)');
+  });
+
+  it('droneAiArenaConstraints.ts never imports droneAiMovementIntent.ts — stays fully self-contained (its own independently-defined hash helper, see its own doc comment)', () => {
+    const src = read('src/lib/v2/ai/droneAiArenaConstraints.ts');
+    assert.ok(!/from\s+['"]\.\/droneAiMovementIntent['"]/.test(src));
+  });
+
+  it('droneArenaConfig.ts is plain derived data — no runtime mutable singleton, no class, no Math.random', () => {
+    const src = read('src/lib/v2/ai/droneArenaConfig.ts');
+    assert.ok(!src.includes('Math.random('));
+    assert.ok(!/\bclass\s+\w/.test(src), 'droneArenaConfig.ts must stay plain exported data/functions, never a stateful class');
+  });
+
+  it('droneAiStuckRecovery.ts and droneAiArenaConstraints.ts use no timer/interval/rAF APIs', () => {
+    for (const file of ['src/lib/v2/ai/droneAiStuckRecovery.ts', 'src/lib/v2/ai/droneAiArenaConstraints.ts']) {
+      const src = read(file);
+      assert.ok(!src.includes('setTimeout('), `${file} must not use setTimeout`);
+      assert.ok(!src.includes('setInterval('), `${file} must not use setInterval`);
+      assert.ok(!src.includes('requestAnimationFrame('), `${file} must not use requestAnimationFrame`);
+    }
+  });
+
+  it('droneAiTypes.ts DroneAiRuntimeState union is unchanged by 9F — still exactly six states', () => {
+    const src = read('src/lib/v2/ai/droneAiTypes.ts');
+    const match = src.match(/export type DroneAiRuntimeState = ([^;]+);/);
+    assert.ok(match, 'DroneAiRuntimeState union must still be declared');
+    const states = match![1].match(/'[a-z-]+'/g) ?? [];
+    assert.deepStrictEqual(states.sort(), ["'attacking'", "'destroyed'", "'engaging'", "'investigating'", "'searching'", "'spawning'"].sort(), '9F must not add or remove a runtime AI state — recovery is an overlay, not a state');
+  });
+
+  it('droneAiTelegraph.ts is untouched by 9F — no new telegraph phase, no reference to the new arena/recovery modules', () => {
+    const src = read('src/lib/v2/ai/droneAiTelegraph.ts');
+    const match = src.match(/export type DroneTelegraphPhase = ([^;]+);/);
+    assert.ok(match);
+    const phases = match![1].match(/'[a-z-]+'/g) ?? [];
+    assert.deepStrictEqual(phases.sort(), ["'idle'", "'acquire'", "'reaction'", "'windup'", "'fire'", "'cooldown'", "'hit'", "'destroyed'"].sort(), '9F must not add a recovery telegraph phase');
+    assert.ok(!src.includes('droneAiStuckRecovery'), 'droneAiTelegraph.ts must not reference the new recovery module');
+    assert.ok(!src.includes('droneArenaConfig'), 'droneAiTelegraph.ts must not reference the new arena-config module');
+  });
+
+  it('droneAiMovementIntent.ts (protected) does not reference any new 9F module', () => {
+    const src = read('src/lib/v2/ai/droneAiMovementIntent.ts');
+    assert.ok(!src.includes('droneArenaConfig'));
+    assert.ok(!src.includes('droneAiArenaConstraints'));
+    assert.ok(!src.includes('droneAiStuckRecovery'));
+  });
+
+  it('droneAiDifficulty.ts (protected) does not reference any new 9F module', () => {
+    const src = read('src/lib/v2/ai/droneAiDifficulty.ts');
+    assert.ok(!src.includes('droneArenaConfig'));
+    assert.ok(!src.includes('droneAiArenaConstraints'));
+    assert.ok(!src.includes('droneAiStuckRecovery'));
+  });
+
+  it('DroneBoltPool.tsx (protected) remains untouched by any 9F module', () => {
+    const src = read('src/components/three/play/DroneBoltPool.tsx');
+    assert.ok(!src.includes('droneArenaConfig'));
+    assert.ok(!src.includes('droneAiArenaConstraints'));
+    assert.ok(!src.includes('droneAiStuckRecovery'));
+  });
+
+  it('WindLift.tsx and PlayerController.tsx (protected) remain untouched by any 9F module', () => {
+    for (const relPath of ['src/components/three/play/WindLift.tsx', 'src/components/three/play/PlayerController.tsx']) {
+      const src = read(relPath);
+      assert.ok(!src.includes('/ai/droneAi') && !src.includes('droneArenaConfig'), `${relPath} must never reference the drone AI/arena core`);
+    }
+  });
+
+  it('DroneEnemy.tsx does not create its own useFrame even after the 9F movement-order rewrite — DroneSquad remains the sole frame owner', () => {
+    const src = read('src/components/three/play/DroneEnemy.tsx');
+    assert.ok(!src.includes('useFrame'), 'DroneEnemy.tsx must stay a pure imperative-handle adapter after 9F');
+  });
+
+  it('DroneEnemy.tsx uses no timer/interval APIs for recovery (all timing is explicit-timestamp-driven through the fixed-step owner)', () => {
+    const src = read('src/components/three/play/DroneEnemy.tsx');
+    assert.ok(!src.includes('setTimeout('));
+    assert.ok(!src.includes('setInterval('));
+  });
+
+  it('/v2/range (RangeScene.tsx) does not import any new 9F module', () => {
+    const src = read('src/components/three/range/RangeScene.tsx');
+    assert.ok(!src.includes('droneArenaConfig'));
+    assert.ok(!src.includes('droneAiArenaConstraints'));
+    assert.ok(!src.includes('droneAiStuckRecovery'));
+  });
+
+  it('no V1 source file under src/components/game or src/lib/game references any new 9F module', () => {
+    const roots = ['src/components/game', 'src/lib/game'];
+    const offenders: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (/\.(tsx?|jsx?)$/.test(entry.name)) {
+          const src = fs.readFileSync(full, 'utf8');
+          if (src.includes('droneArenaConfig') || src.includes('droneAiArenaConstraints') || src.includes('droneAiStuckRecovery')) offenders.push(full);
+        }
+      }
+    };
+    for (const root of roots) walk(path.join(repoRoot, root));
+    assert.deepStrictEqual(offenders, [], `V1 files must never import any 9F module: ${offenders.join(', ')}`);
   });
 });
