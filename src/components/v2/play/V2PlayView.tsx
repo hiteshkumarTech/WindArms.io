@@ -1,17 +1,20 @@
 'use client';
 
 import dynamic from 'next/dynamic';
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { usePointerLock } from '@/hooks/usePointerLock';
 import { useRangeKeyboardInput } from '@/lib/v2/range/useRangeKeyboardInput';
 import { unlockVortexAudio } from '@/lib/v2/range/vortexAudio';
 import { TRIAL_DIFFICULTIES, type TrialDifficulty } from '@/lib/v2/play/difficulty';
 import { useSelectedDifficulty, useV2MatchStore } from '@/lib/v2/play/matchStore';
+import { useDroneAiDebugEnabled } from '@/lib/v2/ai/useDroneAiDebugEnabled';
+import { createDroneAiDebugRuntime } from '@/lib/v2/ai/droneAiDebugState';
 import V2PlayHud from './V2PlayHud';
 import MatchOverlay from './MatchOverlay';
 import PauseMenu from './PauseMenu';
 import EndMatchScreen from './EndMatchScreen';
 import MobileNotice from './MobileNotice';
+import DroneAiDebugPanel from './DroneAiDebugPanel';
 
 const V2PlayScene = dynamic(() => import('@/components/three/play/V2PlayScene'), { ssr: false });
 
@@ -27,6 +30,20 @@ const DIFFICULTY_ORDER: TrialDifficulty[] = ['low', 'medium', 'max'];
  * phase pauses; acquiring it advances ready→countdown or resumes from pause.
  * Victory/defeat deliberately release the lock for their menus. This keeps
  * "cursor is free" and "simulation is frozen" as one coupled fact.
+ *
+ * MILESTONE 9H — this is the ROUTE-OWNED home of the dev-only Drone AI
+ * debug runtime (`droneAiDebugState.ts`): `useDroneAiDebugEnabled()` reads
+ * the `?droneAiDebug=1` dev-only opt-in exactly once (same dual-gate
+ * contract as every sibling debug hook in this codebase), and `debugRuntime`
+ * is created via `useMemo` keyed on that flag — `null` until/unless armed,
+ * a genuinely fresh `DroneAiDebugRuntime` object the moment it is. This is
+ * the ONE instance for the whole mounted `/v2/play` scene, threaded down as
+ * a prop to `V2PlayScene` (→ `DroneSquad` for writes, → `DroneAiDebugHelpers`
+ * for 3D reads) and to `DroneAiDebugPanel` (DOM reads) directly — never a
+ * module-level singleton, never duplicated. A route remount discards this
+ * component instance and, with it, this exact object; the next mount's
+ * `useMemo` builds an entirely fresh one, so no stale telemetry can ever
+ * survive across a remount.
  */
 export default function V2PlayView() {
   const { locked, request, setTarget } = usePointerLock();
@@ -34,6 +51,11 @@ export default function V2PlayView() {
   const inputRef = useRangeKeyboardInput();
   const phase = useV2MatchStore((state) => state.phase);
   const selectedDifficulty = useSelectedDifficulty();
+  const droneAiDebugEnabled = useDroneAiDebugEnabled();
+  const droneAiDebugRuntime = useMemo(
+    () => (droneAiDebugEnabled ? createDroneAiDebugRuntime(performance.now(), performance.now()) : null),
+    [droneAiDebugEnabled],
+  );
 
   useEffect(() => {
     setTarget(containerRef.current);
@@ -81,10 +103,13 @@ export default function V2PlayView() {
 
   return (
     <div ref={containerRef} className="relative h-[100dvh] w-full overflow-hidden bg-storm-abyss">
-      <V2PlayScene inputRef={inputRef} />
+      <V2PlayScene inputRef={inputRef} debugRuntime={droneAiDebugRuntime} />
 
       {/* In-round HUD */}
       <V2PlayHud />
+
+      {/* Milestone 9H — dev-only Drone AI debug panel, `?droneAiDebug=1` only. */}
+      {droneAiDebugRuntime && <DroneAiDebugPanel runtime={droneAiDebugRuntime} />}
 
       {/* Countdown / title card */}
       <MatchOverlay />

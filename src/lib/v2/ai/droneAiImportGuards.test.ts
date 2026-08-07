@@ -94,6 +94,15 @@ const PURE_CORE_FILES = [
   'src/lib/v2/ai/droneAiArenaConstraints.ts',
   'src/lib/v2/ai/droneAiStuckRecovery.ts',
   'src/lib/v2/ai/droneAiSquad.ts',
+  // Milestone 9H — droneAiDebugState.ts is not gameplay-decision logic, but
+  // it must satisfy the EXACT SAME zero-renderer/framework/store dependency
+  // and zero-clock/zero-RNG guarantee every real pure-core module already
+  // does (Section 17's own explicit "debug state does not import
+  // React/Three.js/R3F/Rapier/Zustand ... does not call
+  // Math.random/performance.now/Date.now"). Reusing this exact loop is a
+  // test-infrastructure choice, not a claim that telemetry bookkeeping is
+  // gameplay-decision logic.
+  'src/lib/v2/ai/droneAiDebugState.ts',
 ];
 
 const FORBIDDEN_IMPORTS: Record<string, RegExp> = {
@@ -641,5 +650,200 @@ describe('droneAiImportGuards — Milestone 9G scope fence (squad attack-permit 
     };
     for (const root of roots) walk(path.join(repoRoot, root));
     assert.deepStrictEqual(offenders, [], `V1 files must never import the 9G module: ${offenders.join(', ')}`);
+  });
+});
+
+describe('droneAiImportGuards — Milestone 9H scope fence (debug observability: read-only, dev-only, no new gameplay subsystem)', () => {
+  it('no pure AI module imports any 9H debug module (one-way dependency: gameplay -> nothing; the adapter is the only place the two ever meet)', () => {
+    const debugModuleNames = ['droneAiDebugState', 'droneAiDebugHelperToggles', 'useDroneAiDebugEnabled'];
+    for (const file of PURE_CORE_FILES) {
+      if (file.includes('droneAiDebugState')) continue; // the debug module itself, not a consumer
+      const src = read(file);
+      for (const debugModule of debugModuleNames) {
+        assert.ok(!src.includes(debugModule), `${file} (pure AI core) must not import ${debugModule} — gameplay logic must never depend on dev-only observability`);
+      }
+    }
+  });
+
+  it('droneAiDebugState.ts imports no combat-mutation API (targets.ts / matchStore) and declares no mutation-command identifier', () => {
+    const src = read('src/lib/v2/ai/droneAiDebugState.ts');
+    assert.ok(!/from\s+['"].*\/combat\/targets['"]/.test(src), 'droneAiDebugState.ts must not import lib/v2/combat/targets.ts');
+    assert.ok(!/from\s+['"].*matchStore['"]/.test(src), 'droneAiDebugState.ts must not import matchStore.ts');
+    const forbiddenIdentifiers = ['setDronePosition', 'forceState', 'forceDroneState', 'killDrone', 'grantLease', 'setHp', 'mutateHp', 'setRecoveryPhase', 'setDifficulty'];
+    for (const identifier of forbiddenIdentifiers) {
+      assert.ok(!src.includes(identifier), `droneAiDebugState.ts must not declare "${identifier}" — it is a read-only telemetry sink, never a gameplay-mutation API`);
+    }
+  });
+
+  it('droneAiDebugState.ts has no network API, no localStorage, no file-writing/source-writing API', () => {
+    const src = read('src/lib/v2/ai/droneAiDebugState.ts');
+    for (const term of ['fetch(', 'XMLHttpRequest', 'WebSocket', 'localStorage', 'sessionStorage', 'fs.writeFile', 'writeFileSync']) {
+      assert.ok(!src.includes(term), `droneAiDebugState.ts must not reference "${term}"`);
+    }
+  });
+
+  it('DroneAiDebugPanel.tsx has no gameplay-mutation callback, no network API, no localStorage, no file-writing API', () => {
+    const src = read('src/components/v2/play/DroneAiDebugPanel.tsx');
+    for (const term of ['fetch(', 'XMLHttpRequest', 'WebSocket', 'localStorage', 'sessionStorage', 'fs.writeFile', 'writeFileSync', '.hp =', '.hp=', 'setHp', 'forceState', 'killDrone', 'grantLease']) {
+      assert.ok(!src.includes(term), `DroneAiDebugPanel.tsx must not reference "${term}" — the panel is read-only presentation, its only writes go to droneAiDebugHelperToggles.ts (presentation preferences)`);
+    }
+  });
+
+  it('DroneAiDebugPanel.tsx writes only to the helper-toggle store, never to matchStore or any drone runtime', () => {
+    const src = read('src/components/v2/play/DroneAiDebugPanel.tsx');
+    assert.ok(!/from\s+['"].*matchStore['"]/.test(src), 'DroneAiDebugPanel.tsx must not import matchStore.ts');
+    assert.ok(!src.includes('droneAiSquad'), 'DroneAiDebugPanel.tsx must not import the squad coordinator directly — it only ever reads the already-written debug snapshot');
+    assert.ok(!src.includes('droneAiStateMachine'), 'DroneAiDebugPanel.tsx must not import the pure state machine directly');
+  });
+
+  it('DroneAiDebugHelpers.tsx never writes to any gameplay ref/store — no assignment into positionRef/runtimeRef/matchStore/droneAiSquad', () => {
+    const src = read('src/components/three/play/DroneAiDebugHelpers.tsx');
+    for (const term of ['matchStore', 'droneAiSquad', 'droneAiStateMachine', 'positionRef.current =', 'runtimeRef.current =']) {
+      assert.ok(!src.includes(term), `DroneAiDebugHelpers.tsx must not reference "${term}" — it only ever reads droneAiDebugState.ts's already-written telemetry`);
+    }
+  });
+
+  it('every pooled helper mesh/line in DroneAiDebugHelpers.tsx is excluded from raycasting (never a combat target, never an LOS blocker)', () => {
+    const src = read('src/components/three/play/DroneAiDebugHelpers.tsx');
+    const raycastNoOpCount = (src.match(/\.raycast\s*=\s*\(\)\s*=>/g) ?? []).length;
+    assert.ok(raycastNoOpCount >= 7, 'every pooled line/marker mesh (line, leaseMarker, recoveryMarker, memoryMarker) AND the ArrowHelper group plus its own internal .line/.cone children must all have raycast overridden to a no-op');
+    assert.ok(src.includes("raycast={() => null}"), 'the static arena-bounds outline group must also be excluded from raycasting');
+  });
+
+  it('Milestone 9H.1 REGRESSION — ArrowHelper.line and ArrowHelper.cone (its own internal shaft/head children, added by ArrowHelper\'s own constructor, not covered by excluding the ArrowHelper group alone) are explicitly raycast-excluded', () => {
+    // A real-browser validation trace (docs/decisions.md's 9H.1 entry) proved
+    // `THREE.ArrowHelper`'s internal `.line` child IS independently
+    // raycastable and DID appear in a real `intersectObjects` result when
+    // the movement-arrow helper was enabled — excluding the parent
+    // ArrowHelper group alone is not sufficient; THREE calls `.raycast()`
+    // per-object during traversal, not merely on the group.
+    const src = read('src/components/three/play/DroneAiDebugHelpers.tsx');
+    assert.ok(src.includes('arrow.line.raycast = () => {}'), 'arrow.line (the ArrowHelper shaft) must be explicitly raycast-excluded');
+    assert.ok(src.includes('arrow.cone.raycast = () => {}'), 'arrow.cone (the ArrowHelper head) must be explicitly raycast-excluded');
+  });
+
+  it('DroneAiDebugHelpers.tsx never writes React state on its per-frame path — useFrame body contains no setState/useState call', () => {
+    const src = read('src/components/three/play/DroneAiDebugHelpers.tsx');
+    const frameBodyMatch = src.match(/useFrame\(\(\)\s*=>\s*\{([\s\S]*?)\n {2}\}\);/);
+    assert.ok(frameBodyMatch, 'DroneAiDebugHelpers.tsx must declare exactly one useFrame body');
+    // A bare `setXxx(` call (a React setState setter) is NOT preceded by a
+    // `.` — distinguishes it from the many legitimate `object.setXxx(`
+    // THREE.js method calls this loop makes (`.set(`, `.setDirection(`,
+    // `.setLength(`, `.setHex(`, `.setHSL(`, `.setXYZ(`).
+    assert.ok(!/(^|[^.\w])set[A-Z]\w*\(/.test(frameBodyMatch![1]), 'the per-frame update loop must never call a bare React setState setter — position/visibility writes must be direct ref/object mutations only');
+  });
+
+  it('DroneSquad.tsx performs debug writes/roster maintenance only inside an `if (debugRuntime)` guard — genuinely zero work when observability is not armed', () => {
+    const src = read('src/components/three/play/DroneSquad.tsx');
+    assert.ok(src.includes('debugRuntime ?'), 'the per-substep debugContext construction must be conditional on debugRuntime');
+    assert.ok(src.includes('if (debugRuntime)'), 'squad-meta telemetry writes and the restart-time record clear must both be gated behind an explicit debugRuntime check');
+  });
+
+  it('DroneEnemy.tsx writes debug telemetry only inside an `if (debugContext)` guard, and update()\'s own return value never depends on debugContext', () => {
+    const src = read('src/components/three/play/DroneEnemy.tsx');
+    assert.ok(src.includes('if (debugContext)'), 'DroneEnemy.tsx must gate every debug telemetry write behind an explicit debugContext null-check');
+    // The two real return statements (`return true` / `return false` for the
+    // destroyed branch, and the trailing `return false`) must appear, byte-
+    // for-byte unconditional on debugContext — anchored on the literal
+    // statements rather than a broad regex, so a legitimate doc-comment
+    // mention of "return" elsewhere in the file can never false-positive.
+    assert.ok(src.includes('return true;') && src.includes('return false;'), 'update() must keep its real destroyed/alive return values, unrelated to whether debug telemetry was written this tick');
+  });
+
+  it('DroneAiDebugHelpers.tsx and DroneAiDebugPanel.tsx are never IMPORTED (import-syntax-anchored, not prose) outside their dev-only mount sites (V2PlayScene.tsx / V2PlayView.tsx)', () => {
+    const roots = ['src/components', 'src/lib', 'src/app'];
+    const allowedImporters = new Set([
+      path.join(repoRoot, 'src/components/three/play/V2PlayScene.tsx'),
+      path.join(repoRoot, 'src/components/v2/play/V2PlayView.tsx'),
+    ]);
+    const importPattern = /from\s+['"][^'"]*DroneAiDebug(Helpers|Panel)['"]/;
+    const offenders: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (/\.(tsx?|jsx?)$/.test(entry.name) && !full.endsWith('.test.ts') && !full.endsWith('.test.tsx') && !allowedImporters.has(full)) {
+          const src = fs.readFileSync(full, 'utf8');
+          if (importPattern.test(src)) offenders.push(full);
+        }
+      }
+    };
+    for (const root of roots) walk(path.join(repoRoot, root));
+    assert.deepStrictEqual(offenders, [], `debug panel/helpers must only ever be imported from their two dev-only mount sites: ${offenders.join(', ')}`);
+  });
+
+  it('useDroneAiDebugEnabled.ts checks process.env.NODE_ENV === \'production\' before reading any query parameter', () => {
+    const src = read('src/lib/v2/ai/useDroneAiDebugEnabled.ts');
+    const prodCheckIndex = src.indexOf("process.env.NODE_ENV === 'production'");
+    const queryReadIndex = src.indexOf('window.location.search');
+    assert.ok(prodCheckIndex > 0 && queryReadIndex > prodCheckIndex, 'the production gate must be checked, and short-circuit, BEFORE the query string is ever read');
+  });
+
+  it('/v2/range (RangeScene.tsx / RangeView.tsx) does not import any 9H debug module', () => {
+    for (const relPath of ['src/components/three/range/RangeScene.tsx', 'src/components/v2/range/RangeView.tsx']) {
+      const src = read(relPath);
+      for (const term of ['droneAiDebugState', 'DroneAiDebugPanel', 'DroneAiDebugHelpers', 'useDroneAiDebugEnabled', 'droneAiDebugHelperToggles']) {
+        assert.ok(!src.includes(term), `${relPath} must never reference the play-only Drone AI debug tooling`);
+      }
+    }
+  });
+
+  it('V1 /play does not import any 9H debug module', () => {
+    const roots = ['src/components/game', 'src/lib/game'];
+    const offenders: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (/\.(tsx?|jsx?)$/.test(entry.name)) {
+          const src = fs.readFileSync(full, 'utf8');
+          if (src.includes('droneAiDebugState') || src.includes('DroneAiDebugPanel') || src.includes('DroneAiDebugHelpers')) offenders.push(full);
+        }
+      }
+    };
+    for (const root of roots) walk(path.join(repoRoot, root));
+    assert.deepStrictEqual(offenders, [], `V1 files must never import the 9H debug tooling: ${offenders.join(', ')}`);
+  });
+
+  it('droneAiTypes.ts DroneAiRuntimeState union is unchanged by 9H — still exactly six states', () => {
+    const src = read('src/lib/v2/ai/droneAiTypes.ts');
+    const match = src.match(/export type DroneAiRuntimeState = ([^;]+);/);
+    assert.ok(match, 'DroneAiRuntimeState union must still be declared');
+    const states = match![1].match(/'[a-z-]+'/g) ?? [];
+    assert.deepStrictEqual(states.sort(), ["'attacking'", "'destroyed'", "'engaging'", "'investigating'", "'searching'", "'spawning'"].sort(), '9H must not add or remove a runtime AI state — observability never introduces gameplay states');
+  });
+
+  it('droneAiTelegraph.ts is untouched by 9H — no new telegraph phase, no reference to any debug module', () => {
+    const src = read('src/lib/v2/ai/droneAiTelegraph.ts');
+    const match = src.match(/export type DroneTelegraphPhase = ([^;]+);/);
+    assert.ok(match);
+    const phases = match![1].match(/'[a-z-]+'/g) ?? [];
+    assert.deepStrictEqual(phases.sort(), ["'idle'", "'acquire'", "'reaction'", "'windup'", "'fire'", "'cooldown'", "'hit'", "'destroyed'"].sort(), '9H must not add a debug-only telegraph phase');
+    assert.ok(!src.includes('droneAiDebugState'), 'droneAiTelegraph.ts must not reference the new debug module');
+  });
+
+  it('no file under src/lib/v2/ai/ has a name suggesting formations, flanking, shared target memory, pathfinding, or a general-purpose event bus', () => {
+    const dir = path.join(repoRoot, 'src/lib/v2/ai');
+    const suspicious = fs.readdirSync(dir).filter((name) => /formation|flank|sharedmemory|navmesh|pathfind|eventbus/i.test(name));
+    assert.deepStrictEqual(suspicious, [], `unexpected out-of-scope file(s) found in lib/v2/ai/: ${suspicious.join(', ')} — 9H is observability/validation/tuning only, no new gameplay subsystem`);
+  });
+
+  it('droneAiStateMachine.ts, droneAiMovementIntent.ts, droneAiSquad.ts, droneAiStuckRecovery.ts (all protected) do not reference any 9H debug module', () => {
+    for (const relPath of [
+      'src/lib/v2/ai/droneAiStateMachine.ts',
+      'src/lib/v2/ai/droneAiMovementIntent.ts',
+      'src/lib/v2/ai/droneAiSquad.ts',
+      'src/lib/v2/ai/droneAiStuckRecovery.ts',
+    ]) {
+      const src = read(relPath);
+      assert.ok(!src.includes('droneAiDebugState'), `${relPath} must not reference droneAiDebugState.ts`);
+    }
+  });
+
+  it('DroneBoltPool.tsx, WindLift.tsx, PlayerController.tsx (protected) remain untouched by any 9H debug module', () => {
+    for (const relPath of ['src/components/three/play/DroneBoltPool.tsx', 'src/components/three/play/WindLift.tsx', 'src/components/three/play/PlayerController.tsx']) {
+      const src = read(relPath);
+      assert.ok(!src.includes('droneAiDebugState') && !src.includes('DroneAiDebugHelpers'), `${relPath} must never reference the debug tooling`);
+    }
   });
 });

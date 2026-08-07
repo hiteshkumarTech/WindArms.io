@@ -16,6 +16,13 @@ import {
   type DroneAttackPermit,
   type DroneAttackRequest,
 } from '@/lib/v2/ai/droneAiSquad';
+import {
+  clearDroneAiDebugDroneSnapshot,
+  reregisterDroneAiDebugRoster,
+  resetDroneAiDebugSquadMeta,
+  type DroneAiDebugDroneSnapshot,
+  type DroneAiDebugRuntime,
+} from '@/lib/v2/ai/droneAiDebugState';
 import DroneEnemy, { type DroneHandle } from './DroneEnemy';
 import DroneBoltPool, { type DroneBoltHandle } from './DroneBoltPool';
 
@@ -102,8 +109,25 @@ const EMPTY_PERMIT: DroneAttackPermit = { granted: false, sector: null };
  * `spatialSnapshots`/`targetSnapshot`. It resets alongside every drone on a
  * restart (see the existing restart branch below), exactly like
  * `boltRef.current?.clear()` already does for the shared bolt pool.
+ *
+ * MILESTONE 9H — accepts one new, OPTIONAL prop, `debugRuntime`
+ * (`DroneAiDebugRuntime | null`, `droneAiDebugState.ts`) — the dev-only,
+ * route-owned observability container, `null` whenever observability is not
+ * armed (every production request and every request without the explicit
+ * `?droneAiDebug=1` opt-in, see `useDroneAiDebugEnabled.ts`). `null` is the
+ * ENTIRE gate: when null, `debugRecords` below is a stable empty array, no
+ * squad-meta field is ever written, and every drone's own `update()` call
+ * receives a `null` debug context each substep, so a "debug disabled" run
+ * performs genuinely zero debug-related writes, not merely inert-but-present
+ * ones. When non-null, this component owns building the SAME kind of reused,
+ * index-matched `debugRecords` array `spatialSnapshots`/`attackRequests`
+ * already establish (rebuilt on a `spawns` change via
+ * `reregisterDroneAiDebugRoster`, cleared IN PLACE — object identity
+ * preserved — on a mid-session restart via `clearDroneAiDebugDroneSnapshot`,
+ * so a restart alone can never desync this array from the object identities
+ * the debug runtime's own Map still holds).
  */
-export default function DroneSquad() {
+export default function DroneSquad({ debugRuntime }: { debugRuntime: DroneAiDebugRuntime | null }) {
   const camera = useThree((state) => state.camera);
   const droneRefs = useRef<Array<DroneHandle | null>>([]);
   const boltRef = useRef<DroneBoltHandle>(null);
@@ -155,6 +179,17 @@ export default function DroneSquad() {
     [spawns],
   );
 
+  // Milestone 9H — one shared, reused, index-matched debug-telemetry record
+  // array, mirroring `spatialSnapshots`/`attackRequests`'s own "rebuilt only
+  // on a spawns change" convention exactly. A stable EMPTY array whenever
+  // `debugRuntime` is null (observability not armed) — no roster is ever
+  // registered into a null runtime, so this is a true no-op, not merely an
+  // inert one.
+  const debugRecords = useMemo<DroneAiDebugDroneSnapshot[]>(
+    () => (debugRuntime ? reregisterDroneAiDebugRoster(debugRuntime, spawns.map((spawn) => spawn.id), performance.now()) : []),
+    [spawns, debugRuntime],
+  );
+
   // Match lifecycle (session init → countdown) is owned by V2PlayView +
   // MatchDirector, not here — this component only spawns and drives drones.
 
@@ -172,6 +207,16 @@ export default function DroneSquad() {
       // exactly like the bolt pool above (see this component's own doc
       // comment).
       coordinatorRuntimeRef.current = resetDroneSquadCoordinatorRuntime();
+      // Milestone 9H — a restart doesn't change the roster (same IDs, same
+      // count), so this clears every existing debug record IN PLACE rather
+      // than rebuilding the array (see `debugRecords`'s own doc comment on
+      // why object identity must survive a restart). No-op cost when
+      // `debugRuntime` is null.
+      if (debugRuntime) {
+        const restartNow = performance.now();
+        for (const record of debugRecords) clearDroneAiDebugDroneSnapshot(record, restartNow);
+        resetDroneAiDebugSquadMeta(debugRuntime, restartNow);
+      }
     }
 
     // Drones only think during live combat (active). During countdown they
@@ -237,7 +282,38 @@ export default function DroneSquad() {
       for (let i = 0; i < droneCount; i++) {
         const drone = droneRefs.current[i];
         const permit = coordination.permits.get(spawns[i].id) ?? EMPTY_PERMIT;
-        drone?.update(targetSnapshot, simulationDeltaS, now, bolts, droneProfile, spatialSnapshots, permit);
+        // Milestone 9H — `null` unless observability is armed (see this
+        // component's own doc comment) — a genuinely zero-cost, zero-write
+        // path when disabled. `attackEligible` reuses the SAME `wantsAttack`
+        // value this drone's own `prepareAttackRequest` call already
+        // computed this substep (PASS "prepare", above) — never
+        // recomputed.
+        const debugContext = debugRuntime ? { attackEligible: attackRequests[i].wantsAttack, record: debugRecords[i] } : null;
+        drone?.update(targetSnapshot, simulationDeltaS, now, bolts, droneProfile, spatialSnapshots, permit, debugContext);
+      }
+
+      // Milestone 9H — squad-level telemetry, one write per substep,
+      // entirely skipped when `debugRuntime` is null. Every field here is a
+      // direct read of a value this same substep already computed for real
+      // gameplay (`coordination.permits`/`coordinatorRuntimeRef`/
+      // `coordinationProfile`) — no second, parallel computation.
+      if (debugRuntime) {
+        let reservedSectorCount = 0;
+        const seenSectors: number[] = [];
+        for (const grantedPermit of coordination.permits.values()) {
+          if (grantedPermit.granted && grantedPermit.sector !== null && !seenSectors.includes(grantedPermit.sector)) {
+            seenSectors.push(grantedPermit.sector);
+            reservedSectorCount++;
+          }
+        }
+        debugRuntime.squad.difficultyId = selectedDifficulty;
+        debugRuntime.squad.mountedDroneCount = droneCount;
+        debugRuntime.squad.shooterCap = coordinationProfile.maxConcurrentAttackers;
+        debugRuntime.squad.sectorCount = coordinationProfile.sectorCount;
+        debugRuntime.squad.activeLeaseCount = coordination.runtime.leases.size;
+        debugRuntime.squad.reservedSectorCount = reservedSectorCount;
+        debugRuntime.squad.simulationSubsteps += 1;
+        debugRuntime.squad.lastUpdatedAtMs = now;
       }
     });
   });

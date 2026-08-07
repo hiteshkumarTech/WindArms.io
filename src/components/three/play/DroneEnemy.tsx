@@ -15,7 +15,7 @@ import { evaluateDronePerception, DRONE_PERCEPTION_MEMORY } from '@/lib/v2/ai/dr
 import { resolveDroneMovementIntent, type DroneMovementIntent, type DroneSpatialSnapshot } from '@/lib/v2/ai/droneAiMovementIntent';
 import type { DroneAiDifficultyProfile } from '@/lib/v2/ai/droneAiDifficulty';
 import { resolveDroneTelegraph, DRONE_COMBAT_TELEGRAPH } from '@/lib/v2/ai/droneAiTelegraph';
-import type { DroneTargetSnapshot, LegacyDroneAiObservation, LegacyDroneAiRuntime, Vec3Data } from '@/lib/v2/ai/droneAiTypes';
+import type { DroneTargetSnapshot, LegacyDroneAiDecision, LegacyDroneAiObservation, LegacyDroneAiRuntime, Vec3Data } from '@/lib/v2/ai/droneAiTypes';
 import { DRONE_ARENA_CONFIG } from '@/lib/v2/ai/droneArenaConfig';
 import { constrainDronePosition, type DroneConstraintResult } from '@/lib/v2/ai/droneAiArenaConstraints';
 import {
@@ -31,6 +31,7 @@ import {
 import { DRONE_MUZZLE_LOCAL_OFFSET } from './droneVisualConfig';
 import type { DroneBoltHandle } from './DroneBoltPool';
 import type { DroneAttackPermit, DroneAttackRequest } from '@/lib/v2/ai/droneAiSquad';
+import { noteDroneAiDebugStateChange, type DroneAiDebugDroneSnapshot } from '@/lib/v2/ai/droneAiDebugState';
 
 /**
  * One hostile wind training-drone (Milestone 6). TEMPORARY gameplay target,
@@ -168,9 +169,33 @@ import type { DroneAttackPermit, DroneAttackRequest } from '@/lib/v2/ai/droneAiS
  * into the pure state machine, mirroring `recoveryBlocksAttack`'s own 9F
  * precedent exactly. `update()`'s OWN signature gains one new trailing
  * parameter, `permit`, for this purpose.
+ *
+ * MILESTONE 9H — adds ONE more OPTIONAL trailing parameter to `update()`,
+ * `debugContext` (`null` whenever dev-only observability is not armed, per
+ * `useDroneAiDebugEnabled.ts` — true for every production request and every
+ * request without the explicit `?droneAiDebug=1` opt-in). When non-null,
+ * `update()`'s own tail writes this tick's ALREADY-COMPUTED decision/
+ * perception/movement/recovery/telegraph/permit facts into the caller-owned
+ * `DroneAiDebugDroneSnapshot` it was handed (`droneAiDebugState.ts`) via a
+ * pure, in-place, allocation-free field-by-field write, mirroring
+ * `writeSpatialSnapshot`'s own "reused output object" convention. This is a
+ * STRICTLY ONE-WAY telemetry sink — nothing written here is ever read back
+ * by any gameplay code in this file or anywhere else (see
+ * `droneAiDebugState.ts`'s own doc comment for the full read-only
+ * architecture). No new computation is added to the real decision path for
+ * this purpose; every debug field is a direct read of a value `update()`
+ * already computed this same tick for real gameplay — the one exception is a
+ * small `lastTransitionReason` string built from decision flags already in
+ * scope, purely informational, never consumed by any other code.
  */
+/** Milestone 9H — dev-only, one-way write target for `update()`'s own tail (see `DroneHandle.update`'s doc comment). `attackEligible` is the SAME already-computed `wantsAttack` value this drone's own `prepareAttackRequest` call produced this substep (never recomputed) — paired with `permit`, it lets the panel distinguish "wanted to attack but the squad coordinator withheld a lease" from "did not even want to attack yet." */
+export interface DroneDebugWriteContext {
+  attackEligible: boolean;
+  record: DroneAiDebugDroneSnapshot;
+}
+
 export interface DroneHandle {
-  /** Called by DroneSquad, possibly several times per rendered frame (once per fixed-step substep — see fixedStep.ts), with the shared player target snapshot (position/alive/generation — one object, reused every substep, never a per-drone camera read), the shared bolt pool, the difficulty-resolved combat/cadence profile (Milestone 9E — HP baked in at spawn/reset time; the rest read live here), this substep's pre-movement squad spatial snapshot (see `writeSpatialSnapshot` below), and (Milestone 9G) this substep's already-resolved attack permit (see `prepareAttackRequest` below). `simulationDeltaS` is always exactly one fixed substep, never a raw/variable frame delta. Returns true once destroyed (for squad bookkeeping). */
+  /** Called by DroneSquad, possibly several times per rendered frame (once per fixed-step substep — see fixedStep.ts), with the shared player target snapshot (position/alive/generation — one object, reused every substep, never a per-drone camera read), the shared bolt pool, the difficulty-resolved combat/cadence profile (Milestone 9E — HP baked in at spawn/reset time; the rest read live here), this substep's pre-movement squad spatial snapshot (see `writeSpatialSnapshot` below), (Milestone 9G) this substep's already-resolved attack permit (see `prepareAttackRequest` below), and (Milestone 9H) an optional dev-only debug write context — `null` whenever observability is not armed. `simulationDeltaS` is always exactly one fixed substep, never a raw/variable frame delta. Returns true once destroyed (for squad bookkeeping). */
   update: (
     targetSnapshot: DroneTargetSnapshot,
     simulationDeltaS: number,
@@ -179,6 +204,7 @@ export interface DroneHandle {
     profile: DroneAiDifficultyProfile,
     neighbours: readonly DroneSpatialSnapshot[],
     permit: DroneAttackPermit,
+    debugContext: DroneDebugWriteContext | null,
   ) => boolean;
   reset: () => void;
   getState: () => DroneAiState;
@@ -224,6 +250,106 @@ const DRONE_AI_SEED_NAMESPACE = 0x9b_d20e;
 /** Milestone 9F — below this magnitude, a movement-intent vector is treated as "no meaningful movement requested" for the stuck detector's own `wantsMovement` gate (Section 10's "intentional hold blocks accumulation"). Purely a numerical-stability threshold, far smaller than any real search/engage/investigate speed. */
 const MOVEMENT_INTENT_EPSILON = 1e-6;
 
+/** Milestone 9H — a shared, frozen zero vector for the two destroyed-branch debug-telemetry call sites (a destroyed drone never moves) — never mutated, so sharing one instance across calls is safe. */
+const ZERO_DEBUG_VEC: Vec3Data = { x: 0, y: 0, z: 0 };
+
+interface DroneDebugTelemetryInput {
+  record: DroneAiDebugDroneSnapshot;
+  nowMs: number;
+  decision: LegacyDroneAiDecision;
+  attackEligible: boolean;
+  permit: DroneAttackPermit;
+  targetVisible: boolean;
+  targetDistanceM: number;
+  telegraphPhase: string;
+  fireIntervalMs: number;
+  recovery: DroneStuckRecoveryRuntime;
+  tacticalPosition: Vec3Data;
+  visualPosition: Vec3Data;
+  finalMovement: Vec3Data;
+  expectedDisplacementM: number;
+  actualDisplacementM: number;
+  horizontalClamped: boolean;
+  altitudeClamped: boolean;
+  windLiftCorrected: boolean;
+  transitionReason: string | null;
+}
+
+/**
+ * Milestone 9H — the ONE write site for a drone's own dev-only debug
+ * snapshot, called from `update()`'s own return points (see this file's own
+ * top doc comment). A plain, allocation-free (beyond the caller-constructed
+ * `input` object, itself only ever built inside an `if (debugContext)`
+ * guard) field-by-field write into the caller-owned record — never reads
+ * anything back, never influences any return value or gameplay side effect.
+ * Every input here is a value `update()` already computed this same tick for
+ * REAL gameplay (state/perception/movement/recovery/telegraph/permit) —
+ * this function performs no independent gameplay computation of its own.
+ */
+function applyDroneDebugTelemetry(input: DroneDebugTelemetryInput): void {
+  const { record } = input;
+  noteDroneAiDebugStateChange(record, input.decision.state, input.nowMs, input.transitionReason);
+  record.targetVisible = input.targetVisible;
+  record.targetDistanceM = input.targetDistanceM;
+
+  const lastKnown = input.decision.runtime.lastKnownTargetPosition;
+  if (lastKnown) {
+    if (!record.lastKnownPosition) record.lastKnownPosition = { x: 0, y: 0, z: 0 };
+    record.lastKnownPosition.x = lastKnown.x;
+    record.lastKnownPosition.y = lastKnown.y;
+    record.lastKnownPosition.z = lastKnown.z;
+  } else {
+    record.lastKnownPosition = null;
+  }
+
+  record.memoryRemainingMs =
+    input.decision.state === 'investigating' && input.decision.runtime.investigateUntilMs !== null
+      ? Math.max(0, input.decision.runtime.investigateUntilMs - input.nowMs)
+      : null;
+  record.reactionRemainingMs =
+    input.decision.state === 'engaging' && input.decision.runtime.reactionReadyAtMs !== null
+      ? Math.max(0, input.decision.runtime.reactionReadyAtMs - input.nowMs)
+      : null;
+
+  record.movementMode = input.decision.movementMode;
+  record.finalMovement.x = input.finalMovement.x;
+  record.finalMovement.y = input.finalMovement.y;
+  record.finalMovement.z = input.finalMovement.z;
+  record.expectedDisplacementM = input.expectedDisplacementM;
+  record.actualDisplacementM = input.actualDisplacementM;
+
+  record.tacticalPosition.x = input.tacticalPosition.x;
+  record.tacticalPosition.y = input.tacticalPosition.y;
+  record.tacticalPosition.z = input.tacticalPosition.z;
+  record.visualPosition.x = input.visualPosition.x;
+  record.visualPosition.y = input.visualPosition.y;
+  record.visualPosition.z = input.visualPosition.z;
+
+  record.horizontalClamped = input.horizontalClamped;
+  record.altitudeClamped = input.altitudeClamped;
+  record.windLiftCorrected = input.windLiftCorrected;
+
+  record.recoveryPhase = input.recovery.phase;
+  record.recoveryAttemptCount = input.recovery.attemptCountThisLife;
+  record.recoveryTeleportCount = input.recovery.teleportCountThisLife;
+  record.detectorProgressRatio =
+    input.recovery.windowStartedAtMs !== null && input.recovery.expectedDistanceAccumM > 0
+      ? input.recovery.actualDistanceAccumM / input.recovery.expectedDistanceAccumM
+      : null;
+  record.detectorWindowAgeMs = input.recovery.windowStartedAtMs !== null ? Math.max(0, input.nowMs - input.recovery.windowStartedAtMs) : null;
+
+  record.attackEligible = input.attackEligible;
+  record.coordinationBlocked = !input.permit.granted;
+  record.hasAttackLease = input.permit.granted;
+  record.sectorIndex = input.permit.sector;
+  record.windupRemainingMs = input.decision.state === 'attacking' ? Math.max(0, input.decision.runtime.windupUntilMs - input.nowMs) : null;
+  record.cooldownRemainingMs = Math.max(0, input.fireIntervalMs - (input.nowMs - input.decision.runtime.lastFireAtMs));
+  record.telegraphPhase = input.telegraphPhase;
+
+  record.decisionTickCount += 1;
+  if (input.decision.fireExactlyOnce) record.fireCount += 1;
+}
+
 const DroneEnemy = forwardRef<DroneHandle, { spawn: DroneSpawnDef }>(function DroneEnemy({ spawn }, ref) {
   const groupRef = useRef<THREE.Group>(null);
   const rotorRef = useRef<THREE.Mesh>(null);
@@ -266,6 +392,13 @@ const DroneEnemy = forwardRef<DroneHandle, { spawn: DroneSpawnDef }>(function Dr
   // "one reused object, never reallocated" convention.
   const proposedPosDataRef = useRef<Vec3Data>({ x: 0, y: 0, z: 0 });
   const constraintResultRef = useRef<DroneConstraintResult>({ position: { x: 0, y: 0, z: 0 }, horizontalClamped: false, altitudeClamped: false, forbiddenZoneCorrected: false, correctionDistanceM: 0, blockedDisplacementM: 0 });
+
+  // Milestone 9H — reused scratch for the debug-only "final movement"
+  // vector (see `applyDroneDebugTelemetry`'s own doc comment). Written every
+  // tick regardless of whether debug is armed (cheap primitive field writes
+  // into an already-allocated object — no per-tick allocation either way),
+  // only ever READ when `debugContext` is non-null.
+  const debugScratchRef = useRef<Vec3Data>({ x: 0, y: 0, z: 0 });
 
   // Adapter-owned movement/presentation state — never part of the pure
   // core's own runtime (see this file's own doc comment above).
@@ -345,7 +478,7 @@ const DroneEnemy = forwardRef<DroneHandle, { spawn: DroneSpawnDef }>(function Dr
   };
 
   useImperativeHandle(ref, () => ({
-    update(targetSnapshot, simulationDeltaS, now, bolts, profile, neighbours, permit) {
+    update(targetSnapshot, simulationDeltaS, now, bolts, profile, neighbours, permit, debugContext) {
       const group = groupRef.current;
       if (!group) return runtimeRef.current.state === 'destroyed';
 
@@ -469,8 +602,57 @@ const DroneEnemy = forwardRef<DroneHandle, { spawn: DroneSpawnDef }>(function Dr
         }
       }
 
+      // Milestone 9H — see this file's own top doc comment. Computed once
+      // (used by whichever `applyDroneDebugTelemetry` call site below is
+      // actually reached this tick), entirely skipped when `debugContext` is
+      // null (the overwhelmingly common case — production, and every dev
+      // request without `?droneAiDebug=1`).
+      const debugTransitionReason: string | null = debugContext
+        ? decision.targetAcquired
+          ? 'acquired target'
+          : decision.startWindup
+            ? 'windup started'
+            : decision.fireExactlyOnce
+              ? 'fired'
+              : decision.abortWindup
+                ? decision.stunned
+                  ? 'windup aborted: stunned'
+                  : !canSeePlayer
+                    ? 'windup aborted: line of sight lost'
+                    : recoveryBlocksAttackThisTick
+                      ? 'windup aborted: recovery active'
+                      : !permit.granted
+                        ? 'windup aborted: no attack permit'
+                        : 'windup aborted'
+                : decision.completeDestroyedPresentation
+                  ? 'destroyed'
+                  : null
+        : null;
 
       if (decision.state === 'destroyed') {
+        if (debugContext) {
+          applyDroneDebugTelemetry({
+            record: debugContext.record,
+            nowMs: now,
+            decision,
+            attackEligible: debugContext.attackEligible,
+            permit,
+            targetVisible: canSeePlayer,
+            targetDistanceM: distance,
+            telegraphPhase: telegraph.phase,
+            fireIntervalMs: profile.fireIntervalMs,
+            recovery: recoveryRuntimeRef.current,
+            tacticalPosition: positionRef.current,
+            visualPosition: group.position,
+            finalMovement: ZERO_DEBUG_VEC,
+            expectedDisplacementM: 0,
+            actualDisplacementM: 0,
+            horizontalClamped: false,
+            altitudeClamped: false,
+            windLiftCorrected: false,
+            transitionReason: debugTransitionReason,
+          });
+        }
         if (decision.completeDestroyedPresentation) {
           group.visible = false;
           return true;
@@ -535,6 +717,24 @@ const DroneEnemy = forwardRef<DroneHandle, { spawn: DroneSpawnDef }>(function Dr
       // unchanged, still applied AFTER the tactical position is committed.
       const stuckContext = { droneId: spawn.id, homePosition: homePosDataRef.current, speedMps: movementIntent.speedMps, config: DRONE_ARENA_CONFIG };
 
+      // Milestone 9H — debug-only movement telemetry, captured across
+      // whichever of the three branches below actually runs this tick (see
+      // this file's own top doc comment). `debugFinalMovement` reuses one
+      // preallocated scratch vector (`debugScratchRef`, never reallocated);
+      // the scalar fields are plain primitives. Reading these costs nothing
+      // beyond the assignments themselves — no conditional gating needed
+      // (they are only ever WRITTEN into the debug snapshot, guarded by
+      // `debugContext`, at this function's own return points).
+      const debugFinalMovement = debugScratchRef.current;
+      debugFinalMovement.x = 0;
+      debugFinalMovement.y = 0;
+      debugFinalMovement.z = 0;
+      let debugExpectedDisplacementM = 0;
+      let debugActualDisplacementM = 0;
+      let debugHorizontalClamped = false;
+      let debugAltitudeClamped = false;
+      let debugWindLiftCorrected = false;
+
       if (decision.stunned) {
         // Stunned drones never move (movementIntent is already zero via the
         // pure core's own 'stunned-hold' mode) — arena constraints/recovery
@@ -546,6 +746,17 @@ const DroneEnemy = forwardRef<DroneHandle, { spawn: DroneSpawnDef }>(function Dr
         // droneAiStuckRecovery.ts itself against DRONE_ARENA_CONFIG before
         // ever being offered). No bolt, no muzzle flash, no spread RNG, no
         // HP/RNG-stream change — this substep only ever moves the drone.
+        // Milestone 9H — the debug snapshot reports the REAL geometric jump
+        // (distinct from `teleportSample` immediately below, which
+        // deliberately reports 0/0 to the stuck-DETECTOR — a teleport is not
+        // "expected/actual tactical movement" from the detector's own
+        // perspective — see that object's own inline comment). A human
+        // inspecting the panel wants to see the actual displacement that
+        // just happened to this drone.
+        debugFinalMovement.x = pendingTeleportTarget.x - selfPosDataRef.current.x;
+        debugFinalMovement.y = pendingTeleportTarget.y - selfPosDataRef.current.y;
+        debugFinalMovement.z = pendingTeleportTarget.z - selfPosDataRef.current.z;
+        debugActualDisplacementM = Math.sqrt(debugFinalMovement.x ** 2 + debugFinalMovement.y ** 2 + debugFinalMovement.z ** 2);
         positionRef.current.set(pendingTeleportTarget.x, pendingTeleportTarget.y, pendingTeleportTarget.z);
         const teleportSample: DroneStuckSample = {
           nowMs: now,
@@ -601,6 +812,18 @@ const DroneEnemy = forwardRef<DroneHandle, { spawn: DroneSpawnDef }>(function Dr
           forbiddenZoneCorrected: constraintResult.forbiddenZoneCorrected,
         };
 
+        // Milestone 9H — mirrors `sample` above exactly (same values, same
+        // source), just also captured into the debug scratch for the
+        // telemetry write at this function's own return point.
+        debugFinalMovement.x = actualDx;
+        debugFinalMovement.y = actualDy;
+        debugFinalMovement.z = actualDz;
+        debugExpectedDisplacementM = sample.expectedDisplacementM;
+        debugActualDisplacementM = sample.actualDisplacementM;
+        debugHorizontalClamped = constraintResult.horizontalClamped;
+        debugAltitudeClamped = constraintResult.altitudeClamped;
+        debugWindLiftCorrected = constraintResult.forbiddenZoneCorrected;
+
         recoveryRuntimeRef.current = resolveDroneStuckRecovery(recoveryRuntimeRef.current, sample, {
           ...stuckContext,
           currentPosition: { x: positionRef.current.x, y: positionRef.current.y, z: positionRef.current.z },
@@ -619,6 +842,30 @@ const DroneEnemy = forwardRef<DroneHandle, { spawn: DroneSpawnDef }>(function Dr
         aim.y += decision.aimSpread.y;
         aim.z += decision.aimSpread.z;
         bolts.spawn(origin, aim, profile.boltSpeed, profile.boltDamage);
+      }
+
+      if (debugContext) {
+        applyDroneDebugTelemetry({
+          record: debugContext.record,
+          nowMs: now,
+          decision,
+          attackEligible: debugContext.attackEligible,
+          permit,
+          targetVisible: canSeePlayer,
+          targetDistanceM: distance,
+          telegraphPhase: telegraph.phase,
+          fireIntervalMs: profile.fireIntervalMs,
+          recovery: recoveryRuntimeRef.current,
+          tacticalPosition: positionRef.current,
+          visualPosition: group.position,
+          finalMovement: debugFinalMovement,
+          expectedDisplacementM: debugExpectedDisplacementM,
+          actualDisplacementM: debugActualDisplacementM,
+          horizontalClamped: debugHorizontalClamped,
+          altitudeClamped: debugAltitudeClamped,
+          windLiftCorrected: debugWindLiftCorrected,
+          transitionReason: debugTransitionReason,
+        });
       }
 
       return false;

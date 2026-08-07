@@ -24,6 +24,9 @@ import PlayerController from './PlayerController';
 import SkyfrontTrialArena from './SkyfrontTrialArena';
 import WindLift from './WindLift';
 import DroneSquad from './DroneSquad';
+import DroneAiDebugHelpers from './DroneAiDebugHelpers';
+import type { DroneAiDebugRuntime } from '@/lib/v2/ai/droneAiDebugState';
+import { useDroneAiDebugHelperToggles } from '@/lib/v2/ai/droneAiDebugHelperToggles';
 
 /**
  * Step 8F — `/v2/play`'s own `ShadowRouteConfiguration`, module-level for
@@ -75,8 +78,25 @@ const PLAY_SHADOW_ROUTE_CONFIG: ShadowRouteConfiguration = {
  * needs no other change, since every conditional below already re-derives
  * from that one constant.
  */
-export default function V2PlayScene({ inputRef }: { inputRef: React.MutableRefObject<RangeInputSnapshot> }) {
+export default function V2PlayScene({
+  inputRef,
+  debugRuntime = null,
+}: {
+  inputRef: React.MutableRefObject<RangeInputSnapshot>;
+  /** Milestone 9H — dev-only, route-owned observability container (`droneAiDebugState.ts`), threaded down from `V2PlayView.tsx`. `null`/omitted whenever observability is not armed — see `DroneSquad.tsx`'s own doc comment for the full "null is the entire gate" contract. */
+  debugRuntime?: DroneAiDebugRuntime | null;
+}) {
   const combatGateRef = useRef(false);
+  // Milestone 9H — the helper POOL itself (24 slots' worth of geometry/
+  // materials) only mounts when at least one visual sub-layer is actually
+  // toggled on — never merely because `?droneAiDebug=1` is armed. This is
+  // what makes Section 12's Scenario B ("panel-only operation... zero
+  // helper geometry") true by construction rather than merely inert: with
+  // every checkbox off, `<DroneAiDebugHelpers>` is not mounted at all, so
+  // its `useMemo` pool never allocates.
+  const anyDroneAiDebugHelperActive = useDroneAiDebugHelperToggles(
+    (s) => s.stateLabels || s.targetLines || s.movementArrows || s.leaseSectorMarkers || s.recoveryMarkers || s.arenaBounds,
+  );
   const playShadowCasterDecision = resolveShadowCasterDecision({
     debugFullBodyRequested: false,
     debugControllerRequested: false,
@@ -134,7 +154,8 @@ export default function V2PlayScene({ inputRef }: { inputRef: React.MutableRefOb
       </PausablePhysics>
 
       <WindLift />
-      <DroneSquad />
+      <DroneSquad debugRuntime={debugRuntime} />
+      {debugRuntime && anyDroneAiDebugHelperActive && <DroneAiDebugHelpers runtime={debugRuntime} />}
       <VortexFireSystem inputRef={inputRef} combatGateRef={combatGateRef} />
       <Suspense fallback={null}>
         <VortexViewmodel />
